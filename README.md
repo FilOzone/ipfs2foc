@@ -77,9 +77,11 @@ you target (default `mainnet`; pass `--network calibration` for the testnet).
 - **USDFC** deposited into the FilecoinPay contract, with FWSS approved as a
   payments operator with sufficient `rateAllowance` and `lockupAllowance`, and a
   funded balance that covers the minimum lockup plus a one-time sybil fee.
-  `create-data-set` reverts otherwise. The [Synapse SDK](https://github.com/FilOzone/synapse-sdk)
-  `Payments` helper exposes the approve/deposit/operator-approval calls; PDP
-  Scan (`https://pdp.vxb.ai/{network}`) shows the same account state.
+  `create-data-set` reverts otherwise. [`filecoin-pin`](https://github.com/FilOzone/filecoin-pin)
+  automates the approve / deposit / operator-approval calls from its CLI or as a
+  library. The [Synapse SDK](https://github.com/FilOzone/synapse-sdk) `Payments`
+  helper exposes the same calls directly. PDP Scan
+  (`https://pdp.vxb.ai/{network}`) shows the resulting account state.
 - **Provider id**: choose a PDP-capable provider from the SP registry. PDP Scan
   lists registered providers at `https://pdp.vxb.ai/{network}/providers`; pass
   that numeric id as `--provider-id` to `create-data-set`. Skip this step if you
