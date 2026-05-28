@@ -7,10 +7,14 @@
 - Pick the default that produces the safest outcome for the most common operator. Opt-in flags toggle the expensive or destructive path, not the safe path.
 - State the default value in `--help` text on the same line as the flag.
 - Repo-specific defaults that must hold across new commands:
-  - **Network:** `mainnet`. Calibration is `--network calibration`.
-  - **Cache:** on. Cache flag name in this repo is `--car-store <dir>` (see `docs/personas.md`); disable with `--no-car-store` when disk is tight.
-  - **Sample size for verify / audit:** `100`. Full sweep is `--all`.
-  - **Concurrency on fan-out HTTP/RPC:** `4`. Higher values are opt-in via `--concurrency`.
+  - **Network:** `mainnet`. Calibration is `--network calibration`. See [`default-mainnet-network.md`](./default-mainnet-network.md).
+  - **Cache:** on **(planned; not shipped)**. The cache flag will be `--car-store <dir>`; `docs/personas.md` tracks the design. Until shipped, do not add `--car-store` to new code paths.
+  - **Sample size for verify / audit:** `100`. Full sweep is `--all` (or feature-specific, e.g. `--ipni-all`).
+  - **Fan-out concurrency** (per-command, see `src/index.ts` for shipped values):
+    - `--concurrency` (plan, serve): default `8`.
+    - `--ipni-concurrency` (report's IPNI check): default `8`.
+    - `--max-in-flight` (pdp-submit aggregates in flight): default `4`.
+  - New fan-out knobs default to `8` unless the operation hits a known back-pressure ceiling (admission caps, gas spike) in which case pick a smaller number with the reason in the help text.
 
 ## Examples
 
@@ -30,4 +34,4 @@
 
 ## Why
 
-A flag with no default forces every operator to think about something the maintainer already knows the answer to. Cache-on is cheap insurance against source gateway outages; sample-100 is enough signal for a million-CID migration.
+A flag with no default forces every operator to think about something the maintainer already knows the answer to. Sample-100 is enough signal for a million-CID migration; once the cache lands it will be cheap insurance against source-gateway outages.

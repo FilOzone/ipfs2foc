@@ -6,7 +6,7 @@
 
 - Read the source or run the thing before stating how it behaves.
 - If the source is not available, write a probe script and observe the response shape.
-- Cite the file:line in a code comment next to the call: `// verified: <repo>/path/file.go:NNN`.
+- Cite by symbol in a code comment next to the call: `// verified: <repo> <path/file.ext> <SymbolName>`. Line numbers drift; symbol names are greppable.
 - Mark unverified claims with a `// UNVERIFIED: ...` comment in code and a `_unverified_` note in PR descriptions. Do not paraphrase from recall.
 
 ## Examples

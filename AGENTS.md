@@ -9,13 +9,16 @@ file is the index.
 - Read the skill before re-asking the operator.
 - Read the source before asserting upstream behavior.
 - Read the chain before trusting an HTTP probe.
+- If you find yourself wanting to add a "just-in-case" guard, stop and
+  read the source first (see `no-defense-in-depth-as-ignorance-mask`).
 
-## Read these every session
+## How to use this file
 
-Before writing or editing files, load the skills in `skills/`. They are
-plain Markdown; load the whole directory into context at session start.
-They encode lessons the operator has explicitly surfaced. Re-litigating
-any of them is not free work.
+Load this `AGENTS.md` at session start. Do **not** load every skill in
+`skills/`; that wastes context and trains agents to ignore the lot.
+Instead, match the task you are about to perform to the routing table
+below and load only the matching skills. Load the full skill index when
+the task does not match any row, or when scope is unclear.
 
 ## Task → skills routing
 
@@ -24,16 +27,21 @@ skills first.
 
 | Editing | Load first |
 |---|---|
-| `src/report.ts`, `src/pdp-verifier.ts` | `onchain-canonical-not-side-channel`, `addstatus-three-signals`, `memory-aware-scaling`, `sample-not-sweep-at-scale`, `validate-at-each-step` |
-| `src/submit-pdp.ts`, `src/pdp.ts` | `addstatus-three-signals`, `validate-at-each-step`, `verify-actual-behavior`, `prefer-upstream-libraries` |
-| `src/gateway.ts`, fetch / HTTP code | `prefer-head-over-get`, `sample-not-sweep-at-scale`, `onchain-canonical-not-side-channel` |
+| `src/report.ts`, `src/pdp-verifier.ts` | `onchain-canonical-not-side-channel`, `memory-aware-scaling`, `sample-not-sweep-at-scale`, `validate-at-each-step`, `prefer-upstream-libraries` |
+| `src/submit-pdp.ts`, `src/pdp.ts` | `addstatus-three-signals`, `validate-at-each-step`, `verify-actual-behavior`, `prefer-upstream-libraries`, `no-defense-in-depth-as-ignorance-mask` |
+| `src/create-data-set.ts` | `default-mainnet-network`, `prefer-upstream-libraries`, `validate-at-each-step` |
+| `src/gas.ts` | `default-mainnet-network`, `prefer-upstream-libraries` |
+| `src/migrate.ts`, `src/runner.ts`, `src/aggregate.ts`, `src/piece.ts` | `sensible-defaults`, `memory-aware-scaling`, `verify-actual-behavior` |
+| `src/gateway.ts`, `src/redirect-server*.ts`, fetch / HTTP code | `prefer-head-over-get`, `sample-not-sweep-at-scale`, `onchain-canonical-not-side-channel` |
 | `src/db.ts`, schema changes | `no-pre-release-migrations`, `memory-aware-scaling` |
-| New CLI flag, env var, help text | `sensible-defaults`, `default-mainnet-network`, `no-internal-jargon-leakage` |
+| `src/index.ts`, CLI flags, env vars, help text | `sensible-defaults`, `default-mainnet-network`, `no-internal-jargon-leakage`, `anti-ai-smell` |
+| `test/**` | `verify-actual-behavior`, `no-vendor-leakage`, `no-internal-jargon-leakage` |
+| `package.json` dep add / SDK swap | `prefer-upstream-libraries`, `verify-actual-behavior` |
 | `docs/**`, `README.md`, persistent docs | `documentation-voice`, `anti-ai-smell`, `no-vendor-leakage`, `no-internal-jargon-leakage` |
 | GitHub issue body | `github-issue-structure`, `anti-ai-smell`, `no-vendor-leakage`, `documentation-voice` |
 | Pull-request description | `github-pr-structure`, `anti-ai-smell`, `documentation-voice` |
 | Commit message | `git-commit`, `anti-ai-smell` |
-| Investigation / peer-review drafts | `research-folder-gitignored`, `no-internal-jargon-leakage`, `investigation-split` |
+| `.research/**` writes | `research-folder-gitignored`, `no-internal-jargon-leakage` |
 
 ## Skill index
 
@@ -51,6 +59,9 @@ skills first.
 - [`skills/addstatus-three-signals.md`](skills/addstatus-three-signals.md)
   Curio's `pdp.addStatus` carries `txStatus`, `addMessageOk`,
   `piecesAdded` as independent signals. Success requires all three.
+- [`skills/no-defense-in-depth-as-ignorance-mask.md`](skills/no-defense-in-depth-as-ignorance-mask.md)
+  A "just in case" guard is a red flag for not understanding the
+  external behavior. Read the source first.
 
 ### Code quality
 
@@ -64,7 +75,7 @@ skills first.
   Use HTTP HEAD for existence/content-type probes.
 - [`skills/sensible-defaults.md`](skills/sensible-defaults.md)
   Pick defaults that protect the most common operator. Names the
-  repo-wide defaults (mainnet, cache on, sample 100, concurrency 4).
+  repo-wide defaults; see the skill for the canonical list.
 - [`skills/sample-not-sweep-at-scale.md`](skills/sample-not-sweep-at-scale.md)
   Default to stride sampling; gate full sweep behind `--all`.
 - [`skills/default-mainnet-network.md`](skills/default-mainnet-network.md)
@@ -103,12 +114,17 @@ skills first.
 
 ## Operating defaults
 
-- Default network: `mainnet`. Calibration is `--network calibration`.
+Repo facts not covered by a skill:
+
 - Push to `main`; no pull-request gate. Branch + merge + delete remote
   branch is fine.
 - `node:sqlite` is the persistence layer. Node 26+.
-- Anything investigation-shaped (peer-review prompts, design memos,
-  scratch findings) goes in `.research/`. That directory is gitignored.
 - User-facing docs live in `docs/`. Operator-facing CLI help and logs
   follow the same voice rules as `docs/`.
+
+For everything else, the skill is the source of truth:
+
+- Network defaults: see [`skills/default-mainnet-network.md`](skills/default-mainnet-network.md).
+- Cache, sample size, concurrency: see [`skills/sensible-defaults.md`](skills/sensible-defaults.md).
+- Investigation drafts under `.research/`: see [`skills/research-folder-gitignored.md`](skills/research-folder-gitignored.md).
 - Commit messages: see [`skills/git-commit.md`](skills/git-commit.md).

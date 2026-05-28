@@ -5,10 +5,9 @@
 ## Rule
 
 - Default network is `mainnet`. Calibration is `--network calibration`. No other implicit fallback.
-- Every command that touches chain state accepts `--network <mainnet|calibration>` and prints the selected network in its first log line.
-- Import the chain definition from `@filoz/synapse-core/chains` (`mainnet` / `calibration`). Do not hardcode contract addresses, RPC URLs, or chain IDs.
+- Every command that touches chain state accepts `--network <mainnet|calibration>` and logs the resolved chain id, RPC URL, and network together before doing chain work. Contradictions (calibration RPC with `--network mainnet`) surface in that log line.
+- Import the chain definition from `@filoz/synapse-core/chains` (`mainnet` / `calibration`). Do not hardcode contract addresses, RPC URLs, or chain IDs. (Existing `submit-pdp.ts` and `create-data-set.ts` import chains from `@filoz/synapse-sdk`; both packages re-export the same chain identity, so use either consistently within one file.)
 - Do not infer the network from test data, dataset ID ranges, RPC URL host names, or `process.env.NODE_ENV`. The operator picks; the command obeys.
-- Refuse to run if the operator passed both `--network` and a value that contradicts other inputs (e.g. a calibration `--rpc-url` with `--network mainnet`).
 
 ## Examples
 
