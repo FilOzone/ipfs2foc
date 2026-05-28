@@ -46,7 +46,7 @@ export function packAggregates(pieces: PieceResult[], aggregateSizeBytes: bigint
   let members: PieceResult[] = []
   let used = 0n
 
-  const seal = (): void => {
+  const flush = (): void => {
     if (members.length === 0) {
       return
     }
@@ -63,12 +63,12 @@ export function packAggregates(pieces: PieceResult[], aggregateSizeBytes: bigint
       continue
     }
     if (used + size > aggregateSizeBytes) {
-      seal()
+      flush()
     }
     members.push(piece)
     used += size
   }
 
-  seal()
+  flush()
   return { aggregates, oversized }
 }
