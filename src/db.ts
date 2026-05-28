@@ -95,12 +95,6 @@ export class MigrationDB {
         FOREIGN KEY (aggregate_idx) REFERENCES aggregates(idx)
       );
     `)
-    // One-time rename for databases created before the column was called pull_id.
-    const cols = this.#db.prepare(`PRAGMA table_info('aggregates')`).all() as Array<{ name: string }>
-    const names = new Set(cols.map((c) => c.name))
-    if (names.has('deal_id') && !names.has('pull_id')) {
-      this.#db.exec(`ALTER TABLE aggregates RENAME COLUMN deal_id TO pull_id`)
-    }
   }
 
   /** Register CIDs for processing. Existing rows are left untouched (resumable). */
