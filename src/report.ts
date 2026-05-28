@@ -1,41 +1,52 @@
 /**
- * Verification report: reconcile a run's local state against the data set's
- * on-chain pieces and emit explorer links.
+ * Verification report: layered evidence that every committed CID is held by
+ * the storage provider.
  *
- * Each aggregate's root is recomputed from its members (the authoritative value
- * the provider re-derives on add) rather than read from the stored row, so a
- * report stays correct even if the plan that wrote the row predates a change to
- * the commitment. The recomputed root is matched against the data set's active
- * pieces to confirm the aggregate landed on chain.
+ * Layer 1 (always): local DB accounting. Every input CID lands in one of
+ *   `{committed, pending, failed, oversized, unaccounted}`. `unaccounted > 0`
+ *   means the DB has a status the report does not understand and exits
+ *   non-zero.
  *
- * Optional `--verify-retrievable` mode probes each committed CID against the
- * provider's trustless gateway: success = HTTP 200 and content-type CAR. The
- * gateway URL is operator-supplied (typically the SP's public gateway, found
- * via PDP Scan).
+ * Layer 2 (always): on-chain reconciliation against the PDPVerifier contract.
+ *   For each local aggregate, the root is recomputed from members (the
+ *   authoritative value the SP re-derives on add) and matched against the
+ *   data set's `getActivePieces`. Plus a single read of
+ *   `getDataSetLastProvenEpoch` shows whether the SP has produced a valid
+ *   proof-of-possession after the run's final AddPieces. PoP samples
+ *   pseudo-random chunks of the data set, so a valid proof requires holding
+ *   the bytes — this is the strongest "data is at the SP" evidence short of
+ *   downloading it back out.
+ *
+ * Layer 3 (opt-in `--check-ipni`): query the delegated-routing endpoint for
+ *   a sample of committed CIDs. A provider record from the SP confirms it
+ *   advertised the CID into IPNI, which is what makes the CID discoverable
+ *   on the IPFS network through any gateway. This is announcement signal,
+ *   not possession signal — Layer 2 is what proves possession.
  */
 
 import type { MigrationDB } from './db.ts'
 import { resolveRpcUrl } from './gas.ts'
-import { activePieceCids, explorerDataSetUrl, explorerPieceUrl } from './pdp-verifier.ts'
+import {
+  activePieceCids,
+  dataSetProofHealth,
+  explorerDataSetUrl,
+  explorerPieceUrl,
+  maxBlockOfTxHashes,
+  type ProofHealth,
+} from './pdp-verifier.ts'
 import { pieceAggregateCommP } from './piece-aggregate.ts'
-import { CAR_ACCEPT, buildCarUrl } from './gateway.ts'
 import { log } from './util.ts'
 
 export interface ReportOptions {
   network: 'calibration' | 'mainnet'
   rpcUrl?: string
   dataSetId: number
-  /** When set, HEAD-probe committed CIDs via this trustless-gateway base. */
-  verifyGateway?: string
-  /**
-   * Cap on CIDs probed under `--verify-gateway`. Defaults to 100 (a spot
-   * check). Pass `Infinity` (CLI `--verify-all`) for an exhaustive sweep.
-   * At million-CID scale a full sweep is millions of HEAD requests, so the
-   * default samples and lets the operator opt into exhaustive checks.
-   */
-  verifySample?: number
-  /** Bound on concurrent retrieval probes. Default 8. */
-  verifyConcurrency?: number
+  /** When set, query this delegated-routing endpoint for an IPNI announcement check on a sample of committed CIDs. */
+  ipniEndpoint?: string
+  /** Cap on CIDs probed under `--check-ipni`. Defaults to 100. Pass `Infinity` for an exhaustive sweep. */
+  ipniSample?: number
+  /** Bound on concurrent IPNI probes. Default 8. */
+  ipniConcurrency?: number
 }
 
 export interface AggregateReport {
@@ -49,25 +60,23 @@ export interface AggregateReport {
   pieceUrl: string
 }
 
-export interface RetrievalCheck {
-  /** How many CIDs were probed (may be less than the committed total if sampled). */
+export interface IpniCheck {
+  endpoint: string
+  /** How many CIDs were probed (less than `population` if sampled). */
   probed: number
   /** Total committed CIDs the sample was drawn from. */
   population: number
-  ok: number
-  failed: number
-  /** First few failures with cid + error, for triage. */
-  examples: Array<{ cid: string; error: string }>
+  /** Announced: the endpoint returned at least one provider record for the CID. */
+  announced: number
+  /** Not announced: empty provider list or 404. */
+  notAnnounced: number
+  /** First few not-announced CIDs with the response that came back. */
+  examples: Array<{ cid: string; reason: string }>
 }
 
 export interface Report {
   dataSetId: number
   network: 'calibration' | 'mainnet'
-  /**
-   * Full input accounting: every CID `addCids` registered ends up in exactly
-   * one bucket. `unaccounted` should always be 0; a non-zero value signals a
-   * status the report does not yet understand and exits non-zero.
-   */
   cids: {
     total: number
     committed: number
@@ -79,8 +88,11 @@ export interface Report {
   failuresByCategory: Record<string, number>
   aggregates: AggregateReport[]
   discrepancies: string[]
-  retrieval?: RetrievalCheck
-  /** True when committed + pending + failed + oversized + unaccounted == total and unaccounted == 0. */
+  /** On-chain proof-of-possession health for the data set. */
+  proof: ProofHealth
+  /** Optional IPNI announcement sample, set only when `--check-ipni` is passed. */
+  ipni?: IpniCheck
+  /** True when every input CID is accounted for AND on-chain proof shows the SP has proven possession since the latest AddPieces. */
   complete: boolean
 }
 
@@ -91,14 +103,8 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
 
   const aggregates: AggregateReport[] = []
   const discrepancies: string[] = []
-  /**
-   * Aggregates whose root is active on chain. Recorded as `(idx, memberCount)`
-   * tuples only — asset CIDs themselves are not materialized here, since for
-   * million-CID jobs the flat list would be hundreds of MB held only to
-   * sample 100 of them. `--verify-gateway` walks these tuples on demand in a
-   * second pass.
-   */
   const committedAggs: Array<{ idx: number; memberCount: number }> = []
+  const committedTxHashes: string[] = []
   let committed = 0
 
   for (const agg of db.aggregates()) {
@@ -108,6 +114,7 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
     if (onChain) {
       committed += agg.memberCount
       committedAggs.push({ idx: agg.idx, memberCount: agg.memberCount })
+      if (agg.txHash != null) committedTxHashes.push(agg.txHash)
     }
     if (onChain && agg.status !== 'committed') {
       discrepancies.push(`aggregate ${agg.idx} is on chain but local status is '${agg.status}'`)
@@ -126,15 +133,24 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
       pieceUrl: explorerPieceUrl(opts.network, root),
     })
   }
+
   const pending = counts.pending + counts.processing + counts.done
-  // `done` CIDs that are not yet in a committed aggregate count as pending
-  // from the user's perspective. `committed` is the count of CIDs *in* an
-  // on-chain aggregate. Subtract committed from pending to avoid double count.
+  // `done` CIDs not yet in a committed aggregate count as pending from the
+  // operator's perspective. Subtract committed to avoid double counting.
   const pendingNotCommitted = Math.max(0, pending - committed)
   const unaccounted = Math.max(
     0,
     counts.total - committed - pendingNotCommitted - counts.failed - counts.oversized
   )
+
+  // Pull the latest AddPieces block across all committed aggregates so the
+  // proof check can ask "has the SP proven possession after the run's final
+  // add?". Aggregates committed without a stored txHash (e.g. detected as
+  // already on-chain by an earlier run) contribute nothing to the max; if
+  // every committed aggregate is in that state, `maxAddEpoch` is null and
+  // `provenSinceAdd` then means "any proof for this set after any add".
+  const maxAddEpoch = await maxBlockOfTxHashes(rpcUrl, opts.network, committedTxHashes)
+  const proof = await dataSetProofHealth(rpcUrl, opts.network, opts.dataSetId, maxAddEpoch)
 
   const report: Report = {
     dataSetId: opts.dataSetId,
@@ -150,22 +166,19 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
     failuresByCategory: db.failuresByCategory(),
     aggregates,
     discrepancies,
-    complete: unaccounted === 0 && pendingNotCommitted === 0 && counts.failed === 0,
+    proof,
+    complete:
+      unaccounted === 0 &&
+      pendingNotCommitted === 0 &&
+      counts.failed === 0 &&
+      proof.provenSinceAdd &&
+      proof.inGoodStanding,
   }
 
-  // Optional retrieval probe: HEAD each sampled committed CID against the
-  // provider's trustless gateway. CAR content-type confirms the SP's IPFS
-  // indexing exposed the contained CIDs. Sampling materializes only the
-  // chosen CIDs, never the full committed list.
-  if (opts.verifyGateway != null && committed > 0) {
-    const sampleSize = opts.verifySample ?? 100
+  if (opts.ipniEndpoint != null && committed > 0) {
+    const sampleSize = opts.ipniSample ?? 100
     const sample = collectSample(db, committedAggs, committed, sampleSize)
-    report.retrieval = await verifyRetrievable(
-      sample,
-      committed,
-      opts.verifyGateway,
-      opts.verifyConcurrency ?? 8
-    )
+    report.ipni = await checkIpni(sample, committed, opts.ipniEndpoint, opts.ipniConcurrency ?? 8)
   }
 
   log(`Data set ${opts.dataSetId} (${opts.network}) — ${explorerDataSetUrl(opts.network, opts.dataSetId)}`)
@@ -174,6 +187,14 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
       `${report.cids.pending} pending, ${report.cids.failed} failed, ` +
       `${report.cids.oversized} oversized` +
       (unaccounted > 0 ? `, ${unaccounted} unaccounted` : '')
+  )
+  log(
+    `PoP: data-set ${proof.live ? 'live' : 'NOT live'}, ` +
+      `last proven epoch ${proof.lastProvenEpoch ?? 'never'}, ` +
+      `current ${proof.currentEpoch}, next challenge ${proof.nextChallengeEpoch}, ` +
+      `${proof.activePieceCount} active piece(s)` +
+      (proof.provenSinceAdd ? ' — proven since latest AddPieces' : ' — NOT yet proven since latest AddPieces') +
+      (proof.inGoodStanding ? '' : ' — past next challenge deadline')
   )
   if (Object.keys(report.failuresByCategory).length > 0) {
     const summary = Object.entries(report.failuresByCategory)
@@ -194,12 +215,12 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
       log(`  ${d}`)
     }
   }
-  if (report.retrieval != null) {
-    const r = report.retrieval
-    const scope = r.probed === r.population ? `all ${r.population}` : `sample ${r.probed}/${r.population}`
-    log(`Retrieval check (${opts.verifyGateway}, ${scope}): ${r.ok} ok, ${r.failed} failed`)
-    for (const ex of r.examples) {
-      log(`  ! ${ex.cid}: ${ex.error}`)
+  if (report.ipni != null) {
+    const i = report.ipni
+    const scope = i.probed === i.population ? `all ${i.population}` : `sample ${i.probed}/${i.population}`
+    log(`IPNI check (${i.endpoint}, ${scope}): ${i.announced} announced, ${i.notAnnounced} not announced`)
+    for (const ex of i.examples) {
+      log(`  ! ${ex.cid}: ${ex.reason}`)
     }
   }
 
@@ -207,41 +228,53 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
 }
 
 /**
- * HEAD-probe each CID against `<gateway>/ipfs/{cid}?format=car&dag-scope=all`
- * with bounded concurrency. A 200 with the CAR content-type counts as
- * retrievable; anything else (non-CAR 200, 4xx, 5xx, network error) counts
- * as failed. HEAD avoids transferring CAR bodies — a single HEAD per CID is
- * cheap enough that the sample size is the real bound.
+ * Query a delegated-routing V1 endpoint for each CID and count how many have
+ * at least one provider record. The endpoint is the IPFS public utility
+ * (`https://delegated-ipfs.dev`) or any equivalent — the routing V1 spec is
+ * the canonical surface: `GET /routing/v1/providers/{cid}` returns a JSON
+ * array of provider records when announced, 404 / empty when not.
+ *
+ * This is "did the SP tell IPNI about this CID" evidence, distinct from
+ * "does the SP currently hold the bytes" (Layer 2 / proof-of-possession).
  */
-async function verifyRetrievable(
+async function checkIpni(
   cids: string[],
   population: number,
-  gateway: string,
+  endpoint: string,
   concurrency: number
-): Promise<RetrievalCheck> {
-  let ok = 0
-  let failed = 0
-  const examples: Array<{ cid: string; error: string }> = []
+): Promise<IpniCheck> {
+  let announced = 0
+  let notAnnounced = 0
+  const examples: Array<{ cid: string; reason: string }> = []
+  const base = endpoint.replace(/\/+$/, '')
   let cursor = 0
 
   const probeOne = async (cid: string): Promise<void> => {
-    const url = buildCarUrl(gateway, cid)
+    const url = `${base}/routing/v1/providers/${cid}`
     try {
-      const res = await fetch(url, { method: 'HEAD', headers: { accept: CAR_ACCEPT } })
-      const contentType = res.headers.get('content-type') ?? ''
+      const res = await fetch(url, { headers: { accept: 'application/json' } })
+      if (res.status === 404) {
+        notAnnounced += 1
+        if (examples.length < 5) examples.push({ cid, reason: 'no providers (404)' })
+        return
+      }
       if (!res.ok) {
-        failed += 1
-        if (examples.length < 5) examples.push({ cid, error: `HTTP ${res.status}` })
-      } else if (!contentType.includes('application/vnd.ipld.car')) {
-        failed += 1
-        if (examples.length < 5) examples.push({ cid, error: `content-type ${contentType}` })
+        notAnnounced += 1
+        if (examples.length < 5) examples.push({ cid, reason: `HTTP ${res.status}` })
+        return
+      }
+      const body = (await res.json()) as { Providers?: unknown[] } | unknown[]
+      const providers = Array.isArray(body) ? body : Array.isArray(body.Providers) ? body.Providers : []
+      if (providers.length === 0) {
+        notAnnounced += 1
+        if (examples.length < 5) examples.push({ cid, reason: 'empty provider list' })
       } else {
-        ok += 1
+        announced += 1
       }
     } catch (err) {
-      failed += 1
+      notAnnounced += 1
       const message = err instanceof Error ? err.message : String(err)
-      if (examples.length < 5) examples.push({ cid, error: message })
+      if (examples.length < 5) examples.push({ cid, reason: message })
     }
   }
 
@@ -254,7 +287,7 @@ async function verifyRetrievable(
   })
   await Promise.all(workers)
 
-  return { probed: cids.length, population, ok, failed, examples }
+  return { endpoint: base, probed: cids.length, population, announced, notAnnounced, examples }
 }
 
 /**
@@ -280,8 +313,6 @@ function collectSample(
   const sampleCount = !Number.isFinite(n) || n >= population ? population : Math.max(0, Math.floor(n))
   if (sampleCount === 0) return []
 
-  // Compute target absolute indices into the virtual concat of all committed
-  // aggregate-member lists. Sorted ascending so a single forward walk hits them.
   const targets: number[] = new Array(sampleCount)
   const step = population / sampleCount
   for (let i = 0; i < sampleCount; i++) targets[i] = Math.floor(i * step)

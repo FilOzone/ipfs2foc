@@ -55,7 +55,7 @@ Usage:
                      [--network mainnet|calibration] [--max-in-flight 4] [--max-base-fee N] [--pull-batch 32]
                      (uses PRIVATE_KEY env)
   foc-migrate report --data-set-id <id> [--db <file>] [--network mainnet|calibration] [--json]
-                     [--verify-gateway <https-url>] [--verify-sample 100|--verify-all] [--verify-concurrency 8]
+                     [--check-ipni <delegated-routing-url>] [--ipni-sample 100|--ipni-all] [--ipni-concurrency 8]
 
 Defaults:
   db          ${DEFAULT_DB}
@@ -223,10 +223,10 @@ async function cmdReport(argv: string[]): Promise<void> {
       'data-set-id': { type: 'string' },
       network: { type: 'string', default: 'mainnet' },
       'rpc-url': { type: 'string' },
-      'verify-gateway': { type: 'string' },
-      'verify-sample': { type: 'string', default: '100' },
-      'verify-all': { type: 'boolean', default: false },
-      'verify-concurrency': { type: 'string', default: '8' },
+      'check-ipni': { type: 'string' },
+      'ipni-sample': { type: 'string', default: '100' },
+      'ipni-all': { type: 'boolean', default: false },
+      'ipni-concurrency': { type: 'string', default: '8' },
       json: { type: 'boolean', default: false },
     },
   })
@@ -241,11 +241,11 @@ async function cmdReport(argv: string[]): Promise<void> {
       network,
       rpcUrl: values['rpc-url'],
       dataSetId: parsePositiveInt(values['data-set-id'] as string, '--data-set-id'),
-      verifyGateway: values['verify-gateway'],
-      verifySample: values['verify-all'] === true
+      ipniEndpoint: values['check-ipni'],
+      ipniSample: values['ipni-all'] === true
         ? Infinity
-        : parsePositiveInt(values['verify-sample'] as string, '--verify-sample'),
-      verifyConcurrency: parsePositiveInt(values['verify-concurrency'] as string, '--verify-concurrency'),
+        : parsePositiveInt(values['ipni-sample'] as string, '--ipni-sample'),
+      ipniConcurrency: parsePositiveInt(values['ipni-concurrency'] as string, '--ipni-concurrency'),
     })
     if (values.json) {
       console.log(JSON.stringify(report, null, 2))
@@ -260,9 +260,16 @@ async function cmdReport(argv: string[]): Promise<void> {
       // Pending or failed CIDs remain; not an error, but signal incomplete.
       process.exitCode = 2
     }
-    if (report.retrieval != null && report.retrieval.failed > 0) {
-      log(`error: ${report.retrieval.failed} CID(s) failed retrieval check`)
-      process.exitCode = process.exitCode ?? 1
+    if (!report.proof.live) {
+      log(`error: data set ${report.dataSetId} is not live on chain`)
+      process.exitCode = 1
+    } else if (!report.proof.provenSinceAdd) {
+      log(`warning: storage provider has not yet proven possession since the last AddPieces`)
+      process.exitCode = process.exitCode ?? 2
+    }
+    if (report.ipni != null && report.ipni.notAnnounced > 0) {
+      log(`warning: ${report.ipni.notAnnounced} CID(s) not announced to IPNI in the sample`)
+      process.exitCode = process.exitCode ?? 2
     }
   } finally {
     db.close()

@@ -1,42 +1,39 @@
 /**
- * Read-only PDPVerifier access for reconciling a data set's on-chain pieces.
+ * Read-only PDPVerifier access for reconciling a data set's on-chain state.
  *
- * The provider's add can land the on-chain AddPieces and then fail a later
- * bookkeeping step, returning a 5xx without a tx hash. Reading the data set's
- * active pieces lets submission confirm whether an aggregate root is already
- * committed before adding it again.
+ * All ABI + contract addresses come from `@filoz/synapse-core`. The
+ * high-level wrappers (`getActivePieces`, `dataSetLive`, etc.) are used
+ * where they exist; the few getters not yet wrapped fall back to a typed
+ * `readContract` call against the canonical `abis.pdp` ABI.
  */
 
-import { createPublicClient, hexToBytes, http } from 'viem'
-import { CID } from 'multiformats/cid'
+import { type Client, type Hash, type Transport, createPublicClient, http } from 'viem'
+import { getBlockNumber, getTransactionReceipt, readContract } from 'viem/actions'
+import { pdp as PDP_ABI } from '@filoz/synapse-core/abis'
+import { type Chain as SynapseChain, calibration, mainnet } from '@filoz/synapse-core/chains'
+import {
+  dataSetLive,
+  getActivePieceCount,
+  getActivePieces as synapseGetActivePieces,
+  getNextChallengeEpoch,
+} from '@filoz/synapse-core/pdp-verifier'
 
-/**
- * PDPVerifier proxy deployments (FilOzone PDP v3.1.0).
- * Source: `pdp/contract/addresses.go` in github.com/filecoin-project/curio
- * mirrors the addresses tagged at github.com/FilOzone/pdp/releases/tag/v3.1.0.
- */
-const PDP_VERIFIER: Record<'calibration' | 'mainnet', `0x${string}`> = {
-  calibration: '0x85e366Cf9DD2c0aE37E963d9556F5f4718d6417C',
-  mainnet: '0xBADd0B92C1c71d02E7d520f64c0876538fa2557F',
+function chainFor(network: 'calibration' | 'mainnet'): SynapseChain {
+  return network === 'mainnet' ? mainnet : calibration
 }
 
-const GET_ACTIVE_PIECES = [
-  {
-    type: 'function',
-    name: 'getActivePieces',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'setId', type: 'uint256' },
-      { name: 'offset', type: 'uint256' },
-      { name: 'limit', type: 'uint256' },
-    ],
-    outputs: [
-      { name: 'pieces', type: 'tuple[]', components: [{ name: 'data', type: 'bytes' }] },
-      { name: 'pieceIds', type: 'uint256[]' },
-      { name: 'hasMore', type: 'bool' },
-    ],
-  },
-] as const
+/**
+ * Build a public client typed to the synapse-core `Chain` (which carries the
+ * contract addresses). viem's `createPublicClient` widens the chain field to
+ * `Chain | undefined`; the cast narrows it back so the synapse-core PDP
+ * helpers (which require a non-undefined chain) accept it.
+ */
+function clientFor(rpcUrl: string, network: 'calibration' | 'mainnet'): Client<Transport, SynapseChain> {
+  return createPublicClient({ chain: chainFor(network), transport: http(rpcUrl) }) as unknown as Client<
+    Transport,
+    SynapseChain
+  >
+}
 
 /** The set of active piece CIDs (v2 strings) on a data set, paged from the contract. */
 export async function activePieceCids(
@@ -44,23 +41,17 @@ export async function activePieceCids(
   network: 'calibration' | 'mainnet',
   dataSetId: number
 ): Promise<Set<string>> {
-  const client = createPublicClient({ transport: http(rpcUrl) })
-  const address = PDP_VERIFIER[network]
+  const client = clientFor(rpcUrl, network)
   const out = new Set<string>()
   const pageSize = 100n
   for (let offset = 0n; ; offset += pageSize) {
-    const [pieces, , hasMore] = (await client.readContract({
-      address,
-      abi: GET_ACTIVE_PIECES,
-      functionName: 'getActivePieces',
-      args: [BigInt(dataSetId), offset, pageSize],
-    })) as [Array<{ data: `0x${string}` }>, bigint[], boolean]
-    for (const p of pieces) {
-      out.add(CID.decode(hexToBytes(p.data)).toString())
-    }
-    if (!hasMore) {
-      return out
-    }
+    const { pieces, hasMore } = await synapseGetActivePieces(client, {
+      dataSetId: BigInt(dataSetId),
+      offset,
+      limit: pageSize,
+    })
+    for (const p of pieces) out.add(p.cid.toString())
+    if (!hasMore) return out
   }
 }
 
@@ -77,4 +68,113 @@ export function explorerDataSetUrl(network: 'calibration' | 'mainnet', dataSetId
 /** Explorer deep link to a piece by its PieceCID v2. */
 export function explorerPieceUrl(network: 'calibration' | 'mainnet', pieceCid: string): string {
   return `${explorerBase(network)}/piece/${pieceCid}`
+}
+
+export interface ProofHealth {
+  /** True iff the data set is currently live (not deleted). */
+  live: boolean
+  /** Current chain epoch (block number). */
+  currentEpoch: bigint
+  /** Last accepted proof-of-possession epoch, or null when never proven. */
+  lastProvenEpoch: bigint | null
+  /** Epoch the SP must submit the next proof by. */
+  nextChallengeEpoch: bigint
+  /** Configured slack window between challenge issuance and proof deadline. */
+  challengeFinality: bigint
+  /** Count of pieces currently active in the data set. */
+  activePieceCount: bigint
+  /**
+   * True iff the SP has produced at least one valid proof for this data set
+   * at or after `maxAddEpoch`. PoP samples pseudo-random chunks of the data
+   * set; a valid proof requires holding the bytes.
+   */
+  provenSinceAdd: boolean
+  /** True iff `nextChallengeEpoch` is not yet in the past. */
+  inGoodStanding: boolean
+}
+
+/**
+ * Read the data set's proof-of-possession health from chain. Eight RPC calls
+ * fired in parallel, so the wall-clock cost is one round-trip regardless of
+ * how many CIDs are in the data set.
+ */
+export async function dataSetProofHealth(
+  rpcUrl: string,
+  network: 'calibration' | 'mainnet',
+  dataSetId: number,
+  maxAddEpoch: bigint | null
+): Promise<ProofHealth> {
+  const client = clientFor(rpcUrl, network)
+  const chain = chainFor(network)
+  const setId = BigInt(dataSetId)
+
+  const [live, lastProvenRaw, nextChallengeMaybe, challengeFinality, noProvenSentinel, activePieceCount, currentEpoch] =
+    await Promise.all([
+      dataSetLive(client, { dataSetId: setId }),
+      readContract(client, {
+        abi: PDP_ABI,
+        address: chain.contracts.pdp.address,
+        functionName: 'getDataSetLastProvenEpoch',
+        args: [setId],
+      }) as Promise<bigint>,
+      getNextChallengeEpoch(client, { dataSetId: setId }),
+      readContract(client, {
+        abi: PDP_ABI,
+        address: chain.contracts.pdp.address,
+        functionName: 'getChallengeFinality',
+      }) as Promise<bigint>,
+      readContract(client, {
+        abi: PDP_ABI,
+        address: chain.contracts.pdp.address,
+        functionName: 'NO_PROVEN_EPOCH',
+      }) as Promise<bigint>,
+      getActivePieceCount(client, { dataSetId: setId }),
+      getBlockNumber(client),
+    ])
+
+  const lastProvenEpoch = lastProvenRaw === noProvenSentinel ? null : lastProvenRaw
+  // `getNextChallengeEpoch` returns null when no challenge has been scheduled
+  // yet (fresh data set, pre-first-proving-period). Treat that as "in good
+  // standing" since the SP cannot have missed a deadline that does not exist.
+  const nextChallenge = nextChallengeMaybe ?? currentEpoch
+  const provenSinceAdd =
+    lastProvenEpoch != null && (maxAddEpoch == null || lastProvenEpoch >= maxAddEpoch)
+  const inGoodStanding = nextChallenge >= currentEpoch
+
+  return {
+    live,
+    currentEpoch,
+    lastProvenEpoch,
+    nextChallengeEpoch: nextChallenge,
+    challengeFinality,
+    activePieceCount,
+    provenSinceAdd,
+    inGoodStanding,
+  }
+}
+
+/**
+ * Fetch receipts for a batch of tx hashes and return the highest block
+ * number observed. `report` uses this to find the latest AddPieces epoch
+ * across all committed aggregates: PoPs accepted at or after this block
+ * prove the SP held the bytes after the run's final add.
+ */
+export async function maxBlockOfTxHashes(
+  rpcUrl: string,
+  network: 'calibration' | 'mainnet',
+  txHashes: string[]
+): Promise<bigint | null> {
+  if (txHashes.length === 0) return null
+  const client = clientFor(rpcUrl, network)
+  const chunkSize = 16
+  let max: bigint | null = null
+  for (let i = 0; i < txHashes.length; i += chunkSize) {
+    const chunk = txHashes.slice(i, i + chunkSize)
+    const receipts = await Promise.allSettled(chunk.map((h) => getTransactionReceipt(client, { hash: h as Hash })))
+    for (const r of receipts) {
+      if (r.status !== 'fulfilled') continue
+      if (max == null || r.value.blockNumber > max) max = r.value.blockNumber
+    }
+  }
+  return max
 }
