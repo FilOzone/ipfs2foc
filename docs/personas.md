@@ -61,11 +61,15 @@ Answer these in order and stop at the first match.
 
 **Are you packing multiple assets per sub-piece?** (planned)
 
-- Yes, and disk is healthy → cached sub-piece path, `--car-store`
-  pointed at the staging partition.
-- Yes, and disk is too tight even for one aggregate → stream-assemble
-  path, no `--car-store`. Accept that source-gateway blips will silently
-  stall pulls until the provider's idle timeout fires.
+Cache the assembled sub-piece by default — `--car-store <dir>`. For
+small jobs the cache is small; for long ones it is the cheap insurance
+against a source-gateway outage burning sub-pieces mid-pull. Per-aggregate
+eviction on `committed` keeps peak disk at `--max-in-flight × --piece-size`.
+
+Opt out of the cache (stream-assemble, no `--car-store`) only when disk
+is too tight even for `--max-in-flight 1 × --piece-size`. Stream-only
+gives up the source-gateway-outage safety net; document this for the
+operator who chooses it.
 
 If none of the above narrowed things down, the SMB / small studio
 profile is the safe default: `--ingress funnel`, `--max-in-flight 1`,
@@ -75,22 +79,24 @@ defaults everywhere else.
 
 | Persona | Assets | Total size | Disk free | Upload bw | Time tolerance | Source gateway reliance OK over | Ingress | Hosting path | `--max-in-flight` | `--piece-size` | `--pull-batch` |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Laptop tester | 10–1000 | < 5 GiB | < 50 GiB | low (home upload) | one-shot, minutes to ~1 hour | minutes | `cloudflared` | stream-assemble, no cache **(planned)** | `1` | default | default |
+| Laptop tester | 10–1000 | < 5 GiB | < 50 GiB | low (home upload) | one-shot, minutes to ~1 hour | minutes | `cloudflared` | cached sub-piece (default); stream-assemble only if disk < ~5 GiB **(planned)** | `1` | default | default |
 | SMB / small studio | 10k–100k | 5–100 GiB | 100 GiB+ | medium (office or fiber home) | multi-hour, up to ~1 day | hours | `funnel` | cached sub-piece, single aggregate in flight | `1`–`2` | default | default |
 | Production migrator | 1M+ | TB-scale | 100–500 GiB (not TB) | high (VPS / cloud) | multi-day batch | days, with retry budget | `funnel` (long-lived `*.ts.net`) or VPS reverse proxy | cached sub-piece, per-aggregate evict on `committed` | `4` (default) | default | default |
 | Bandwidth-bound migrator | any | up to ~100 TB | as low as ~32 GiB | low (slow upload pipe) | multi-day to multi-week | days | `funnel` | cached sub-piece, strict one-at-a-time | `1` | default | default |
 
 "Hosting path" column maps to the multi-asset CAR work:
 
-- **Cached sub-piece path.** Assembled sub-piece CAR is written to
-  `--car-store` and served verbatim during the provider pull. Disk-full
-  fails loud and early. This is the default once multi-asset packing
-  ships.
-- **Stream-assemble path (planned).** Assembled bytes are produced on
-  the fly from the source IPFS gateway for each pull. No migrator disk needed beyond
-  working buffers. Source gateway flakiness mid-pull stalls silently until the
-  provider's 2-minute idle timeout fires and the attempt restarts from
-  byte 0.
+- **Cached sub-piece path (default).** Assembled sub-piece CAR is
+  written to `--car-store` and served verbatim during the provider pull.
+  Disk-full fails loud and early; eviction on `committed` keeps peak
+  disk bounded. This is the recommended path for every persona that has
+  the disk for it.
+- **Stream-assemble path (planned, opt-out).** Assembled bytes are
+  produced on the fly from the source IPFS gateway for each pull. No
+  migrator disk needed beyond working buffers. Source gateway flakiness
+  mid-pull stalls silently until the provider's 2-minute idle timeout
+  fires and the attempt restarts from byte 0. Use only when disk cannot
+  fit even one `--piece-size`.
 
 Until multi-asset packing lands, the system uses one asset CID per
 sub-piece and the redirect-only path. Disk on the migrator is effectively
