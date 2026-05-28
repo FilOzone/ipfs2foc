@@ -110,13 +110,16 @@ node src/index.ts probe <sample-cid> --gateway https://trustless-gateway.link
 printf '%s\n' <cid> > cids.txt
 node src/index.ts plan --cids cids.txt --db migrate.db
 
-# 3. (Terminal A — leave running) Serve the redirect locally and front it with a
-#    public HTTPS ingress (see Public ingress for Tailscale Funnel setup).
-node src/index.ts redirect-serve --db migrate.db --port 4322
+# 3. (Terminal A — leave running) Serve the redirect with a public HTTPS
+#    ingress. `--ingress cloudflared` spawns a no-signup Cloudflare tunnel and
+#    logs the public URL; the default `funnel` mode expects you to front the
+#    local port yourself (Tailscale Funnel / Cloudflare Tunnel / VPS). See
+#    docs/ingress.md.
+node src/index.ts redirect-serve --db migrate.db --port 4322 --ingress cloudflared
 
 # 4. (Terminal B) Pull, park, and add each aggregate onto the provider's data set.
-#    `--source-base` is the public HTTPS origin only (no path) — e.g. the URL
-#    `tailscale funnel status` prints.
+#    `--source-base` is the public HTTPS origin only (no path) — the URL
+#    cloudflared (or `tailscale funnel status`) prints.
 node src/index.ts pdp-submit --db migrate.db --data-set-id <data-set-id> \
   --source-base https://<public-host>
 
@@ -181,38 +184,18 @@ start, pause, resume, retry failed, add CIDs (`POST /api/cids`), set gateways
 
 ## Public ingress for the redirect server
 
-The provider's pull fetches `<source-base>/piece/{pcidv2}` over public HTTPS and follows
-the redirect to the gateway, so `redirect-serve` needs a public HTTPS URL that resolves
-to a public, routable IP. CGNAT (`100.64.0.0/10`) and other private addresses are rejected
-by the provider's pull client. Pass the **HTTPS origin only** (scheme + host, no path) as
-`--source-base`; the tool appends `/piece/{pcidv2}` itself. The server answers only 302
-redirects, so its bandwidth is negligible.
+`redirect-serve` needs a public HTTPS URL resolving to a public IP. Two
+built-in paths:
 
-**Tailscale Funnel** (free) covers all of this without DNS or a TLS workflow of your own.
+- `--ingress cloudflared` — spawns a Cloudflare quick tunnel
+  (`*.trycloudflare.com`). No account, works behind CGNAT, requires the
+  `cloudflared` binary on PATH.
+- `--ingress funnel` (default) — you run the local HTTP server and front it
+  yourself with Tailscale Funnel, Cloudflare Tunnel, or a VPS reverse proxy.
 
-One-time prerequisites:
-
-1. A Tailscale account and the Tailscale client installed on the machine running
-   `redirect-serve`, with that node signed in.
-2. In the Tailscale admin console under **DNS**, enable **MagicDNS** and
-   **HTTPS Certificates**.
-3. In **Access Controls**, grant the node the `funnel` node attribute (e.g. via
-   `nodeAttrs: [{ target: ["autogroup:member"], attr: ["funnel"] }]`).
-
-Then, locally (the macOS app bundles the CLI at
-`/Applications/Tailscale.app/Contents/MacOS/Tailscale`; on Linux and Windows
-`tailscale` is on `PATH` after install):
-
-```bash
-tailscale funnel --bg 4322     # public :443 -> local redirect server :4322
-tailscale funnel status        # prints https://<machine>.<tailnet>.ts.net
-curl -I https://<machine>.<tailnet>.ts.net/healthz   # expect HTTP 200 before submit
-```
-
-Pass `https://<machine>.<tailnet>.ts.net` as `--source-base`. It resolves to
-Tailscale's public edge, which the provider's pull client accepts. Cloudflare Tunnel and a
-small VPS fronted by a reverse proxy work the same way as long as the URL satisfies the
-public-HTTPS-origin shape above.
+Setup details, prerequisites, and the public-HTTPS shape the provider
+validates live in [`docs/ingress.md`](docs/ingress.md). Pass the **HTTPS
+origin only** (scheme + host, no path) as `--source-base`.
 
 ## Aggregate lifecycle and park/commit safety
 
@@ -293,12 +276,6 @@ hash). A run resumes from here; re-running `plan` computes only CIDs that are no
   pull MiB/s, add confirmation time). Persist these per run and surface them in the
   dashboard so an operator can tune `--concurrency`, `--max-in-flight`, and `--pull-batch`
   against the observed provider pull rate, which dominates a large migration.
-- **Accountless redirect host via js-libp2p.** Run the redirect endpoint as a js-libp2p
-  node serving HTTP ([`@libp2p/http`](https://github.com/libp2p/js-libp2p-http)) with an
-  automatic TLS certificate from autotls / p2p-forge (`*.libp2p.direct`). Open questions:
-  whether a provider's plain Go `net/http` pull client reaches the node's HTTP handler over
-  public TLS, and whether that client reaches the node behind NAT. If both hold, this
-  replaces the dependency on Funnel, Cloudflare Tunnel, or a VPS.
 - **Sources without trustless CARs.** Retrieve through Helia (bitswap +
   trustless-gateway block brokers), assemble canonical CARs locally, and host each
   aggregate over public HTTPS for the provider to pull.

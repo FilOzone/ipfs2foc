@@ -9,7 +9,7 @@
  *   status  [--db FILE]                     Report progress and the aggregate plan.
  *   serve   [--db FILE] [opts]              Background commP runner + dashboard.
  *   gas     [--network N] [opts]            Current network base fee and whether to pause.
- *   redirect-serve [--db FILE] [--port N]   GET /piece/{pcidv2} -> 302 gateway CAR.
+ *   redirect-serve [--db FILE] [--port N] [--ingress funnel|cloudflared]   GET /piece/{pcidv2} -> 302 gateway CAR.
  *   create-data-set --provider-id ID [opts] Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env).
  *   pdp-submit --data-set-id ID [opts]      Pull, park, and add aggregates over PDP (PRIVATE_KEY env).
  *   report  --data-set-id ID [opts]         Reconcile a run against on-chain pieces; emit explorer links.
