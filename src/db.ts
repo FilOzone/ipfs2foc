@@ -17,8 +17,8 @@ export type PieceStatus = 'pending' | 'processing' | 'done' | 'failed'
  *   submitted  the provider has accepted the pull and is downloading sub-pieces
  *   parked     every sub-piece downloaded and verified by the provider; the
  *              gateways are not needed past this point, but nothing is on-chain yet
- *   committed  AddPiece is on-chain; the aggregate piece CID and data set are final
- *   failed     the deal was rejected, or a sub-piece could not be pulled or verified
+ *   committed  AddPieces is on-chain; the aggregate piece CID and data set are final
+ *   failed     the pull was rejected, or a sub-piece could not be pulled or verified
  *
  * `inFlightUncommittedCount` reports how many aggregates sit at `submitted` or
  * `parked` without reaching `committed`. Submission uses it to keep parked data
@@ -42,7 +42,8 @@ export interface AggregateRow {
   rootPieceCid: string
   pieceSizeBytes: string
   status: AggregateStatus
-  dealId: string | null
+  /** Synthetic per-aggregate pull marker, set when submission begins. */
+  pullId: string | null
   /** On-chain PDP data set + piece the aggregate was committed to. */
   dataSetId: string | null
   pieceId: string | null
@@ -76,7 +77,7 @@ export class MigrationDB {
         root_piece_cid   TEXT NOT NULL,
         piece_size_bytes TEXT NOT NULL,
         status           TEXT NOT NULL DEFAULT 'planned',
-        deal_id          TEXT,
+        pull_id          TEXT,
         data_set_id      TEXT,
         piece_id         TEXT,
         tx_hash          TEXT,
@@ -94,6 +95,12 @@ export class MigrationDB {
         FOREIGN KEY (aggregate_idx) REFERENCES aggregates(idx)
       );
     `)
+    // One-time rename for databases created before the column was called pull_id.
+    const cols = this.#db.prepare(`PRAGMA table_info('aggregates')`).all() as Array<{ name: string }>
+    const names = new Set(cols.map((c) => c.name))
+    if (names.has('deal_id') && !names.has('pull_id')) {
+      this.#db.exec(`ALTER TABLE aggregates RENAME COLUMN deal_id TO pull_id`)
+    }
   }
 
   /** Register CIDs for processing. Existing rows are left untouched (resumable). */
@@ -215,7 +222,7 @@ export class MigrationDB {
   aggregates(): AggregateRow[] {
     const rows = this.#db
       .prepare(
-        `SELECT a.idx, a.root_piece_cid, a.piece_size_bytes, a.status, a.deal_id,
+        `SELECT a.idx, a.root_piece_cid, a.piece_size_bytes, a.status, a.pull_id,
                 a.data_set_id, a.piece_id, a.tx_hash,
                 (SELECT COUNT(*) FROM aggregate_members m WHERE m.aggregate_idx = a.idx) AS member_count
          FROM aggregates a ORDER BY a.idx`
@@ -229,7 +236,7 @@ export class MigrationDB {
         rootPieceCid: String(row.root_piece_cid),
         pieceSizeBytes: String(row.piece_size_bytes),
         status: row.status as AggregateStatus,
-        dealId: str(row.deal_id),
+        pullId: str(row.pull_id),
         dataSetId: str(row.data_set_id),
         pieceId: str(row.piece_id),
         txHash: str(row.tx_hash),
@@ -265,10 +272,10 @@ export class MigrationDB {
   }
 
   /** Record that the provider accepted the pull and is downloading sub-pieces. */
-  markSubmitted(idx: number, dealId: string): void {
+  markSubmitted(idx: number, pullId: string): void {
     this.#db
-      .prepare(`UPDATE aggregates SET status='submitted', deal_id=?, submitted_at=? WHERE idx=?`)
-      .run(dealId, new Date().toISOString(), idx)
+      .prepare(`UPDATE aggregates SET status='submitted', pull_id=?, submitted_at=? WHERE idx=?`)
+      .run(pullId, new Date().toISOString(), idx)
   }
 
   /** Record that every sub-piece is downloaded and verified; gateways not needed past this point. */
