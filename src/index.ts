@@ -55,7 +55,7 @@ Usage:
                      [--network mainnet|calibration] [--max-in-flight 4] [--max-base-fee N] [--pull-batch 32]
                      (uses PRIVATE_KEY env)
   foc-migrate report --data-set-id <id> [--db <file>] [--network mainnet|calibration] [--json]
-                     [--verify-gateway <https-url>] [--verify-concurrency 8]
+                     [--verify-gateway <https-url>] [--verify-sample 100|--verify-all] [--verify-concurrency 8]
 
 Defaults:
   db          ${DEFAULT_DB}
@@ -224,6 +224,8 @@ async function cmdReport(argv: string[]): Promise<void> {
       network: { type: 'string', default: 'mainnet' },
       'rpc-url': { type: 'string' },
       'verify-gateway': { type: 'string' },
+      'verify-sample': { type: 'string', default: '100' },
+      'verify-all': { type: 'boolean', default: false },
       'verify-concurrency': { type: 'string', default: '8' },
       json: { type: 'boolean', default: false },
     },
@@ -240,6 +242,9 @@ async function cmdReport(argv: string[]): Promise<void> {
       rpcUrl: values['rpc-url'],
       dataSetId: parsePositiveInt(values['data-set-id'] as string, '--data-set-id'),
       verifyGateway: values['verify-gateway'],
+      verifySample: values['verify-all'] === true
+        ? Infinity
+        : parsePositiveInt(values['verify-sample'] as string, '--verify-sample'),
       verifyConcurrency: parsePositiveInt(values['verify-concurrency'] as string, '--verify-concurrency'),
     })
     if (values.json) {

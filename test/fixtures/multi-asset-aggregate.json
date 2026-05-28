@@ -1,5 +1,5 @@
 {
-  "description": "48 NBA Top Shot sub-pieces (Dapper Labs reference app) packed into one aggregate. Expected root verified against go-commp-utils PieceAggregateCommP + commcid.PieceCidV2FromV1.",
+  "description": "48 sub-pieces packed into one aggregate. Expected root verified against go-commp-utils PieceAggregateCommP + commcid.PieceCidV2FromV1.",
   "members": [
     {
       "pieceCid": "bafkzcibf3ck4uais4fgennh4hbfx5z3i6hue4xgq2cdeamtus4hjbsrjs5lf2azbxmsa",

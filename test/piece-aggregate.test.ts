@@ -1,12 +1,11 @@
 /**
  * Regression coverage for the aggregate piece commitment.
  *
- * The golden vector is 48 NBA Top Shot sub-pieces (Dapper Labs reference app)
- * packed into one aggregate. Its expected root was verified against Curio's own
- * path — `commputils.PieceAggregateCommP` over the same sub-pieces (largest
- * padded size first, StackedDrg64GiBV1_1) plus `commcid.PieceCidV2FromV1(v1,
- * sumRawSizes)` — so this guards the JS reduce and the v2 envelope against the
- * value a provider re-derives on add.
+ * The golden vector is 48 sub-pieces packed into one aggregate. Its expected
+ * root was verified against Curio's own path: `commputils.PieceAggregateCommP`
+ * over the same sub-pieces (largest padded size first, StackedDrg64GiBV1_1)
+ * plus `commcid.PieceCidV2FromV1(v1, sumRawSizes)`. The test guards the JS
+ * reduce and the v2 envelope against the value a provider re-derives on add.
  */
 
 import { strict as assert } from 'node:assert'
@@ -23,7 +22,7 @@ interface Fixture {
 }
 
 const fixture: Fixture = JSON.parse(
-  readFileSync(fileURLToPath(new URL('./fixtures/dapper-aggregate.json', import.meta.url)), 'utf8')
+  readFileSync(fileURLToPath(new URL('./fixtures/multi-asset-aggregate.json', import.meta.url)), 'utf8')
 )
 
 test('48-sub-piece aggregate matches the provider-verified root', () => {

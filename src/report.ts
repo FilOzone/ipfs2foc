@@ -14,7 +14,6 @@
  * via PDP Scan).
  */
 
-import { setTimeout as setTimer } from 'node:timers/promises'
 import type { MigrationDB } from './db.ts'
 import { resolveRpcUrl } from './gas.ts'
 import { activePieceCids, explorerDataSetUrl, explorerPieceUrl } from './pdp-verifier.ts'
@@ -26,8 +25,15 @@ export interface ReportOptions {
   network: 'calibration' | 'mainnet'
   rpcUrl?: string
   dataSetId: number
-  /** When set, GET each committed CID via this trustless-gateway base and confirm a 200 CAR. */
+  /** When set, HEAD-probe committed CIDs via this trustless-gateway base. */
   verifyGateway?: string
+  /**
+   * Cap on CIDs probed under `--verify-gateway`. Defaults to 100 (a spot
+   * check). Pass `Infinity` (CLI `--verify-all`) for an exhaustive sweep.
+   * At million-CID scale a full sweep is millions of HEAD requests, so the
+   * default samples and lets the operator opt into exhaustive checks.
+   */
+  verifySample?: number
   /** Bound on concurrent retrieval probes. Default 8. */
   verifyConcurrency?: number
 }
@@ -44,6 +50,10 @@ export interface AggregateReport {
 }
 
 export interface RetrievalCheck {
+  /** How many CIDs were probed (may be less than the committed total if sampled). */
+  probed: number
+  /** Total committed CIDs the sample was drawn from. */
+  population: number
   ok: number
   failed: number
   /** First few failures with cid + error, for triage. */
@@ -81,17 +91,23 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
 
   const aggregates: AggregateReport[] = []
   const discrepancies: string[] = []
-  const committedCids: string[] = []
+  /**
+   * Aggregates whose root is active on chain. Recorded as `(idx, memberCount)`
+   * tuples only — asset CIDs themselves are not materialized here, since for
+   * million-CID jobs the flat list would be hundreds of MB held only to
+   * sample 100 of them. `--verify-gateway` walks these tuples on demand in a
+   * second pass.
+   */
+  const committedAggs: Array<{ idx: number; memberCount: number }> = []
+  let committed = 0
 
   for (const agg of db.aggregates()) {
     const members = db.aggregateManifest(agg.idx)
     const root = pieceAggregateCommP(members.map((m) => ({ pieceCid: m.pieceCid, rawSize: m.rawSize }))).rootPieceCid
     const onChain = onChainRoots.has(root)
     if (onChain) {
-      // Asset CIDs (the original IPFS CIDs the operator listed), not the
-      // PieceCIDv2 commitments — `--verify-retrievable` hits the provider's
-      // trustless gateway as `/ipfs/{assetCid}?format=car`.
-      for (const cid of db.aggregateAssetCids(agg.idx)) committedCids.push(cid)
+      committed += agg.memberCount
+      committedAggs.push({ idx: agg.idx, memberCount: agg.memberCount })
     }
     if (onChain && agg.status !== 'committed') {
       discrepancies.push(`aggregate ${agg.idx} is on chain but local status is '${agg.status}'`)
@@ -110,8 +126,6 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
       pieceUrl: explorerPieceUrl(opts.network, root),
     })
   }
-
-  const committed = committedCids.length
   const pending = counts.pending + counts.processing + counts.done
   // `done` CIDs that are not yet in a committed aggregate count as pending
   // from the user's perspective. `committed` is the count of CIDs *in* an
@@ -139,11 +153,19 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
     complete: unaccounted === 0 && pendingNotCommitted === 0 && counts.failed === 0,
   }
 
-  // Optional retrieval probe: HEAD each committed CID against the provider's
-  // trustless gateway. CAR content-type confirms the SP's IPFS indexing
-  // exposed the contained CIDs.
-  if (opts.verifyGateway != null && committedCids.length > 0) {
-    report.retrieval = await verifyRetrievable(committedCids, opts.verifyGateway, opts.verifyConcurrency ?? 8)
+  // Optional retrieval probe: HEAD each sampled committed CID against the
+  // provider's trustless gateway. CAR content-type confirms the SP's IPFS
+  // indexing exposed the contained CIDs. Sampling materializes only the
+  // chosen CIDs, never the full committed list.
+  if (opts.verifyGateway != null && committed > 0) {
+    const sampleSize = opts.verifySample ?? 100
+    const sample = collectSample(db, committedAggs, committed, sampleSize)
+    report.retrieval = await verifyRetrievable(
+      sample,
+      committed,
+      opts.verifyGateway,
+      opts.verifyConcurrency ?? 8
+    )
   }
 
   log(`Data set ${opts.dataSetId} (${opts.network}) — ${explorerDataSetUrl(opts.network, opts.dataSetId)}`)
@@ -173,11 +195,10 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
     }
   }
   if (report.retrieval != null) {
-    log(
-      `Retrieval check (${opts.verifyGateway}): ` +
-        `${report.retrieval.ok}/${report.retrieval.ok + report.retrieval.failed} CIDs returned 200 CAR`
-    )
-    for (const ex of report.retrieval.examples) {
+    const r = report.retrieval
+    const scope = r.probed === r.population ? `all ${r.population}` : `sample ${r.probed}/${r.population}`
+    log(`Retrieval check (${opts.verifyGateway}, ${scope}): ${r.ok} ok, ${r.failed} failed`)
+    for (const ex of r.examples) {
       log(`  ! ${ex.cid}: ${ex.error}`)
     }
   }
@@ -186,13 +207,15 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
 }
 
 /**
- * Probe each CID against `<gateway>/ipfs/{cid}?format=car&dag-scope=all` with
- * bounded concurrency. A 200 response with the CAR content-type counts as
- * retrievable; anything else (including non-CAR 200, redirects to non-CAR,
- * 4xx, 5xx, network error) counts as failed.
+ * HEAD-probe each CID against `<gateway>/ipfs/{cid}?format=car&dag-scope=all`
+ * with bounded concurrency. A 200 with the CAR content-type counts as
+ * retrievable; anything else (non-CAR 200, 4xx, 5xx, network error) counts
+ * as failed. HEAD avoids transferring CAR bodies — a single HEAD per CID is
+ * cheap enough that the sample size is the real bound.
  */
 async function verifyRetrievable(
   cids: string[],
+  population: number,
   gateway: string,
   concurrency: number
 ): Promise<RetrievalCheck> {
@@ -204,7 +227,7 @@ async function verifyRetrievable(
   const probeOne = async (cid: string): Promise<void> => {
     const url = buildCarUrl(gateway, cid)
     try {
-      const res = await fetch(url, { method: 'GET', headers: { accept: CAR_ACCEPT } })
+      const res = await fetch(url, { method: 'HEAD', headers: { accept: CAR_ACCEPT } })
       const contentType = res.headers.get('content-type') ?? ''
       if (!res.ok) {
         failed += 1
@@ -215,8 +238,6 @@ async function verifyRetrievable(
       } else {
         ok += 1
       }
-      // Drain the body so the connection can be reused.
-      await res.body?.cancel()
     } catch (err) {
       failed += 1
       const message = err instanceof Error ? err.message : String(err)
@@ -229,11 +250,56 @@ async function verifyRetrievable(
       const i = cursor++
       if (i >= cids.length) return
       await probeOne(cids[i])
-      // Tiny pacing delay so a single bad gateway is not hammered.
-      if (i % 16 === 15) await setTimer(50)
     }
   })
   await Promise.all(workers)
 
-  return { ok, failed, examples }
+  return { probed: cids.length, population, ok, failed, examples }
+}
+
+/**
+ * Materialize a deterministic stride sample of size `n` from the asset CIDs
+ * of every committed aggregate, without ever holding the full list in
+ * memory. Walk each aggregate only when its absolute index range intersects
+ * a target sample index; load that aggregate's asset CIDs, extract the
+ * hits, and drop the array.
+ *
+ * Stride sampling (rather than reservoir) keeps the choice reproducible
+ * across `report` runs against the same DB — a re-run hits the same CIDs.
+ *
+ * Memory: O(n) for the output + O(memberCount) for the current aggregate's
+ * temp array. For a 32 GiB aggregate of 512 KiB assets that's ~65k strings
+ * (~4 MB) per aggregate, then released.
+ */
+function collectSample(
+  db: MigrationDB,
+  committedAggs: Array<{ idx: number; memberCount: number }>,
+  population: number,
+  n: number
+): string[] {
+  const sampleCount = !Number.isFinite(n) || n >= population ? population : Math.max(0, Math.floor(n))
+  if (sampleCount === 0) return []
+
+  // Compute target absolute indices into the virtual concat of all committed
+  // aggregate-member lists. Sorted ascending so a single forward walk hits them.
+  const targets: number[] = new Array(sampleCount)
+  const step = population / sampleCount
+  for (let i = 0; i < sampleCount; i++) targets[i] = Math.floor(i * step)
+
+  const out: string[] = []
+  let absolute = 0
+  let nextTarget = 0
+  for (const agg of committedAggs) {
+    if (nextTarget >= targets.length) break
+    const end = absolute + agg.memberCount
+    if (targets[nextTarget] < end) {
+      const cids = db.aggregateAssetCids(agg.idx)
+      while (nextTarget < targets.length && targets[nextTarget] < end) {
+        out.push(cids[targets[nextTarget] - absolute])
+        nextTarget++
+      }
+    }
+    absolute = end
+  }
+  return out
 }
