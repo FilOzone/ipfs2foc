@@ -186,21 +186,26 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
     }
     log(`aggregate ${agg.idx}: AddPieces tx ${txHash} (root ${aggregate.rootPieceCid})`)
 
-    let status = { done: false, ok: false }
+    let status: Awaited<ReturnType<typeof pdp.addStatus>> = { done: false, ok: false }
     while (!status.done) {
       await sleep(opts.pollMs)
       status = await pdp.addStatus(opts.dataSetId, txHash)
     }
     const addMs = addTimer.stop()
     if (status.ok) {
-      db.markCommitted(agg.idx, { dataSetId: String(opts.dataSetId), txHash })
+      // Capture the first confirmed piece ID for explorer linking; the rest
+      // belong to in-batch sub-pieces. `confirmedPieceIds` is parsed from
+      // Curio's view of the on-chain AddPieces, not from our local state.
+      const pieceId = status.confirmedPieceIds?.[0]?.toString()
+      db.markCommitted(agg.idx, { dataSetId: String(opts.dataSetId), txHash, pieceId })
       totalAddMs += addMs
       committedCount += 1
       committedBytes += aggBytes
       log(`aggregate ${agg.idx}: committed in ${formatDuration(addMs)} (data set ${opts.dataSetId}, tx ${txHash})`)
     } else {
-      db.markAggregateFailed(agg.idx, `AddPieces tx ${txHash} failed`)
-      log(`aggregate ${agg.idx}: AddPieces tx ${txHash} failed`)
+      const reason = status.reason ?? 'AddPieces tx did not confirm'
+      db.markAggregateFailed(agg.idx, `AddPieces tx ${txHash}: ${reason}`)
+      log(`aggregate ${agg.idx}: AddPieces tx ${txHash} — ${reason}`)
     }
   }
 

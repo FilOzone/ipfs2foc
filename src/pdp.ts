@@ -88,18 +88,55 @@ export class PdpClient {
     return { txHash, statusUrl: location }
   }
 
-  /** Poll an AddPieces transaction to confirmation. */
-  async addStatus(dataSetId: number, txHash: string): Promise<{ done: boolean; ok: boolean }> {
+  /**
+   * Poll an AddPieces transaction to terminal state.
+   *
+   * Curio's response carries three independent signals
+   * (`pdp/handlers.go:handleGetPieceAdditionStatus`):
+   *
+   *   txStatus      'pending' | 'confirmed' | 'failed'  — chain landing only
+   *   addMessageOk  bool | null                          — inner AddPieces call succeeded (receipt status == 1)
+   *   piecesAdded   bool                                 — Curio finished its downstream bookkeeping
+   *
+   * A reverted AddPieces tx gives `txStatus='confirmed'` with `addMessageOk=false`,
+   * so a confirmed tx is not a sufficient success signal on its own. `ok` requires
+   * all three: chain confirmed, inner call succeeded, Curio's piece IDs queryable.
+   * `confirmedPieceIds` is the canonical on-chain piece-id mapping for the batch.
+   */
+  async addStatus(
+    dataSetId: number,
+    txHash: string
+  ): Promise<{ done: boolean; ok: boolean; reason?: string; confirmedPieceIds?: number[] }> {
     const res = await fetch(`${this.#base}/pdp/data-sets/${dataSetId}/pieces/added/${txHash}`)
     if (res.status === 404) {
-      return { done: false, ok: false } // not yet observed
+      return { done: false, ok: false } // tx not yet observed by Curio
     }
     if (!res.ok) {
       throw new Error(`addStatus: HTTP ${res.status} ${await res.text()}`)
     }
-    const body = (await res.json()) as { txStatus?: string; confirmed?: boolean }
-    const done = body.confirmed === true || body.txStatus === 'confirmed' || body.txStatus === 'failed'
-    return { done, ok: body.confirmed === true || body.txStatus === 'confirmed' }
+    const body = (await res.json()) as {
+      txStatus?: string
+      addMessageOk?: boolean | null
+      piecesAdded?: boolean
+      confirmedPieceIds?: number[]
+    }
+
+    if (body.txStatus === 'failed') {
+      return { done: true, ok: false, reason: 'tx failed on chain' }
+    }
+    if (body.txStatus === 'confirmed') {
+      if (body.addMessageOk === false) {
+        return { done: true, ok: false, reason: 'AddPieces tx confirmed but reverted (receipt status 0)' }
+      }
+      if (body.addMessageOk === true && body.piecesAdded === true) {
+        return { done: true, ok: true, confirmedPieceIds: body.confirmedPieceIds }
+      }
+      // Confirmed on chain but Curio's bookkeeping has not caught up (addMessageOk
+      // still null, or piecesAdded false). Keep polling.
+      return { done: false, ok: false }
+    }
+    // txStatus 'pending' or anything else: keep polling.
+    return { done: false, ok: false }
   }
 }
 
