@@ -10,6 +10,7 @@
  *   serve   [--db FILE] [opts]              Background commP runner + dashboard.
  *   gas     [--network N] [opts]            Current network base fee and whether to pause.
  *   redirect-serve [--db FILE] [--port N]   GET /piece/{pcidv2} -> 302 gateway CAR.
+ *   create-data-set --provider-id ID [opts] Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env).
  *   pdp-submit --data-set-id ID [opts]      Pull, park, and add aggregates over PDP (PRIVATE_KEY env).
  *   report  --data-set-id ID [opts]         Reconcile a run against on-chain pieces; emit explorer links.
  *
@@ -22,6 +23,7 @@ import { parseArgs } from 'node:util'
 import { MigrationDB } from './db.ts'
 import { classifyBaseFee, DEFAULT_MAX_BASE_FEE, getBaseFee, resolveRpcUrl } from './gas.ts'
 import { DEFAULT_GATEWAYS, probeGateway } from './gateway.ts'
+import { runCreateDataSet } from './create-data-set.ts'
 import { explorerBase } from './pdp-verifier.ts'
 import { startRedirectServer } from './redirect-server.ts'
 import { runSubmitPdp } from './submit-pdp.ts'
@@ -46,6 +48,8 @@ Usage:
                      [--concurrency 8] [--port 4321] [--network mainnet|calibration] [--max-base-fee N]
   foc-migrate gas    [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
   foc-migrate redirect-serve [--db <file>] [--port 4322]
+  foc-migrate create-data-set --provider-id <id> [--network mainnet|calibration] [--cdn]
+                     (uses PRIVATE_KEY env)
   foc-migrate pdp-submit --data-set-id <id> --source-base <https-url> [--db <file>]
                      [--network mainnet|calibration] [--max-in-flight 4] [--max-base-fee N] [--pull-batch 32]
                      (uses PRIVATE_KEY env)
@@ -252,6 +256,35 @@ async function cmdPdpSubmit(argv: string[]): Promise<void> {
   }
 }
 
+async function cmdCreateDataSet(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      'provider-id': { type: 'string' },
+      network: { type: 'string', default: 'mainnet' },
+      'rpc-url': { type: 'string' },
+      cdn: { type: 'boolean', default: false },
+      'timeout-seconds': { type: 'string', default: '600' },
+    },
+  })
+  if (values['provider-id'] == null) {
+    throw new Error('create-data-set requires --provider-id <id>')
+  }
+  const key = process.env.PRIVATE_KEY
+  if (key == null || !/^0x[0-9a-fA-F]{64}$/.test(key)) {
+    throw new Error('set PRIVATE_KEY (0x + 64 hex) in the environment (e.g. `source .env`)')
+  }
+  const result = await runCreateDataSet({
+    privateKey: key as `0x${string}`,
+    network: values.network as 'calibration' | 'mainnet',
+    rpcUrl: values['rpc-url'],
+    providerId: BigInt(values['provider-id'] as string),
+    cdn: values.cdn === true,
+    timeoutMs: Number.parseInt(values['timeout-seconds'] as string, 10) * 1000,
+  })
+  console.log(JSON.stringify(result, null, 2))
+}
+
 async function cmdRedirectServe(argv: string[]): Promise<void> {
   const { values } = parseArgs({
     args: argv,
@@ -344,6 +377,9 @@ async function main(): Promise<void> {
       break
     case 'redirect-serve':
       await cmdRedirectServe(rest)
+      break
+    case 'create-data-set':
+      await cmdCreateDataSet(rest)
       break
     case 'pdp-submit':
       await cmdPdpSubmit(rest)

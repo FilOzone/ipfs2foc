@@ -70,6 +70,11 @@ The default network is **mainnet**; pass `--network calibration` to target the
 calibration testnet.
 
 ```bash
+# 0. (Once per provider) Provision a data set with withIPFSIndexing on a chosen
+#    provider. Skip if you already have a data set id you own.
+export PRIVATE_KEY=0x...
+node src/index.ts create-data-set --provider-id <id>
+
 # 1. Compute piece commitments and pack aggregates into a SQLite DB.
 printf '%s\n' <cid> > cids.txt
 node src/index.ts plan --cids cids.txt --db migrate.db
@@ -78,7 +83,6 @@ node src/index.ts plan --cids cids.txt --db migrate.db
 node src/index.ts redirect-serve --db migrate.db --port 4322
 
 # 3. Pull, park, and add each aggregate onto the provider's data set.
-export PRIVATE_KEY=0x...
 node src/index.ts pdp-submit --db migrate.db --data-set-id <id> \
   --source-base https://<public-host>
 
@@ -111,6 +115,9 @@ node src/index.ts gas [--network mainnet|calibration] [--max-base-fee 1000000]
 
 # Redirect server: GET /piece/{pcidv2} -> 302 to the gateway CAR
 node src/index.ts redirect-serve --db migrate.db --port 4322
+
+# Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env)
+node src/index.ts create-data-set --provider-id <id> [--network mainnet|calibration] [--cdn]
 
 # Migrate via the PDP pull path (PRIVATE_KEY env)
 node src/index.ts pdp-submit --db migrate.db --data-set-id <id> \
@@ -230,9 +237,6 @@ hash). A run resumes from here; re-running `plan` computes only CIDs that are no
   pull MiB/s, add confirmation time). Persist these per run and surface them in the
   dashboard so an operator can tune `--concurrency`, `--max-in-flight`, and `--pull-batch`
   against the observed provider pull rate, which dominates a large migration.
-- **Create a data set when none exists.** `pdp-submit` targets an existing data set
-  (`--data-set-id`). Add a create-data-set step (with `withIPFSIndexing`) so a migrator
-  without one can provision it, then add pieces.
 - **Accountless redirect host via js-libp2p.** Run the redirect endpoint as a js-libp2p
   node serving HTTP ([`@libp2p/http`](https://github.com/libp2p/js-libp2p-http)) with an
   automatic TLS certificate from autotls / p2p-forge (`*.libp2p.direct`). Open questions:
