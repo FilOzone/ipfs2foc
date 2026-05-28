@@ -1,7 +1,7 @@
 {
   "name": "foc-migrate",
   "version": "0.0.1",
-  "description": "Migrate already-pinned IPFS CIDs onto Filecoin Onchain Cloud (FOC) without re-chunking. Mode A: the storage provider pulls trustless-gateway CARs over PDP; the migrator computes piece commitments and packs aggregates.",
+  "description": "Migrate already-pinned IPFS CIDs onto Filecoin Onchain Cloud (FOC) without re-chunking. The storage provider pulls trustless-gateway CARs over PDP; the migrator computes piece commitments and packs aggregates.",
   "type": "module",
   "engines": {
     "node": ">=26"

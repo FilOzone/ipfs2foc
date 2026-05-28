@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * foc-migrate — Mode A CLI.
+ * foc-migrate CLI.
  *
  * Subcommands:
  *   probe   <cid> [--gateway URL]...        Verify a gateway serves deterministic trustless CARs.
@@ -36,7 +36,7 @@ import { log, parseCidList, parsePositiveInt, parseSize } from './util.ts'
 
 const DEFAULT_DB = './migrate.db'
 
-const USAGE = `foc-migrate — migrate pinned IPFS CIDs to FOC without re-chunking (Mode A)
+const USAGE = `foc-migrate — migrate pinned IPFS CIDs to FOC without re-chunking
 
 Usage:
   foc-migrate probe  <cid> [--gateway URL]...

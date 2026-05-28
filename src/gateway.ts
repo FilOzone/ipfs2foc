@@ -1,5 +1,5 @@
 /**
- * Trustless gateway access (Mode A).
+ * Trustless gateway access.
  *
  * Each CID is fetched as a CAR via the IPFS Trustless Gateway spec
  * (`?format=car&dag-scope=all`). The returned CAR is rooted at the original

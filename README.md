@@ -4,9 +4,9 @@ Migrate already-pinned IPFS CIDs onto **Filecoin Onchain Cloud (FOC)** without
 re-chunking. Each original CID stays byte-for-byte intact and individually
 retrievable over IPFS, while far fewer pieces are committed on-chain.
 
-This is **Mode A**: the storage provider pulls each object's bytes directly from a
-trustless IPFS gateway. Your machine streams each object once to compute its piece
-commitment and stores none of the payload.
+The storage provider pulls each object's bytes directly from a trustless IPFS
+gateway. Your machine streams each object once to compute its piece commitment
+and stores none of the payload.
 
 ## How it works
 
@@ -258,7 +258,7 @@ and status, the aggregate plan, and per-aggregate lifecycle (data set id, transa
 hash). A run resumes from here; re-running `plan` computes only CIDs that are not yet
 `done` and retries failures. Tables: `pieces`, `aggregates`, `aggregate_members`.
 
-## Scope and limits (Mode A)
+## Scope and limits
 
 - The source must serve deterministic trustless CARs. Use `probe` to check.
 - **Sub-piece size**: each CID's CAR must be within the provider's pull piece limit
@@ -297,6 +297,6 @@ hash). A run resumes from here; re-running `plan` computes only CIDs that are no
   whether a provider's plain Go `net/http` pull client reaches the node's HTTP handler over
   public TLS, and whether that client reaches the node behind NAT. If both hold, this
   replaces the dependency on Funnel, Cloudflare Tunnel, or a VPS.
-- **Mode B** (sources without trustless CARs): retrieve through Helia (bitswap +
+- **Sources without trustless CARs.** Retrieve through Helia (bitswap +
   trustless-gateway block brokers), assemble canonical CARs locally, and host each
   aggregate over public HTTPS for the provider to pull.
