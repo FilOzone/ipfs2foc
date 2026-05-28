@@ -59,6 +59,21 @@ export async function activePieceCids(
   }
 }
 
+/** Base URL of the PDP explorer for a network. */
+export function explorerBase(network: 'calibration' | 'mainnet'): string {
+  return `https://pdp.vxb.ai/${network}`
+}
+
+/** Explorer deep link to a data set. */
+export function explorerDataSetUrl(network: 'calibration' | 'mainnet', dataSetId: number | string): string {
+  return `${explorerBase(network)}/dataset/${dataSetId}`
+}
+
+/** Explorer deep link to a piece by its PieceCID v2. */
+export function explorerPieceUrl(network: 'calibration' | 'mainnet', pieceCid: string): string {
+  return `${explorerBase(network)}/piece/${pieceCid}`
+}
+
 function hexToBytes(hex: `0x${string}`): Uint8Array {
   const body = hex.slice(2)
   const bytes = new Uint8Array(body.length / 2)

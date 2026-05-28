@@ -19,7 +19,7 @@ import { log } from './util.ts'
 export interface PieceResult {
   /** The original IPFS CID (the CAR root). Preserved end-to-end. */
   cid: string
-  /** PieceCID v2 — the value the mk20 deal declares and the SP verifies. */
+  /** PieceCID v2 — the value submitted to the provider and verified against the pulled bytes. */
   pieceCid: string
   /** CAR byte length (the piece payload size the SP will fetch). */
   rawSize: number

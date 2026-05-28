@@ -3,28 +3,30 @@
  * foc-migrate — Mode A CLI.
  *
  * Subcommands:
- *   probe  <cid> [--gateway URL]...                 Verify a gateway serves deterministic trustless CARs.
- *   commp  <cid> [--gateway URL]...                 Fetch a CID as a CAR and print its PieceCID v2 + size.
- *   plan   --cids FILE [--db FILE] [options]        Compute commitments + pack aggregates into the DB (resumable).
- *   status [--db FILE]                              Report progress and the aggregate plan.
- *   export [--db FILE] [--aggregate N] [--out DIR]  Emit sptool manifest(s) from the DB.
+ *   probe   <cid> [--gateway URL]...        Verify a gateway serves deterministic trustless CARs.
+ *   commp   <cid> [--gateway URL]...        Fetch a CID as a CAR and print its PieceCID v2 + size.
+ *   plan    --cids FILE [--db FILE] [opts]  Compute commitments + pack aggregates into the DB (resumable).
+ *   status  [--db FILE]                     Report progress and the aggregate plan.
+ *   serve   [--db FILE] [opts]              Background commP runner + dashboard.
+ *   gas     [--network N] [opts]            Current network base fee and whether to pause.
+ *   redirect-serve [--db FILE] [--port N]   GET /piece/{pcidv2} -> 302 gateway CAR.
+ *   pdp-submit --data-set-id ID [opts]      Pull, park, and add aggregates over PDP (PRIVATE_KEY env).
+ *   report  --data-set-id ID [opts]         Reconcile a run against on-chain pieces; emit explorer links.
  *
  * stdout carries machine-readable output; logs go to stderr. State lives in a
- * sqlite DB (default ./migrate.db) — no JSON state files.
+ * sqlite DB (default ./migrate.db).
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
-import { createCurioSigner } from './curio-auth.ts'
 import { MigrationDB } from './db.ts'
 import { classifyBaseFee, DEFAULT_MAX_BASE_FEE, getBaseFee, resolveRpcUrl } from './gas.ts'
 import { DEFAULT_GATEWAYS, probeGateway } from './gateway.ts'
-import { Mk20Client } from './mk20.ts'
+import { explorerBase } from './pdp-verifier.ts'
 import { startRedirectServer } from './redirect-server.ts'
 import { runSubmitPdp } from './submit-pdp.ts'
-import { explorerBase, pollSubmitted, runSubmit } from './submit.ts'
-import { exportManifest, runPlan } from './migrate.ts'
+import { runReport } from './report.ts'
+import { runPlan } from './migrate.ts'
 import { fetchAndComputePiece } from './piece.ts'
 import { Runner } from './runner.ts'
 import { startServer } from './server.ts'
@@ -40,14 +42,14 @@ Usage:
   foc-migrate plan   --cids <file> [--db <file>] [--gateway URL]... [--piece-size 32GiB]
                      [--concurrency 8]
   foc-migrate status [--db <file>]
-  foc-migrate export [--db <file>] [--aggregate <n>] [--out ./out]
   foc-migrate serve  [--db <file>] [--cids <file>] [--gateway URL]... [--piece-size 32GiB]
-                     [--concurrency 8] [--port 4321] [--network calibration] [--max-base-fee N]
-  foc-migrate auth-check --provider <mk20 base url>     (uses PRIVATE_KEY env)
+                     [--concurrency 8] [--port 4321] [--network mainnet|calibration] [--max-base-fee N]
   foc-migrate gas    [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
-  foc-migrate submit --data-set-id <id> [--db <file>] [--network calibration]
-                     [--max-in-flight 4] [--max-base-fee N] [--no-indexing] [--no-announce]
+  foc-migrate redirect-serve [--db <file>] [--port 4322]
+  foc-migrate pdp-submit --data-set-id <id> --source-base <https-url> [--db <file>]
+                     [--network mainnet|calibration] [--max-in-flight 4] [--max-base-fee N] [--pull-batch 32]
                      (uses PRIVATE_KEY env)
+  foc-migrate report --data-set-id <id> [--db <file>] [--network mainnet|calibration] [--json]
 
 Defaults:
   db          ${DEFAULT_DB}
@@ -55,11 +57,7 @@ Defaults:
   piece-size  32GiB
   concurrency 8
   port        4321
-  network     (serve: base-fee monitor off unless --network or --rpc-url given)
-
-Submit an aggregate with Curio sptool (handles wallet auth):
-  sptool toolbox mk20-client <add-piece-cmd> --aggregate <manifest.tsv> \\
-    --pcidv2 <rootPieceCid from 'status'> --indexing --announce ...
+  network     mainnet (serve base-fee monitor off unless --network or --rpc-url given)
 `
 
 function gatewaysFrom(values: { gateway?: string[] }): string[] {
@@ -175,32 +173,32 @@ async function cmdStatus(argv: string[]): Promise<void> {
   }
 }
 
-async function cmdExport(argv: string[]): Promise<void> {
+async function cmdReport(argv: string[]): Promise<void> {
   const { values } = parseArgs({
     args: argv,
     options: {
       db: { type: 'string', default: DEFAULT_DB },
-      aggregate: { type: 'string' },
-      out: { type: 'string', default: './out' },
+      'data-set-id': { type: 'string' },
+      network: { type: 'string', default: 'mainnet' },
+      'rpc-url': { type: 'string' },
+      json: { type: 'boolean', default: false },
     },
   })
+  if (values['data-set-id'] == null) {
+    throw new Error('report requires --data-set-id <id>')
+  }
+  const network = values.network as 'calibration' | 'mainnet'
+
   const db = new MigrationDB(values.db as string)
   try {
-    await mkdir(values.out as string, { recursive: true })
-    const indices =
-      values.aggregate != null ? [Number.parseInt(values.aggregate, 10)] : db.aggregates().map((a) => a.idx)
-    if (indices.length === 0) {
-      throw new Error('no aggregates to export — run plan first')
+    const report = await runReport(db, {
+      network,
+      rpcUrl: values['rpc-url'],
+      dataSetId: Number.parseInt(values['data-set-id'] as string, 10),
+    })
+    if (values.json) {
+      console.log(JSON.stringify(report, null, 2))
     }
-    const written: string[] = []
-    for (const idx of indices) {
-      const file = join(values.out as string, `aggregate-${idx}.tsv`)
-      await writeFile(file, exportManifest(db, idx))
-      written.push(file)
-      const root = db.aggregates().find((a) => a.idx === idx)?.rootPieceCid
-      log(`wrote ${file}  (--pcidv2 ${root})`)
-    }
-    console.log(JSON.stringify({ written }, null, 2))
   } finally {
     db.close()
   }
@@ -213,7 +211,7 @@ async function cmdPdpSubmit(argv: string[]): Promise<void> {
       db: { type: 'string', default: DEFAULT_DB },
       'data-set-id': { type: 'string' },
       'source-base': { type: 'string' },
-      network: { type: 'string', default: 'calibration' },
+      network: { type: 'string', default: 'mainnet' },
       'rpc-url': { type: 'string' },
       'max-in-flight': { type: 'string', default: '4' },
       'max-base-fee': { type: 'string' },
@@ -263,59 +261,6 @@ async function cmdRedirectServe(argv: string[]): Promise<void> {
   startRedirectServer(db, Number.parseInt(values.port as string, 10))
 }
 
-async function cmdSubmit(argv: string[]): Promise<void> {
-  const { values } = parseArgs({
-    args: argv,
-    options: {
-      db: { type: 'string', default: DEFAULT_DB },
-      'data-set-id': { type: 'string' },
-      network: { type: 'string', default: 'calibration' },
-      'rpc-url': { type: 'string' },
-      'max-in-flight': { type: 'string', default: '4' },
-      'max-base-fee': { type: 'string' },
-      'no-indexing': { type: 'boolean', default: false },
-      'no-announce': { type: 'boolean', default: false },
-      'poll-seconds': { type: 'string', default: '20' },
-    },
-  })
-  if (values['data-set-id'] == null) {
-    throw new Error('submit requires --data-set-id <id>')
-  }
-  const key = process.env.PRIVATE_KEY
-  if (key == null || !/^0x[0-9a-fA-F]{64}$/.test(key)) {
-    throw new Error('set PRIVATE_KEY (0x + 64 hex) in the environment (e.g. `source .env`)')
-  }
-  const network = values.network as 'calibration' | 'mainnet'
-
-  const db = new MigrationDB(values.db as string)
-  try {
-    const ctx = await runSubmit(db, {
-      privateKey: key as `0x${string}`,
-      network,
-      rpcUrl: values['rpc-url'],
-      dataSetId: Number.parseInt(values['data-set-id'] as string, 10),
-      maxInFlight: Number.parseInt(values['max-in-flight'] as string, 10),
-      maxBaseFee: values['max-base-fee'] != null ? BigInt(values['max-base-fee']) : DEFAULT_MAX_BASE_FEE,
-      indexing: !values['no-indexing'],
-      announce: !values['no-announce'],
-    })
-
-    // Poll submitted aggregates to committed/failed.
-    const intervalMs = Number.parseInt(values['poll-seconds'] as string, 10) * 1000
-    let inFlight = db.inFlightUncommittedCount()
-    while (inFlight > 0) {
-      await new Promise((r) => setTimeout(r, intervalMs))
-      inFlight = await pollSubmitted(ctx)
-    }
-
-    const committed = db.aggregates().filter((a) => a.status === 'committed')
-    log(`committed ${committed.length} aggregate(s). Confirm at ${explorerBase(network)} (data set ${ctx.dataSetId})`)
-    console.log(JSON.stringify({ dataSetId: ctx.dataSetId, committed: committed.map((a) => a.rootPieceCid), explorer: explorerBase(network) }, null, 2))
-  } finally {
-    db.close()
-  }
-}
-
 async function cmdGas(argv: string[]): Promise<void> {
   const { values } = parseArgs({
     args: argv,
@@ -333,24 +278,6 @@ async function cmdGas(argv: string[]): Promise<void> {
       (reading.pause ? ' — PAUSE submission' : '')
   )
   console.log(JSON.stringify({ rpcUrl, maxBaseFee: maxBaseFee.toString(), ...reading, baseFee: reading.baseFee.toString() }, null, 2))
-}
-
-async function cmdAuthCheck(argv: string[]): Promise<void> {
-  const { values } = parseArgs({ args: argv, options: { provider: { type: 'string' } } })
-  if (values.provider == null) {
-    throw new Error('auth-check requires --provider <mk20 base url>')
-  }
-  const key = process.env.PRIVATE_KEY
-  if (key == null || !/^0x[0-9a-fA-F]{64}$/.test(key)) {
-    throw new Error('set PRIVATE_KEY (0x + 64 hex) in the environment (e.g. `source .env`)')
-  }
-
-  const signer = createCurioSigner(key as `0x${string}`)
-  log(`signing as eth address ${signer.address}`)
-  const client = new Mk20Client(values.provider as string, signer)
-  const contracts = await client.contracts()
-  log(`CurioAuth accepted by ${values.provider} — DDO contracts: ${contracts.join(', ') || '(none)'}`)
-  console.log(JSON.stringify({ provider: values.provider, address: signer.address, contracts }, null, 2))
 }
 
 async function cmdServe(argv: string[]): Promise<void> {
@@ -409,26 +336,20 @@ async function main(): Promise<void> {
     case 'status':
       await cmdStatus(rest)
       break
-    case 'export':
-      await cmdExport(rest)
-      break
     case 'serve':
       await cmdServe(rest)
       break
-    case 'auth-check':
-      await cmdAuthCheck(rest)
-      break
     case 'gas':
       await cmdGas(rest)
-      break
-    case 'submit':
-      await cmdSubmit(rest)
       break
     case 'redirect-serve':
       await cmdRedirectServe(rest)
       break
     case 'pdp-submit':
       await cmdPdpSubmit(rest)
+      break
+    case 'report':
+      await cmdReport(rest)
       break
     case undefined:
     case '-h':

@@ -1,6 +1,6 @@
 /**
  * PDP submit: drive planned aggregates onto a provider via the pull + aggregate-add
- * path, with no mk20 and no payload relay.
+ * path, without relaying payload bytes.
  *
  * Per aggregate:
  *   1. presign AddPieces over the sub-pieces; POST /pdp/piece/pull with each

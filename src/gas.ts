@@ -3,10 +3,10 @@
  *
  * Filecoin gas cost scales with the block base fee, and PDP transactions burn
  * large gas amounts, so a congested network multiplies cost sharply. The storage
- * provider submits and pays for the on-chain AddPieces in the mk20 flow, but a
- * high base fee is the signal to pause submitting new aggregates: it keeps the
- * provider's commits from stalling and keeps a migrator's own setup
- * transactions (USDFC deposit, operator approval) cheap.
+ * provider submits and pays for the on-chain AddPieces, but a high base fee is
+ * the signal to pause submitting new aggregates: it keeps the provider's commits
+ * from stalling and keeps a migrator's own setup transactions (USDFC deposit,
+ * operator approval) cheap.
  *
  * Read `baseFeePerGas` from the latest block, not `eth_gasPrice` (which blends
  * in a suggested tip and hides the base-fee signal). Units are attoFIL/gas; the

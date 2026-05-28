@@ -3,8 +3,7 @@
  *
  * All state lives in the SQLite database (see db.ts), so a run resumes after
  * interruption: `plan` computes commitments for CIDs that are not yet `done`,
- * then packs completed pieces into aggregates. Manifests for `sptool` come from
- * the database on demand (see exportManifest).
+ * then packs completed pieces into aggregates.
  */
 
 import { packAggregates } from './aggregate.ts'
@@ -91,13 +90,4 @@ export function repackPlanned(db: MigrationDB, aggregateSizeBytes: bigint): stri
 
   log(`Packed ${free.length} piece(s) into ${aggregates.length} planned aggregate(s).`)
   return oversized.map((p) => p.cid)
-}
-
-/** Build the `sptool toolbox mk20-client --aggregate` manifest text for one aggregate. */
-export function exportManifest(db: MigrationDB, idx: number): string {
-  const rows = db.aggregateManifest(idx)
-  if (rows.length === 0) {
-    throw new Error(`aggregate ${idx} not found or empty`)
-  }
-  return rows.map((r) => `${r.pieceCid}\t${r.url}`).join('\n') + '\n'
 }

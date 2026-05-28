@@ -14,7 +14,7 @@ export type PieceStatus = 'pending' | 'processing' | 'done' | 'failed'
  * Aggregate lifecycle.
  *
  *   planned    packed locally, not yet sent to a storage provider
- *   submitted  mk20 deal accepted; the provider is pulling sub-pieces
+ *   submitted  the provider has accepted the pull and is downloading sub-pieces
  *   parked     every sub-piece downloaded and verified by the provider; the
  *              gateways are not needed past this point, but nothing is on-chain yet
  *   committed  AddPiece is on-chain; the aggregate piece CID and data set are final
@@ -38,8 +38,7 @@ export interface PieceRow {
 
 export interface AggregateRow {
   idx: number
-  /** Aggregate root PieceCID v2 — the finalized parent CID for the aggregate,
-   *  passed to `sptool ... --pcidv2` and pointed to once committed. */
+  /** Aggregate root PieceCID v2 — the parent CID added on-chain for the aggregate. */
   rootPieceCid: string
   pieceSizeBytes: string
   status: AggregateStatus
@@ -265,7 +264,7 @@ export class MigrationDB {
     })
   }
 
-  /** Record that the mk20 deal was accepted and the provider is pulling sub-pieces. */
+  /** Record that the provider accepted the pull and is downloading sub-pieces. */
   markSubmitted(idx: number, dealId: string): void {
     this.#db
       .prepare(`UPDATE aggregates SET status='submitted', deal_id=?, submitted_at=? WHERE idx=?`)
