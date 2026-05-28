@@ -17,11 +17,21 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@chainsafe/libp2p-noise": "^17.0.0",
     "@filoz/synapse-core": "^0.5.2",
     "@filoz/synapse-sdk": "^0.41.0",
+    "@helia/block-brokers": "^5.2.4",
+    "@helia/car": "^5.4.2",
     "@ipld/car": "^5.4.0",
+    "@libp2p/autonat": "^3.0.20",
+    "@libp2p/identify": "^4.1.6",
+    "@libp2p/tcp": "^11.0.20",
+    "@libp2p/upnp-nat": "^4.0.20",
+    "@libp2p/yamux": "^8.0.1",
     "@web3-storage/data-segment": "^5.3.0",
+    "helia": "^6.1.4",
     "iso-filecoin": "^7.4.7",
+    "libp2p": "^3.3.2",
     "multiformats": "^13.4.1",
     "viem": "^2.21.0"
   },

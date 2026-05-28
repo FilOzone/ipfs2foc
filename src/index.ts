@@ -31,6 +31,7 @@ import { runSubmitPdp } from './submit-pdp.ts'
 import { runReport } from './report.ts'
 import { runPlan } from './migrate.ts'
 import { fetchAndComputePiece } from './piece.ts'
+import { stopHeliaFallback } from './helia-fallback.ts'
 import { Runner } from './runner.ts'
 import { startServer } from './server.ts'
 import { log, parseCidList, parsePositiveInt, parseSize } from './util.ts'
@@ -64,10 +65,36 @@ Defaults:
   concurrency 8
   port        4321
   network     mainnet (serve base-fee monitor off unless --network or --rpc-url given)
+
+IPFS fallback (plan, commp, serve):
+  --ipfs-fallback                    Enable embedded ipfs node to recover from source-gateway 5xx/429 (default: off; opt-in)
+  --ipfs-fallback-mode MODE          Fallback ordering (default: gateway-first; only value supported in this release)
+  --ipfs-fallback-timeout-seconds N  Per-CID upper bound on the fallback fetch (default: 120)
 `
 
 function gatewaysFrom(values: { gateway?: string[] }): string[] {
   return values.gateway != null && values.gateway.length > 0 ? values.gateway : DEFAULT_GATEWAYS
+}
+
+/** Default per-CID fallback budget in seconds. Matches `helia-fallback.DEFAULT_FALLBACK_TIMEOUT_MS`. */
+const DEFAULT_FALLBACK_SECONDS = 120
+
+/** Parse the IPFS-fallback flag triple. Only `gateway-first` is shipped; `helia-first` is reserved. */
+function fallbackFrom(values: {
+  'ipfs-fallback'?: boolean
+  'ipfs-fallback-mode'?: string
+  'ipfs-fallback-timeout-seconds'?: string
+}): { ipfsFallback: boolean; fallbackTimeoutMs: number } {
+  const ipfsFallback = values['ipfs-fallback'] === true
+  const mode = values['ipfs-fallback-mode'] ?? 'gateway-first'
+  if (mode !== 'gateway-first') {
+    throw new Error(`unknown --ipfs-fallback-mode ${mode} (expected gateway-first; helia-first is reserved)`)
+  }
+  const seconds =
+    values['ipfs-fallback-timeout-seconds'] != null
+      ? parsePositiveInt(values['ipfs-fallback-timeout-seconds'], '--ipfs-fallback-timeout-seconds')
+      : DEFAULT_FALLBACK_SECONDS
+  return { ipfsFallback, fallbackTimeoutMs: seconds * 1000 }
 }
 
 async function cmdProbe(argv: string[]): Promise<void> {
@@ -103,15 +130,25 @@ async function cmdCommp(argv: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { gateway: { type: 'string', multiple: true } },
+    options: {
+      gateway: { type: 'string', multiple: true },
+      'ipfs-fallback': { type: 'boolean', default: false },
+      'ipfs-fallback-mode': { type: 'string' },
+      'ipfs-fallback-timeout-seconds': { type: 'string' },
+    },
   })
   const cid = positionals[0]
   if (cid == null) {
     throw new Error('commp requires a <cid>')
   }
-  const piece = await fetchAndComputePiece(cid, gatewaysFrom(values))
-  log(`${cid} -> ${piece.pieceCid} (${piece.rawSize} bytes via ${piece.gateway})`)
-  console.log(JSON.stringify(piece, null, 2))
+  const fallback = fallbackFrom(values)
+  try {
+    const piece = await fetchAndComputePiece(cid, gatewaysFrom(values), fallback)
+    log(`${cid} -> ${piece.pieceCid} (${piece.rawSize} bytes via ${piece.gateway})`)
+    console.log(JSON.stringify(piece, null, 2))
+  } finally {
+    await stopHeliaFallback()
+  }
 }
 
 async function cmdPlan(argv: string[]): Promise<void> {
@@ -123,11 +160,15 @@ async function cmdPlan(argv: string[]): Promise<void> {
       gateway: { type: 'string', multiple: true },
       'piece-size': { type: 'string', default: '32GiB' },
       concurrency: { type: 'string', default: '8' },
+      'ipfs-fallback': { type: 'boolean', default: false },
+      'ipfs-fallback-mode': { type: 'string' },
+      'ipfs-fallback-timeout-seconds': { type: 'string' },
     },
   })
   if (values.cids == null) {
     throw new Error('plan requires --cids <file>')
   }
+  const fallback = fallbackFrom(values)
   const cids = parseCidList(await readFile(values.cids, 'utf8'))
   if (cids.length === 0) {
     throw new Error(`no CIDs found in ${values.cids}`)
@@ -140,6 +181,8 @@ async function cmdPlan(argv: string[]): Promise<void> {
       gateways: gatewaysFrom(values),
       aggregateSizeBytes: parseSize(values['piece-size'] as string),
       concurrency: parsePositiveInt(values.concurrency as string, '--concurrency'),
+      ipfsFallback: fallback.ipfsFallback,
+      fallbackTimeoutMs: fallback.fallbackTimeoutMs,
     })
 
     log('')
@@ -157,6 +200,7 @@ async function cmdPlan(argv: string[]): Promise<void> {
     console.log(JSON.stringify(summary, null, 2))
   } finally {
     db.close()
+    await stopHeliaFallback()
   }
 }
 
@@ -406,6 +450,9 @@ async function cmdServe(argv: string[]): Promise<void> {
       network: { type: 'string' },
       'rpc-url': { type: 'string' },
       'max-base-fee': { type: 'string' },
+      'ipfs-fallback': { type: 'boolean', default: false },
+      'ipfs-fallback-mode': { type: 'string' },
+      'ipfs-fallback-timeout-seconds': { type: 'string' },
     },
   })
 
@@ -415,10 +462,13 @@ async function cmdServe(argv: string[]): Promise<void> {
     db.addCids(parseCidList(await readFile(values.cids, 'utf8')))
   }
 
+  const fallback = fallbackFrom(values)
   const runner = new Runner(db, {
     gateways: gatewaysFrom(values),
     concurrency: parsePositiveInt(values.concurrency as string, '--concurrency'),
     aggregateSizeBytes: parseSize(values['piece-size'] as string),
+    ipfsFallback: fallback.ipfsFallback,
+    fallbackTimeoutMs: fallback.fallbackTimeoutMs,
   })
 
   // Enable base-fee monitoring on the dashboard when a network or RPC is given.

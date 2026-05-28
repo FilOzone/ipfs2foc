@@ -16,6 +16,8 @@ export interface PlanOptions {
   gateways: string[]
   aggregateSizeBytes: bigint
   concurrency: number
+  ipfsFallback?: boolean
+  fallbackTimeoutMs?: number
 }
 
 export interface PlanSummary {
@@ -38,7 +40,10 @@ export async function runPlan(db: MigrationDB, opts: PlanOptions): Promise<PlanS
   await pool(pending, opts.concurrency, async (cid) => {
     const timer = new Timer()
     try {
-      const piece = await fetchAndComputePiece(cid, opts.gateways)
+      const piece = await fetchAndComputePiece(cid, opts.gateways, {
+        ipfsFallback: opts.ipfsFallback,
+        fallbackTimeoutMs: opts.fallbackTimeoutMs,
+      })
       const elapsed = timer.stop()
       stats.record(piece.rawSize, elapsed)
       db.recordPieceSuccess(cid, piece.pieceCid, piece.rawSize, piece.gateway, piece.url)
