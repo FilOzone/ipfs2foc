@@ -14,11 +14,11 @@ commitment and stores none of the payload.
    trustless gateway and stream it through the Filecoin piece hasher to get its
    **PieceCID v2** (FRC-0069). The CAR is rooted at the original CID, so storing it
    keeps the CID intact, and the CAR root is checked against the requested CID.
-2. **Pack.** Bin-pack pieces into aggregates (default target 32 GiB, bounded by the
-   provider's maximum piece size). Each aggregate's root is the **aggregate piece
-   commitment** — the merkle root of the sub-piece commitments, ordered
-   largest-padded-first and zero-padded to the next power of two, the same value the
-   provider re-derives on add.
+2. **Pack.** Bin-pack pieces into aggregates by the `--piece-size` target (default
+   32 GiB; cap it to the provider's maximum piece size). Each aggregate's root is the
+   **aggregate piece commitment** — the merkle root of the sub-piece commitments,
+   ordered largest-padded-first and zero-padded to the next power of two, the same
+   value the provider re-derives on add.
 3. **Pull.** For each sub-piece, ask the provider to `POST /pdp/piece/pull` from
    `<source-base>/piece/{pcidv2}` — a redirect endpoint that 302s to the gateway CAR.
    The provider follows the redirect, downloads the CAR from the gateway, verifies its
@@ -56,38 +56,70 @@ This value is verified byte-for-byte against `go-commp-utils` in `test/`.
 - A source that serves **deterministic trustless CARs**. Known working:
   `gateway.pinata.cloud`, `trustless-gateway.link`. A gateway that returns reassembled
   files instead of CARs does not work; `probe` reports which case a gateway falls into.
-- A wallet that owns (or holds a signature for) the target data set's FWSS payer, with
-  USDFC for storage and a small amount of FIL for setup transactions. Set the key as
-  `PRIVATE_KEY` (`0x` + 64 hex) in the environment.
 
 ```bash
 npm install   # or pnpm install
 ```
 
+## Prerequisites
+
+Before running the quickstart, complete the one-time wallet setup on the network
+you target (default `mainnet`; pass `--network calibration` for the testnet).
+
+- **Wallet**: a wallet whose address is the FWSS payer for the data set you create
+  or own. Export the key as `PRIVATE_KEY` (`0x` + 64 hex) in the environment. The
+  same key signs the data-set creation, the pull authorization, and every
+  AddPieces submission.
+- **FIL** in that wallet for the migrator's own transactions: USDFC ERC-20 approve,
+  FilecoinPay deposit, FilecoinWarmStorageService operator approval. These three
+  steps happen once per payer; the storage provider pays gas for everything it
+  submits on chain (createDataSet, AddPieces, proof of possession).
+- **USDFC** deposited into the FilecoinPay contract, with FWSS approved as a
+  payments operator with sufficient `rateAllowance` and `lockupAllowance`, and a
+  funded balance that covers the minimum lockup plus a one-time sybil fee.
+  `create-data-set` reverts otherwise. The [Synapse SDK](https://github.com/FilOzone/synapse-sdk)
+  `Payments` helper exposes the approve/deposit/operator-approval calls; PDP
+  Scan (`https://pdp.vxb.ai/{network}`) shows the same account state.
+- **Provider id**: choose a PDP-capable provider from the SP registry. PDP Scan
+  lists registered providers at `https://pdp.vxb.ai/{network}/providers`; pass
+  that numeric id as `--provider-id` to `create-data-set`. Skip this step if you
+  are reusing an existing data set you own.
+- **Trustless gateway**: confirm the gateway you intend to use returns
+  byte-stable CARs for one of your CIDs with `probe` before running `plan`.
+
 ## Quickstart
 
-The default network is **mainnet**; pass `--network calibration` to target the
-calibration testnet.
+Complete **Prerequisites** above first. Default network is **mainnet**; pass
+`--network calibration` for the testnet. `redirect-serve` (step 2) and
+`pdp-submit` (step 3) run concurrently in separate terminals.
 
 ```bash
-# 0. (Once per provider) Provision a data set with withIPFSIndexing on a chosen
-#    provider. Skip if you already have a data set id you own.
 export PRIVATE_KEY=0x...
-node src/index.ts create-data-set --provider-id <id>
 
-# 1. Compute piece commitments and pack aggregates into a SQLite DB.
+# 0. (Once per provider) Provision a data set with withIPFSIndexing on a chosen
+#    PDP provider. Skip if you already have a data set id you own. Note the
+#    `dataSetId` printed; reuse it in steps 3 and 4.
+node src/index.ts create-data-set --provider-id <provider-id>
+
+# 1. Confirm a trustless gateway returns a deterministic CAR for one of your CIDs.
+node src/index.ts probe <sample-cid> --gateway https://trustless-gateway.link
+
+# 2. Compute piece commitments and pack aggregates into a SQLite DB.
 printf '%s\n' <cid> > cids.txt
 node src/index.ts plan --cids cids.txt --db migrate.db
 
-# 2. Serve the redirect locally and expose it over public HTTPS (see Public ingress).
+# 3. (Terminal A — leave running) Serve the redirect locally and front it with a
+#    public HTTPS ingress (see Public ingress for Tailscale Funnel setup).
 node src/index.ts redirect-serve --db migrate.db --port 4322
 
-# 3. Pull, park, and add each aggregate onto the provider's data set.
-node src/index.ts pdp-submit --db migrate.db --data-set-id <id> \
+# 4. (Terminal B) Pull, park, and add each aggregate onto the provider's data set.
+#    `--source-base` is the public HTTPS origin only (no path) — e.g. the URL
+#    `tailscale funnel status` prints.
+node src/index.ts pdp-submit --db migrate.db --data-set-id <data-set-id> \
   --source-base https://<public-host>
 
-# 4. Confirm every CID landed: reconcile local state against the on-chain pieces.
-node src/index.ts report --db migrate.db --data-set-id <id>
+# 5. Confirm every CID landed: reconcile local state against the on-chain pieces.
+node src/index.ts report --db migrate.db --data-set-id <data-set-id>
 ```
 
 `cids.txt`: one CID per line; blank lines and `#` comments are ignored.
@@ -102,29 +134,34 @@ node src/index.ts probe <cid> [--gateway https://gateway.pinata.cloud]...
 node src/index.ts commp <cid>
 
 # Full pipeline: commitments + aggregate packing into a SQLite DB
-node src/index.ts plan --cids cids.txt [--db migrate.db] [--piece-size 32GiB] [--concurrency 8]
+node src/index.ts plan --cids cids.txt [--db migrate.db] [--gateway URL]... \
+  [--piece-size 32GiB] [--concurrency 8]
 
 # Progress and the aggregate plan
 node src/index.ts status [--db migrate.db]
 
 # Background daemon + browser dashboard (start/pause/resume, add CIDs, add gateways)
-node src/index.ts serve [--db migrate.db] [--cids cids.txt] [--port 4321] [--network calibration]
+node src/index.ts serve [--db migrate.db] [--cids cids.txt] [--gateway URL]... \
+  [--port 4321] [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
 
 # Current network base fee and whether to pause submission
-node src/index.ts gas [--network mainnet|calibration] [--max-base-fee 1000000]
+node src/index.ts gas [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee 1000000]
 
 # Redirect server: GET /piece/{pcidv2} -> 302 to the gateway CAR
-node src/index.ts redirect-serve --db migrate.db --port 4322
+node src/index.ts redirect-serve [--db migrate.db] [--port 4322]
 
 # Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env)
-node src/index.ts create-data-set --provider-id <id> [--network mainnet|calibration] [--cdn]
+node src/index.ts create-data-set --provider-id <id> \
+  [--network mainnet|calibration] [--rpc-url URL] [--cdn] [--timeout-seconds 600]
 
 # Migrate via the PDP pull path (PRIVATE_KEY env)
 node src/index.ts pdp-submit --db migrate.db --data-set-id <id> \
-  --source-base https://<public-host> [--max-in-flight 4] [--max-base-fee 1000000] [--pull-batch 32]
+  --source-base https://<public-host> [--network mainnet|calibration] [--rpc-url URL] \
+  [--max-in-flight 4] [--max-base-fee 1000000] [--pull-batch 32] [--poll-seconds 15]
 
 # Verification report: reconcile a run against the data set's on-chain pieces
-node src/index.ts report --db migrate.db --data-set-id <id> [--json]
+node src/index.ts report --db migrate.db --data-set-id <id> \
+  [--network mainnet|calibration] [--rpc-url URL] [--json]
 ```
 
 `pdp-submit` honors the in-flight cap, the base-fee gate, and provider pull
@@ -144,21 +181,36 @@ start, pause, resume, retry failed, add CIDs (`POST /api/cids`), set gateways
 
 The provider's pull fetches `<source-base>/piece/{pcidv2}` over public HTTPS and follows
 the redirect to the gateway, so `redirect-serve` needs a public HTTPS URL that resolves
-to a public IP. The server answers only 302 redirects, so its bandwidth is negligible.
+to a public, routable IP. CGNAT (`100.64.0.0/10`) and other private addresses are rejected
+by the provider's pull client. Pass the **HTTPS origin only** (scheme + host, no path) as
+`--source-base`; the tool appends `/piece/{pcidv2}` itself. The server answers only 302
+redirects, so its bandwidth is negligible.
 
-**Tailscale Funnel** (free). One-time in the Tailscale admin console: enable MagicDNS and
-HTTPS Certificates under DNS, and grant the node the `funnel` node attribute under Access
-Controls. Then, locally (the macOS app bundles the CLI at
-`/Applications/Tailscale.app/Contents/MacOS/Tailscale`):
+**Tailscale Funnel** (free) covers all of this without DNS or a TLS workflow of your own.
+
+One-time prerequisites:
+
+1. A Tailscale account and the Tailscale client installed on the machine running
+   `redirect-serve`, with that node signed in.
+2. In the Tailscale admin console under **DNS**, enable **MagicDNS** and
+   **HTTPS Certificates**.
+3. In **Access Controls**, grant the node the `funnel` node attribute (e.g. via
+   `nodeAttrs: [{ target: ["autogroup:member"], attr: ["funnel"] }]`).
+
+Then, locally (the macOS app bundles the CLI at
+`/Applications/Tailscale.app/Contents/MacOS/Tailscale`; on Linux and Windows
+`tailscale` is on `PATH` after install):
 
 ```bash
 tailscale funnel --bg 4322     # public :443 -> local redirect server :4322
 tailscale funnel status        # prints https://<machine>.<tailnet>.ts.net
+curl -I https://<machine>.<tailnet>.ts.net/healthz   # expect HTTP 200 before submit
 ```
 
-Pass that `https://<machine>.<tailnet>.ts.net` as `--source-base`. It resolves to
-Tailscale's public edge, which the provider's pull client accepts. Cloudflare Tunnel or a
-small VPS with a reverse proxy work the same way.
+Pass `https://<machine>.<tailnet>.ts.net` as `--source-base`. It resolves to
+Tailscale's public edge, which the provider's pull client accepts. Cloudflare Tunnel and a
+small VPS fronted by a reverse proxy work the same way as long as the URL satisfies the
+public-HTTPS-origin shape above.
 
 ## Aggregate lifecycle and park/commit safety
 
@@ -210,11 +262,13 @@ hash). A run resumes from here; re-running `plan` computes only CIDs that are no
 
 - The source must serve deterministic trustless CARs. Use `probe` to check.
 - **Sub-piece size**: each CID's CAR must be within the provider's pull piece limit
-  (`PieceSizeLimit`, ~1 GiB raw). A single CID whose CAR exceeds this cannot be pulled as
-  one piece.
+  (`PieceSizeLimit`, ~1 GiB raw). `plan` does not check this limit; a CAR larger than the
+  pull cap completes `plan` and then fails at `pdp-submit` pull time. Hold large CIDs out
+  of the run until the migrator supports re-chunking.
 - **Aggregate piece size**: `--piece-size` is the target aggregate piece size, bounded by
-  the provider's maximum piece size (the add proof type allows up to 64 GiB). A piece that
-  cannot fit an empty aggregate is reported as `oversized`, never silently dropped.
+  the provider's maximum piece size (up to 64 GiB). A piece whose padded size exceeds the
+  configured `--piece-size` is reported as `oversized` and not packed, never silently
+  dropped; this is the aggregate-budget bound, not the pull cap.
 - **Sub-pieces per pull request**: the pull admission `eth_call`-simulates AddPieces over
   the batch, and the PDPVerifier `PiecesAdded` event carries one piece CID per piece. The
   FVM caps a single actor event at 8192 bytes, so a pull batch of too many sub-pieces
