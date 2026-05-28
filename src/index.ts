@@ -44,7 +44,7 @@ Usage:
   foc-migrate commp  <cid> [--gateway URL]...
   foc-migrate plan   --cids <file> [--db <file>] [--gateway URL]... [--piece-size 32GiB]
                      [--concurrency 8]
-  foc-migrate status [--db <file>]
+  foc-migrate status [--db <file>] [--json]
   foc-migrate serve  [--db <file>] [--cids <file>] [--gateway URL]... [--piece-size 32GiB]
                      [--concurrency 8] [--port 4321] [--network mainnet|calibration] [--max-base-fee N]
   foc-migrate gas    [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
@@ -159,24 +159,56 @@ async function cmdPlan(argv: string[]): Promise<void> {
   }
 }
 
+/** Schema version emitted in `status --json` so downstream scripts can detect breaking changes. */
+const STATUS_JSON_SCHEMA_VERSION = 1
+
 async function cmdStatus(argv: string[]): Promise<void> {
-  const { values } = parseArgs({ args: argv, options: { db: { type: 'string', default: DEFAULT_DB } } })
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      db: { type: 'string', default: DEFAULT_DB },
+      json: { type: 'boolean', default: false },
+    },
+  })
   const db = new MigrationDB(values.db as string)
   try {
     const counts = db.counts()
     const aggregates = db.aggregates()
+    const failures = db.failures()
+    const failuresByCategory = db.failuresByCategory()
+    const aggregatesByStatus = db.aggregatesByStatus()
+
+    if (values.json === true) {
+      // Pure machine-readable mode: stdout = JSON only, no human log lines.
+      const payload = {
+        schemaVersion: STATUS_JSON_SCHEMA_VERSION,
+        counts,
+        aggregatesByStatus,
+        failuresByCategory,
+        aggregates,
+        failures,
+      }
+      console.log(JSON.stringify(payload, null, 2))
+      return
+    }
+
     log(`Pieces: ${counts.done} done, ${counts.pending} pending, ${counts.failed} failed`)
     for (const agg of aggregates) {
-      log(`  aggregate ${agg.idx} [${agg.status}] ${agg.memberCount} member(s) root=${agg.rootPieceCid}`)
+      const errSuffix = agg.error == null ? '' : ` — ${agg.error.split('\n')[0]}`
+      log(`  aggregate ${agg.idx} [${agg.status}] ${agg.memberCount} member(s) root=${agg.rootPieceCid}${errSuffix}`)
     }
-    const failures = db.failures()
+    if (Object.keys(failuresByCategory).length > 0) {
+      const summary = Object.entries(failuresByCategory)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(', ')
+      log(`Failures by category: ${summary}`)
+    }
     if (failures.length > 0) {
       log(`Failures:`)
       for (const f of failures) {
-        log(`  ${f.cid}: ${f.error.split('\n')[0]}`)
+        log(`  ${f.cid} [${f.category}]: ${f.error.split('\n')[0]}`)
       }
     }
-    console.log(JSON.stringify({ counts, aggregates, failures }, null, 2))
   } finally {
     db.close()
   }

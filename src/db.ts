@@ -11,6 +11,39 @@ import { DatabaseSync } from 'node:sqlite'
 export type PieceStatus = 'pending' | 'processing' | 'done' | 'failed'
 
 /**
+ * Failure taxonomy used by `status --json` and the dashboard. Set alongside
+ * `pieces.error` so operators can triage by category rather than parsing
+ * free-form error strings.
+ */
+export type FailureCategory =
+  | 'source_gateway_429'
+  | 'source_gateway_5xx'
+  | 'source_gateway_timeout'
+  | 'car_root_mismatch'
+  | 'commp_mismatch'
+  | 'oversized'
+  | 'pull_cap_exceeded'
+  | 'byte_unstable'
+  | 'other'
+
+/**
+ * Last-resort classifier for free-form error strings that did not come from a
+ * `GatewayError` / `PieceComputeError` (so a category was not set at the
+ * throw site). Prefer typed errors with explicit categories.
+ */
+export function classifyFailure(message: string): FailureCategory {
+  const m = message.toLowerCase()
+  if (m.includes('429') || m.includes('too many requests')) return 'source_gateway_429'
+  if (/\b5\d\d\b/.test(m) || m.includes('bad gateway') || m.includes('service unavailable')) return 'source_gateway_5xx'
+  if (m.includes('timeout') || m.includes('timed out') || m.includes('etimedout')) return 'source_gateway_timeout'
+  if (m.includes('car root mismatch')) return 'car_root_mismatch'
+  if (m.includes('piece commitment') || m.includes('commp')) return 'commp_mismatch'
+  if (m.includes('oversized') || (m.includes('exceeds') && m.includes('piece-size'))) return 'oversized'
+  if (m.includes('pull') && m.includes('cap')) return 'pull_cap_exceeded'
+  return 'other'
+}
+
+/**
  * Aggregate lifecycle.
  *
  *   planned    packed locally, not yet sent to a storage provider
@@ -49,6 +82,12 @@ export interface AggregateRow {
   pieceId: string | null
   txHash: string | null
   memberCount: number
+  /** Lifecycle timestamps; null until the corresponding transition fires. */
+  submittedAt: string | null
+  parkedAt: string | null
+  committedAt: string | null
+  /** Error string set by `markAggregateFailed`, null otherwise. */
+  error: string | null
 }
 
 export class MigrationDB {
@@ -63,14 +102,15 @@ export class MigrationDB {
   #migrate(): void {
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS pieces (
-        cid        TEXT PRIMARY KEY,
-        piece_cid  TEXT,
-        raw_size   INTEGER,
-        gateway    TEXT,
-        url        TEXT,
-        status     TEXT NOT NULL DEFAULT 'pending',
-        error      TEXT,
-        updated_at TEXT NOT NULL
+        cid              TEXT PRIMARY KEY,
+        piece_cid        TEXT,
+        raw_size         INTEGER,
+        gateway          TEXT,
+        url              TEXT,
+        status           TEXT NOT NULL DEFAULT 'pending',
+        error            TEXT,
+        failure_category TEXT,
+        updated_at       TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS aggregates (
         idx              INTEGER PRIMARY KEY,
@@ -81,6 +121,7 @@ export class MigrationDB {
         data_set_id      TEXT,
         piece_id         TEXT,
         tx_hash          TEXT,
+        error            TEXT,
         submitted_at     TEXT,
         parked_at        TEXT,
         committed_at     TEXT,
@@ -92,6 +133,17 @@ export class MigrationDB {
         cid           TEXT NOT NULL,
         PRIMARY KEY (aggregate_idx, cid),
         FOREIGN KEY (cid) REFERENCES pieces(cid),
+        FOREIGN KEY (aggregate_idx) REFERENCES aggregates(idx)
+      );
+      CREATE TABLE IF NOT EXISTS pull_batch_attempts (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        aggregate_idx INTEGER NOT NULL,
+        started_at    TEXT NOT NULL,
+        finished_at   TEXT,
+        ok_count      INTEGER NOT NULL DEFAULT 0,
+        failed_count  INTEGER NOT NULL DEFAULT 0,
+        piece_cids    TEXT NOT NULL,
+        error         TEXT,
         FOREIGN KEY (aggregate_idx) REFERENCES aggregates(idx)
       );
     `)
@@ -155,10 +207,10 @@ export class MigrationDB {
       .run(pieceCid, rawSize, gateway, url, new Date().toISOString(), cid)
   }
 
-  recordPieceFailure(cid: string, error: string): void {
+  recordPieceFailure(cid: string, error: string, category: FailureCategory = 'other'): void {
     this.#db
-      .prepare(`UPDATE pieces SET status='failed', error=?, updated_at=? WHERE cid=?`)
-      .run(error, new Date().toISOString(), cid)
+      .prepare(`UPDATE pieces SET status='failed', error=?, failure_category=?, updated_at=? WHERE cid=?`)
+      .run(error, category, new Date().toISOString(), cid)
   }
 
   /** All successfully-computed pieces, in stable order, for packing. */
@@ -217,7 +269,8 @@ export class MigrationDB {
     const rows = this.#db
       .prepare(
         `SELECT a.idx, a.root_piece_cid, a.piece_size_bytes, a.status, a.pull_id,
-                a.data_set_id, a.piece_id, a.tx_hash,
+                a.data_set_id, a.piece_id, a.tx_hash, a.error,
+                a.submitted_at, a.parked_at, a.committed_at,
                 (SELECT COUNT(*) FROM aggregate_members m WHERE m.aggregate_idx = a.idx) AS member_count
          FROM aggregates a ORDER BY a.idx`
       )
@@ -235,6 +288,10 @@ export class MigrationDB {
         pieceId: str(row.piece_id),
         txHash: str(row.tx_hash),
         memberCount: Number(row.member_count),
+        submittedAt: str(row.submitted_at),
+        parkedAt: str(row.parked_at),
+        committedAt: str(row.committed_at),
+        error: str(row.error),
       }
     })
   }
@@ -288,8 +345,26 @@ export class MigrationDB {
       .run(info.dataSetId, info.pieceId ?? null, info.txHash ?? null, new Date().toISOString(), idx)
   }
 
-  markAggregateFailed(idx: number): void {
-    this.#db.prepare(`UPDATE aggregates SET status='failed' WHERE idx=?`).run(idx)
+  markAggregateFailed(idx: number, error?: string): void {
+    this.#db
+      .prepare(`UPDATE aggregates SET status='failed', error=COALESCE(?, error) WHERE idx=?`)
+      .run(error ?? null, idx)
+  }
+
+  /** Insert a pull-batch attempt row at start; the caller updates it via `recordPullBatchResult`. */
+  recordPullBatchStart(aggregateIdx: number, pieceCids: string[]): number {
+    const result = this.#db
+      .prepare(
+        `INSERT INTO pull_batch_attempts (aggregate_idx, started_at, piece_cids) VALUES (?, ?, ?)`
+      )
+      .run(aggregateIdx, new Date().toISOString(), JSON.stringify(pieceCids))
+    return Number(result.lastInsertRowid)
+  }
+
+  recordPullBatchResult(id: number, ok: number, failed: number, error?: string): void {
+    this.#db
+      .prepare(`UPDATE pull_batch_attempts SET finished_at=?, ok_count=?, failed_count=?, error=? WHERE id=?`)
+      .run(new Date().toISOString(), ok, failed, error ?? null, id)
   }
 
   /**
@@ -322,12 +397,45 @@ export class MigrationDB {
     }
   }
 
-  failures(): Array<{ cid: string; error: string }> {
-    const rows = this.#db.prepare(`SELECT cid, error FROM pieces WHERE status='failed' ORDER BY cid`).all()
+  failures(): Array<{ cid: string; error: string; category: FailureCategory }> {
+    const rows = this.#db
+      .prepare(`SELECT cid, error, failure_category FROM pieces WHERE status='failed' ORDER BY cid`)
+      .all()
     return rows.map((r) => {
       const row = r as Record<string, unknown>
-      return { cid: String(row.cid), error: String(row.error ?? '') }
+      return {
+        cid: String(row.cid),
+        error: String(row.error ?? ''),
+        category: (row.failure_category as FailureCategory | undefined) ?? 'other',
+      }
     })
+  }
+
+  /** Counts of failed pieces by failure-category enum. Categories with zero count are omitted. */
+  failuresByCategory(): Record<string, number> {
+    const rows = this.#db
+      .prepare(
+        `SELECT COALESCE(failure_category, 'other') AS category, COUNT(*) AS n
+         FROM pieces WHERE status='failed' GROUP BY category`
+      )
+      .all()
+    const out: Record<string, number> = {}
+    for (const r of rows) {
+      const row = r as { category: string; n: number }
+      out[row.category] = Number(row.n)
+    }
+    return out
+  }
+
+  /** Counts of aggregates by status. Statuses with zero count are omitted. */
+  aggregatesByStatus(): Record<AggregateStatus, number> {
+    const rows = this.#db.prepare(`SELECT status, COUNT(*) AS n FROM aggregates GROUP BY status`).all()
+    const out: Record<string, number> = {}
+    for (const r of rows) {
+      const row = r as { status: string; n: number }
+      out[row.status] = Number(row.n)
+    }
+    return out as Record<AggregateStatus, number>
   }
 
   close(): void {

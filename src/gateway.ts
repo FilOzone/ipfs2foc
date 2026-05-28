@@ -9,6 +9,28 @@
  */
 
 import { createHash } from 'node:crypto'
+import type { FailureCategory } from './db.ts'
+
+/**
+ * Error subclass thrown by `fetchCar` so callers can categorize failures by
+ * the HTTP status code instead of pattern-matching the error message.
+ */
+export class GatewayError extends Error {
+  status?: number
+  category: FailureCategory
+  constructor(message: string, opts: { status?: number; category: FailureCategory }) {
+    super(message)
+    this.name = 'GatewayError'
+    this.status = opts.status
+    this.category = opts.category
+  }
+}
+
+function categoryForStatus(status: number): FailureCategory {
+  if (status === 429) return 'source_gateway_429'
+  if (status >= 500 && status < 600) return 'source_gateway_5xx'
+  return 'other'
+}
 
 /** Gateways that are known to serve deterministic, spec-compliant trustless CARs. */
 export const DEFAULT_GATEWAYS = ['https://gateway.pinata.cloud', 'https://trustless-gateway.link']
@@ -32,20 +54,36 @@ export async function fetchCar(
   signal?: AbortSignal
 ): Promise<{ url: string; body: ReadableStream<Uint8Array>; contentType: string }> {
   const url = buildCarUrl(gateway, cid)
-  const res = await fetch(url, { headers: { accept: CAR_ACCEPT }, signal })
+  let res: Response
+  try {
+    res = await fetch(url, { headers: { accept: CAR_ACCEPT }, signal })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const isTimeout = /timeout|timed out|ETIMEDOUT|AbortError/i.test(message)
+    throw new GatewayError(`gateway ${gateway} fetch failed for ${cid}: ${message}`, {
+      category: isTimeout ? 'source_gateway_timeout' : 'other',
+    })
+  }
   if (!res.ok) {
-    throw new Error(`gateway ${gateway} returned HTTP ${res.status} for ${cid}`)
+    throw new GatewayError(`gateway ${gateway} returned HTTP ${res.status} for ${cid}`, {
+      status: res.status,
+      category: categoryForStatus(res.status),
+    })
   }
   const contentType = res.headers.get('content-type') ?? ''
   if (!contentType.includes('application/vnd.ipld.car')) {
     // A file-mode gateway ignores ?format=car and returns the reassembled file.
     // That is unusable for CID preservation, so reject it loudly.
-    throw new Error(
-      `gateway ${gateway} is not trustless: got content-type "${contentType}" instead of a CAR for ${cid}`
+    throw new GatewayError(
+      `gateway ${gateway} is not trustless: got content-type "${contentType}" instead of a CAR for ${cid}`,
+      { status: res.status, category: 'other' }
     )
   }
   if (res.body == null) {
-    throw new Error(`gateway ${gateway} returned an empty body for ${cid}`)
+    throw new GatewayError(`gateway ${gateway} returned an empty body for ${cid}`, {
+      status: res.status,
+      category: 'other',
+    })
   }
   return { url, body: res.body, contentType }
 }

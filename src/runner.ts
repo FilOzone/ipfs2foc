@@ -10,7 +10,7 @@
 
 import type { MigrationDB } from './db.ts'
 import { repackPlanned } from './migrate.ts'
-import { fetchAndComputePiece } from './piece.ts'
+import { categoryOf, fetchAndComputePiece } from './piece.ts'
 import { log } from './util.ts'
 
 export type RunState = 'idle' | 'running' | 'paused'
@@ -128,7 +128,7 @@ export class Runner {
       log(`  + ${cid} -> ${piece.pieceCid}`)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      this.#db.recordPieceFailure(cid, message)
+      this.#db.recordPieceFailure(cid, message, categoryOf(err))
       this.#lastError = `${cid}: ${message.split('\n')[0]}`
     } finally {
       this.#active--

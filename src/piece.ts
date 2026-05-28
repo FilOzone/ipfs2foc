@@ -13,7 +13,29 @@ import * as Hasher from '@web3-storage/data-segment/multihash'
 import { CID } from 'multiformats/cid'
 import * as Link from 'multiformats/link'
 import * as Raw from 'multiformats/codecs/raw'
-import { fetchCar } from './gateway.ts'
+import { GatewayError, fetchCar } from './gateway.ts'
+import type { FailureCategory } from './db.ts'
+
+/**
+ * Error subclass used internally by piece-compute callers to surface a failure
+ * category alongside the message, mirroring `GatewayError` for CAR-level
+ * failures (root mismatch, etc.).
+ */
+export class PieceComputeError extends Error {
+  category: FailureCategory
+  constructor(message: string, category: FailureCategory) {
+    super(message)
+    this.name = 'PieceComputeError'
+    this.category = category
+  }
+}
+
+/** Read a category off a thrown error, falling back to `other`. */
+export function categoryOf(err: unknown): FailureCategory {
+  if (err instanceof GatewayError) return err.category
+  if (err instanceof PieceComputeError) return err.category
+  return 'other'
+}
 import { log } from './util.ts'
 
 export interface PieceResult {
@@ -70,6 +92,7 @@ async function computePiece(
 export async function fetchAndComputePiece(cid: string, gateways: string[]): Promise<PieceResult> {
   const expected = CID.parse(cid)
   const errors: string[] = []
+  const categories: FailureCategory[] = []
 
   for (const gateway of gateways) {
     try {
@@ -78,8 +101,9 @@ export async function fetchAndComputePiece(cid: string, gateways: string[]): Pro
 
       const rootMatch = roots.some((r) => r.equals(expected) || r.toString() === cid)
       if (!rootMatch) {
-        throw new Error(
-          `CAR root mismatch: expected ${cid}, CAR declares [${roots.map((r) => r.toString()).join(', ')}]`
+        throw new PieceComputeError(
+          `CAR root mismatch: expected ${cid}, CAR declares [${roots.map((r) => r.toString()).join(', ')}]`,
+          'car_root_mismatch'
         )
       }
 
@@ -87,9 +111,14 @@ export async function fetchAndComputePiece(cid: string, gateways: string[]): Pro
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       errors.push(`${gateway}: ${message}`)
+      categories.push(categoryOf(err))
       log(`  ! ${cid} via ${gateway} failed: ${message}`)
     }
   }
 
-  throw new Error(`all gateways failed for ${cid}\n    ${errors.join('\n    ')}`)
+  // Pick the most-specific category seen across gateways. If every gateway
+  // returned 429, the outer category is 429; if categories diverge, prefer any
+  // non-`other` over `other`.
+  const aggregated = categories.find((c) => c !== 'other') ?? 'other'
+  throw new PieceComputeError(`all gateways failed for ${cid}\n    ${errors.join('\n    ')}`, aggregated)
 }

@@ -9,7 +9,7 @@
 import { packAggregates } from './aggregate.ts'
 import type { MigrationDB } from './db.ts'
 import { formatStageSummary, StageStats, Timer } from './metrics.ts'
-import { fetchAndComputePiece } from './piece.ts'
+import { categoryOf, fetchAndComputePiece } from './piece.ts'
 import { log, pool } from './util.ts'
 
 export interface PlanOptions {
@@ -45,7 +45,7 @@ export async function runPlan(db: MigrationDB, opts: PlanOptions): Promise<PlanS
       log(`  + ${cid} -> ${piece.pieceCid} (${piece.rawSize} bytes via ${piece.gateway}, ${Math.round(elapsed)}ms)`)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      db.recordPieceFailure(cid, message)
+      db.recordPieceFailure(cid, message, categoryOf(err))
     }
   })
   log(formatStageSummary('commP pass', stats.summary()))

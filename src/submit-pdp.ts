@@ -102,6 +102,8 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
     let failed = 0
     for (let start = 0; start < members.length; start += opts.pullBatch) {
       const batch = members.slice(start, start + opts.pullBatch)
+      const batchCids = batch.map((m) => m.pieceCid)
+      const attemptId = db.recordPullBatchStart(agg.idx, batchCids)
       const pullExtra = (await ctx.presignForCommit(
         batch.map((m) => ({ pieceCid: CID.parse(m.pieceCid) as never }))
       )) as Hex
@@ -110,16 +112,26 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
         dataSetId: opts.dataSetId,
         pieces: batch.map((m) => ({ pieceCid: m.pieceCid, sourceUrl: `${base}/piece/${m.pieceCid}` })),
       }
-      let resp = await pullWithBackpressure(pdp, pullBody)
-      while (!isTerminal(resp)) {
-        await sleep(opts.pollMs)
+      let resp: Awaited<ReturnType<typeof pullWithBackpressure>>
+      try {
         resp = await pullWithBackpressure(pdp, pullBody)
+        while (!isTerminal(resp)) {
+          await sleep(opts.pollMs)
+          resp = await pullWithBackpressure(pdp, pullBody)
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        db.recordPullBatchResult(attemptId, 0, batch.length, message)
+        failed += batch.length
+        throw err
       }
-      failed += resp.pieces.filter((p) => p.status === 'failed').length
+      const batchFailed = resp.pieces.filter((p) => p.status === 'failed').length
+      db.recordPullBatchResult(attemptId, batch.length - batchFailed, batchFailed)
+      failed += batchFailed
     }
     const pullMs = pullTimer.stop()
     if (failed > 0) {
-      db.markAggregateFailed(agg.idx)
+      db.markAggregateFailed(agg.idx, `pull failed for ${failed} piece(s)`)
       log(`aggregate ${agg.idx}: pull failed for ${failed} piece(s)`)
       continue
     }
@@ -167,8 +179,9 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
         log(`aggregate ${agg.idx}: add errored but landed on chain (root ${aggregate.rootPieceCid}); marked committed`)
         continue
       }
-      db.markAggregateFailed(agg.idx)
-      log(`aggregate ${agg.idx}: add failed — ${err instanceof Error ? err.message : String(err)}`)
+      const addErr = err instanceof Error ? err.message : String(err)
+      db.markAggregateFailed(agg.idx, `add failed: ${addErr}`)
+      log(`aggregate ${agg.idx}: add failed — ${addErr}`)
       continue
     }
     log(`aggregate ${agg.idx}: AddPieces tx ${txHash} (root ${aggregate.rootPieceCid})`)
@@ -186,7 +199,7 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
       committedBytes += aggBytes
       log(`aggregate ${agg.idx}: committed in ${formatDuration(addMs)} (data set ${opts.dataSetId}, tx ${txHash})`)
     } else {
-      db.markAggregateFailed(agg.idx)
+      db.markAggregateFailed(agg.idx, `AddPieces tx ${txHash} failed`)
       log(`aggregate ${agg.idx}: AddPieces tx ${txHash} failed`)
     }
   }
