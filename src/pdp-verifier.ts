@@ -7,9 +7,14 @@
  * committed before adding it again.
  */
 
-import { createPublicClient, http } from 'viem'
+import { createPublicClient, hexToBytes, http } from 'viem'
 import { CID } from 'multiformats/cid'
 
+/**
+ * PDPVerifier proxy deployments (FilOzone PDP v3.1.0).
+ * Source: `pdp/contract/addresses.go` in github.com/filecoin-project/curio
+ * mirrors the addresses tagged at github.com/FilOzone/pdp/releases/tag/v3.1.0.
+ */
 const PDP_VERIFIER: Record<'calibration' | 'mainnet', `0x${string}`> = {
   calibration: '0x85e366Cf9DD2c0aE37E963d9556F5f4718d6417C',
   mainnet: '0xBADd0B92C1c71d02E7d520f64c0876538fa2557F',
@@ -72,13 +77,4 @@ export function explorerDataSetUrl(network: 'calibration' | 'mainnet', dataSetId
 /** Explorer deep link to a piece by its PieceCID v2. */
 export function explorerPieceUrl(network: 'calibration' | 'mainnet', pieceCid: string): string {
   return `${explorerBase(network)}/piece/${pieceCid}`
-}
-
-function hexToBytes(hex: `0x${string}`): Uint8Array {
-  const body = hex.slice(2)
-  const bytes = new Uint8Array(body.length / 2)
-  for (let i = 0; i < bytes.length; i += 1) {
-    bytes[i] = Number.parseInt(body.slice(i * 2, i * 2 + 2), 16)
-  }
-  return bytes
 }
