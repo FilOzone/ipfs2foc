@@ -8,7 +8,7 @@
 
 import { DatabaseSync } from 'node:sqlite'
 
-export type PieceStatus = 'pending' | 'processing' | 'done' | 'failed'
+export type PieceStatus = 'pending' | 'processing' | 'done' | 'failed' | 'oversized'
 
 /**
  * Failure taxonomy used by `status --json` and the dashboard. Set alongside
@@ -213,6 +213,29 @@ export class MigrationDB {
       .run(error, category, new Date().toISOString(), cid)
   }
 
+  /**
+   * Mark a CID as oversized — its piece padded size exceeds the configured
+   * aggregate budget, so it cannot be packed under the current `--piece-size`.
+   * Distinct from `failed`: the commP pass succeeded, but the piece does not
+   * fit. Resetting the status (e.g. on a larger `--piece-size`) is a
+   * deliberate operator action.
+   */
+  markOversized(cids: string[]): void {
+    if (cids.length === 0) return
+    const stmt = this.#db.prepare(
+      `UPDATE pieces SET status='oversized', failure_category='oversized', updated_at=? WHERE cid=?`
+    )
+    const now = new Date().toISOString()
+    for (const cid of cids) stmt.run(now, cid)
+  }
+
+  /** Clear `oversized` status back to `done` so a re-pack with a larger budget includes them. */
+  resetOversized(): void {
+    this.#db
+      .prepare(`UPDATE pieces SET status='done', failure_category=NULL WHERE status='oversized'`)
+      .run()
+  }
+
   /** All successfully-computed pieces, in stable order, for packing. */
   donePieces(): PieceRow[] {
     const rows = this.#db
@@ -307,6 +330,14 @@ export class MigrationDB {
     return row?.url ?? null
   }
 
+  /** Asset CIDs (input list) belonging to one aggregate, in segment order. */
+  aggregateAssetCids(idx: number): string[] {
+    const rows = this.#db
+      .prepare(`SELECT cid FROM aggregate_members WHERE aggregate_idx = ? ORDER BY segment_index`)
+      .all(idx)
+    return rows.map((r) => String((r as { cid: string }).cid))
+  }
+
   /** Manifest rows (`pieceCid`, `url`, `rawSize`) for one aggregate, in segment order. */
   aggregateManifest(idx: number): Array<{ pieceCid: string; url: string; rawSize: number }> {
     const rows = this.#db
@@ -378,14 +409,16 @@ export class MigrationDB {
     return Number(row.n)
   }
 
-  counts(): { pending: number; processing: number; done: number; failed: number } {
+  counts(): { pending: number; processing: number; done: number; failed: number; oversized: number; total: number } {
     const row = this.#db
       .prepare(
         `SELECT
            SUM(status='pending')    AS pending,
            SUM(status='processing') AS processing,
            SUM(status='done')       AS done,
-           SUM(status='failed')     AS failed
+           SUM(status='failed')     AS failed,
+           SUM(status='oversized')  AS oversized,
+           COUNT(*)                 AS total
          FROM pieces`
       )
       .get() as Record<string, number | null>
@@ -394,6 +427,8 @@ export class MigrationDB {
       processing: Number(row.processing ?? 0),
       done: Number(row.done ?? 0),
       failed: Number(row.failed ?? 0),
+      oversized: Number(row.oversized ?? 0),
+      total: Number(row.total ?? 0),
     }
   }
 

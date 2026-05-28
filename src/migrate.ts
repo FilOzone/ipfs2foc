@@ -54,7 +54,7 @@ export async function runPlan(db: MigrationDB, opts: PlanOptions): Promise<PlanS
 
   const counts = db.counts()
   return {
-    total: counts.pending + counts.processing + counts.done + counts.failed,
+    total: counts.total,
     succeeded: counts.done,
     failed: counts.failed,
     aggregateCount: db.aggregates().length,
@@ -88,6 +88,9 @@ export function repackPlanned(db: MigrationDB, aggregateSizeBytes: bigint): stri
     db.saveAggregate(base + i, agg.rootPieceCid, aggregateSizeBytes, agg.members.map((m) => m.cid))
   })
 
+  const oversizedCids = oversized.map((p) => p.cid)
+  db.markOversized(oversizedCids)
+
   log(`Packed ${free.length} piece(s) into ${aggregates.length} planned aggregate(s).`)
-  return oversized.map((p) => p.cid)
+  return oversizedCids
 }

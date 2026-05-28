@@ -55,6 +55,7 @@ Usage:
                      [--network mainnet|calibration] [--max-in-flight 4] [--max-base-fee N] [--pull-batch 32]
                      (uses PRIVATE_KEY env)
   foc-migrate report --data-set-id <id> [--db <file>] [--network mainnet|calibration] [--json]
+                     [--verify-gateway <https-url>] [--verify-concurrency 8]
 
 Defaults:
   db          ${DEFAULT_DB}
@@ -222,6 +223,8 @@ async function cmdReport(argv: string[]): Promise<void> {
       'data-set-id': { type: 'string' },
       network: { type: 'string', default: 'mainnet' },
       'rpc-url': { type: 'string' },
+      'verify-gateway': { type: 'string' },
+      'verify-concurrency': { type: 'string', default: '8' },
       json: { type: 'boolean', default: false },
     },
   })
@@ -236,9 +239,25 @@ async function cmdReport(argv: string[]): Promise<void> {
       network,
       rpcUrl: values['rpc-url'],
       dataSetId: parsePositiveInt(values['data-set-id'] as string, '--data-set-id'),
+      verifyGateway: values['verify-gateway'],
+      verifyConcurrency: parsePositiveInt(values['verify-concurrency'] as string, '--verify-concurrency'),
     })
     if (values.json) {
       console.log(JSON.stringify(report, null, 2))
+    }
+    // Non-zero exit when the input accounting does not close. Operators wiring
+    // `report` into CI / a final gate get a hard signal that the migration is
+    // not yet done.
+    if (report.cids.unaccounted > 0) {
+      log(`error: ${report.cids.unaccounted} CID(s) unaccounted — refusing to declare complete`)
+      process.exitCode = 1
+    } else if (!report.complete) {
+      // Pending or failed CIDs remain; not an error, but signal incomplete.
+      process.exitCode = 2
+    }
+    if (report.retrieval != null && report.retrieval.failed > 0) {
+      log(`error: ${report.retrieval.failed} CID(s) failed retrieval check`)
+      process.exitCode = process.exitCode ?? 1
     }
   } finally {
     db.close()
