@@ -5,7 +5,7 @@
  * The hash is computed in a single streaming pass — the CAR bytes are never
  * fully buffered — so this scales to large pieces with bounded memory. This is
  * the one unavoidable full read of each object's bytes; everything downstream
- * (aggregate root, deal manifest) is metadata derived from the result.
+ * (aggregate root, submission manifest) is metadata derived from the result.
  */
 
 import { CarBlockIterator } from '@ipld/car'

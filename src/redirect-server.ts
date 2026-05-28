@@ -53,6 +53,6 @@ export function startRedirectServer(db: MigrationDB, port: number): void {
 
   server.listen(port, () => {
     log(`foc-migrate redirect server on http://localhost:${port} (GET /piece/{pieceCidV2} -> 302 gateway CAR)`)
-    log('Front this with a public HTTPS ingress (e.g. `tailscale funnel ' + port + '`) and pass that base to `submit --source-base`.')
+    log('Front this with a public HTTPS ingress (e.g. `tailscale funnel ' + port + '`) and pass that base to `pdp-submit --source-base`.')
   })
 }
