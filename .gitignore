@@ -15,3 +15,6 @@ out/
 
 # Local agent/session files
 .claude/
+
+# Local investigation / peer-review drafts; never committed
+.research/
