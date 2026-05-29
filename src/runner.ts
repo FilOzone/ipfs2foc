@@ -19,6 +19,8 @@ export interface RunnerOptions {
   gateways: string[]
   concurrency: number
   aggregateSizeBytes: bigint
+  ipfsFallback?: boolean
+  fallbackTimeoutMs?: number
 }
 
 export class Runner {
@@ -26,6 +28,8 @@ export class Runner {
   #gateways: string[]
   #concurrency: number
   #aggregateSizeBytes: bigint
+  #ipfsFallback: boolean
+  #fallbackTimeoutMs: number | undefined
   #state: RunState = 'idle'
   #active = 0
   #lastError: string | null = null
@@ -35,6 +39,8 @@ export class Runner {
     this.#gateways = opts.gateways
     this.#concurrency = opts.concurrency
     this.#aggregateSizeBytes = opts.aggregateSizeBytes
+    this.#ipfsFallback = opts.ipfsFallback === true
+    this.#fallbackTimeoutMs = opts.fallbackTimeoutMs
     // Recover any work interrupted by a previous stop.
     this.#db.resetProcessing()
   }
@@ -123,7 +129,10 @@ export class Runner {
 
   async #process(cid: string): Promise<void> {
     try {
-      const piece = await fetchAndComputePiece(cid, this.#gateways)
+      const piece = await fetchAndComputePiece(cid, this.#gateways, {
+        ipfsFallback: this.#ipfsFallback,
+        fallbackTimeoutMs: this.#fallbackTimeoutMs,
+      })
       this.#db.recordPieceSuccess(cid, piece.pieceCid, piece.rawSize, piece.gateway, piece.url)
       log(`  + ${cid} -> ${piece.pieceCid}`)
     } catch (err) {
