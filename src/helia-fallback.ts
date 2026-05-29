@@ -31,6 +31,34 @@ async function loadHelia() {
   return createHelia
 }
 
+/**
+ * Helia's default libp2p config registers WebRTC and WebRTC-Direct transports,
+ * which drag in @libp2p/webrtc → node-datachannel. node-datachannel only ships
+ * NAPI v8 prebuilts; under Node 26 (NAPI v10) `prebuild-install` refuses the
+ * download and the native binding is unavailable. Outbound bitswap does not
+ * need WebRTC at all, so we filter both the transports and the matching
+ * listen addresses. The result is a config that runs with the prebuilt
+ * binaries we already have on disk.
+ */
+export async function buildLibp2pConfig(): Promise<Record<string, any>> {
+  // Dynamic import so calling code that never engages the fallback does not
+  // pay helia's module-graph cost (including the WebRTC transports we filter
+  // out below).
+  const { libp2pDefaults } = await import('helia')
+  const cfg = libp2pDefaults() as Record<string, any>
+  const webrtcRe = /WebRTC/i
+  cfg.transports = (cfg.transports ?? []).filter((t: unknown) => {
+    const repr = (t as { name?: string; toString?: () => string }).toString?.() ?? ''
+    const name = (t as { name?: string }).name ?? ''
+    return !(webrtcRe.test(repr) || webrtcRe.test(name))
+  })
+  cfg.addresses = {
+    ...cfg.addresses,
+    listen: (cfg.addresses?.listen ?? []).filter((a: string) => !/webrtc/i.test(a)),
+  }
+  return cfg
+}
+
 /** Default upper bound on a fallback fetch. The CLI exposes this as `--ipfs-fallback-timeout-seconds`. */
 export const DEFAULT_FALLBACK_TIMEOUT_MS = 120_000
 
@@ -43,9 +71,10 @@ let heliaPromise: Promise<HeliaInstance> | null = null
 export async function getHelia(): Promise<HeliaInstance> {
   if (heliaPromise == null) {
     const createHelia = await loadHelia()
-    heliaPromise = createHelia()
+    const libp2p = await buildLibp2pConfig()
+    heliaPromise = (createHelia as (opts: { libp2p: unknown }) => Promise<HeliaInstance>)({ libp2p })
   }
-  return heliaPromise
+  return heliaPromise as Promise<HeliaInstance>
 }
 
 /**
