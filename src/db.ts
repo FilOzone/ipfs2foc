@@ -74,7 +74,10 @@ export interface SubPieceRow {
   assembledCarLength: number
   assembledSha256: string | null
   targetSizeBytes: number
+  /** Local CAR file for assembled multi-asset sub-pieces. Null for passthrough. */
   carPath: string | null
+  /** Source-gateway URL for passthrough sub-pieces (single source CID). Null for assembled. */
+  url: string | null
   status: SubPieceStatus
 }
 
@@ -164,10 +167,8 @@ export class MigrationDB {
       CREATE TABLE IF NOT EXISTS aggregate_members (
         aggregate_idx INTEGER NOT NULL,
         segment_index INTEGER NOT NULL,
-        cid           TEXT,
-        sub_piece_cid TEXT,
+        sub_piece_cid TEXT NOT NULL,
         PRIMARY KEY (aggregate_idx, segment_index),
-        FOREIGN KEY (cid) REFERENCES pieces(cid),
         FOREIGN KEY (sub_piece_cid) REFERENCES sub_pieces(sub_piece_cid),
         FOREIGN KEY (aggregate_idx) REFERENCES aggregates(idx)
       );
@@ -177,10 +178,12 @@ export class MigrationDB {
         assembled_sha256      TEXT,
         target_size_bytes     INTEGER NOT NULL,
         car_path              TEXT,
+        url                   TEXT,
         status                TEXT NOT NULL DEFAULT 'planned',
         built_at              TEXT,
         error                 TEXT,
-        created_at            TEXT NOT NULL
+        created_at            TEXT NOT NULL,
+        CHECK ((car_path IS NULL) != (url IS NULL))
       );
       CREATE TABLE IF NOT EXISTS sub_piece_members (
         sub_piece_cid     TEXT NOT NULL,
@@ -314,29 +317,24 @@ export class MigrationDB {
   }
 
   /**
-   * CIDs already locked into an aggregate that has been submitted or beyond.
-   * These are excluded from repacking so an in-flight aggregate is never
-   * renumbered or rebuilt under a provider.
+   * Source CIDs already locked into an aggregate that has been submitted or
+   * beyond. Walks the sub-piece member set so a passthrough sub-piece (one
+   * source CID) and a multi-asset sub-piece (N source CIDs) are both
+   * excluded from re-packing.
    */
   lockedMemberCids(): Set<string> {
     const rows = this.#db
       .prepare(
-        `SELECT m.cid FROM aggregate_members m
+        `SELECT spm.member_cid
+         FROM aggregate_members m
          JOIN aggregates a ON a.idx = m.aggregate_idx
+         JOIN sub_piece_members spm ON spm.sub_piece_cid = m.sub_piece_cid
          WHERE a.status != 'planned'`
       )
       .all()
-    return new Set(rows.map((r) => String((r as { cid: string }).cid)))
+    return new Set(rows.map((r) => String((r as { member_cid: string }).member_cid)))
   }
 
-  /** Drop only the `planned` aggregates so repacking leaves submitted ones intact. */
-  deletePlannedAggregates(): void {
-    this.#db.exec(`
-      DELETE FROM aggregate_members
-        WHERE aggregate_idx IN (SELECT idx FROM aggregates WHERE status='planned');
-      DELETE FROM aggregates WHERE status='planned';
-    `)
-  }
 
   /** Next free aggregate index, above any existing (including submitted) aggregate. */
   nextAggregateIndex(): number {
@@ -345,17 +343,15 @@ export class MigrationDB {
   }
 
   /**
-   * Persist an aggregate plus its ordered members. Each member is either a
-   * single-piece source CID (`{ cid }`) or a packed multi-asset sub-piece
-   * (`{ subPieceCid }`). The two shapes never mix inside one aggregate today,
-   * but the table holds both columns so the redirect server can dispatch from
-   * one lookup.
+   * Persist an aggregate plus its ordered sub-piece members. Every member is
+   * a sub-piece — single-asset source CIDs become 1-member passthrough
+   * sub-pieces at plan time, so the pull/add path has one canonical shape.
    */
   saveAggregate(
     idx: number,
     rootPieceCid: string,
     pieceSizeBytes: bigint,
-    members: Array<string | { cid?: string; subPieceCid?: string }>
+    members: string[]
   ): void {
     this.#db
       .prepare(
@@ -364,15 +360,11 @@ export class MigrationDB {
       )
       .run(idx, rootPieceCid, pieceSizeBytes.toString(), new Date().toISOString())
     const memberStmt = this.#db.prepare(
-      `INSERT INTO aggregate_members (aggregate_idx, segment_index, cid, sub_piece_cid)
-       VALUES (?, ?, ?, ?)`
+      `INSERT INTO aggregate_members (aggregate_idx, segment_index, sub_piece_cid)
+       VALUES (?, ?, ?)`
     )
-    members.forEach((m, segmentIndex) => {
-      if (typeof m === 'string') {
-        memberStmt.run(idx, segmentIndex, m, null)
-      } else {
-        memberStmt.run(idx, segmentIndex, m.cid ?? null, m.subPieceCid ?? null)
-      }
+    members.forEach((subPieceCid, segmentIndex) => {
+      memberStmt.run(idx, segmentIndex, subPieceCid)
     })
   }
 
@@ -386,13 +378,10 @@ export class MigrationDB {
                 a.data_set_id, a.piece_id, a.tx_hash, a.committed_block, a.error,
                 a.submitted_at, a.parked_at, a.committed_at,
                 (
-                  SELECT COALESCE(SUM(
-                    CASE WHEN m.cid IS NOT NULL THEN 1
-                         ELSE (SELECT COUNT(*) FROM sub_piece_members spm
-                               WHERE spm.sub_piece_cid = m.sub_piece_cid)
-                    END
-                  ), 0)
-                  FROM aggregate_members m WHERE m.aggregate_idx = a.idx
+                  SELECT COUNT(*)
+                  FROM aggregate_members m
+                  JOIN sub_piece_members spm ON spm.sub_piece_cid = m.sub_piece_cid
+                  WHERE m.aggregate_idx = a.idx
                 ) AS member_count
          FROM aggregates a ORDER BY a.idx`
       )
@@ -431,44 +420,44 @@ export class MigrationDB {
   }
 
   /**
-   * Asset CIDs (input list) belonging to one aggregate. Walks `sub_piece_members`
-   * for members that point at a sub-piece, so the returned list is the
-   * **source** CID set regardless of how the aggregate was packed.
+   * Source CIDs (input list) belonging to one aggregate. Always walks
+   * `sub_piece_members` since every aggregate member is a sub-piece —
+   * passthrough sub-pieces have one member CID equal to the source CID, and
+   * multi-asset sub-pieces have N members. Returned in the canonical packing
+   * order: segment of the aggregate, then sort order within the sub-piece.
    */
   aggregateAssetCids(idx: number): string[] {
     const rows = this.#db
       .prepare(
-        `SELECT COALESCE(m.cid, spm.member_cid) AS asset_cid
+        `SELECT spm.member_cid
          FROM aggregate_members m
-         LEFT JOIN sub_piece_members spm ON spm.sub_piece_cid = m.sub_piece_cid
+         JOIN sub_piece_members spm ON spm.sub_piece_cid = m.sub_piece_cid
          WHERE m.aggregate_idx = ?
          ORDER BY m.segment_index, spm.member_sort_order`
       )
-      .all(idx) as Array<{ asset_cid: string | null }>
-    return rows.map((r) => String(r.asset_cid)).filter((c) => c !== 'null')
+      .all(idx) as Array<{ member_cid: string }>
+    return rows.map((r) => String(r.member_cid))
   }
 
-  /** Number of source-CID assets in one aggregate (expands sub-pieces). */
+  /** Number of source-CID assets in one aggregate. */
   aggregateAssetCount(idx: number): number {
     return this.aggregateAssetCids(idx).length
   }
 
   /**
-   * Manifest rows (`pieceCid`, `url`, `rawSize`) for one aggregate, in segment
-   * order. Members may be either single-piece source CIDs or packed sub-pieces;
-   * the columns coalesce so the caller sees a uniform `(pieceCid, url, rawSize)`
-   * shape regardless of how the member was registered.
+   * Sub-piece manifest for one aggregate, in segment order. Every row is one
+   * sub-piece (multi-asset CAR file or passthrough source-gateway URL); the
+   * pull/add path treats them uniformly.
    */
   aggregateManifest(idx: number): Array<{ pieceCid: string; url: string; rawSize: number }> {
     const rows = this.#db
       .prepare(
         `SELECT
-            COALESCE(sp.sub_piece_cid, p.piece_cid)   AS piece_cid,
-            COALESCE(p.url, '')                       AS url,
-            COALESCE(sp.assembled_car_length, p.raw_size) AS raw_size
+            sp.sub_piece_cid      AS piece_cid,
+            COALESCE(sp.url, '')  AS url,
+            sp.assembled_car_length AS raw_size
          FROM aggregate_members m
-         LEFT JOIN pieces p     ON p.cid = m.cid
-         LEFT JOIN sub_pieces sp ON sp.sub_piece_cid = m.sub_piece_cid
+         JOIN sub_pieces sp ON sp.sub_piece_cid = m.sub_piece_cid
          WHERE m.aggregate_idx = ?
          ORDER BY m.segment_index`
       )
@@ -685,44 +674,6 @@ export class MigrationDB {
    * The assembled CAR length is computed up-front so the redirect server can
    * set `Content-Length` without re-walking the bytes.
    */
-  recordPlannedSubPiece(args: {
-    subPieceCid: string
-    assembledCarLength: number
-    targetSizeBytes: number
-    members: Array<{ cid: string; rawSize: number | null; sha256: string | null }>
-  }): void {
-    const now = new Date().toISOString()
-    const insertSub = this.#db.prepare(
-      `INSERT INTO sub_pieces (sub_piece_cid, assembled_car_length, target_size_bytes, status, created_at)
-       VALUES (?, ?, ?, 'planned', ?)
-       ON CONFLICT(sub_piece_cid) DO NOTHING`
-    )
-    const insertMember = this.#db.prepare(
-      `INSERT INTO sub_piece_members
-         (sub_piece_cid, member_cid, member_sort_order, member_sha256, member_raw_size)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(sub_piece_cid, member_cid) DO NOTHING`
-    )
-    insertSub.run(args.subPieceCid, args.assembledCarLength, args.targetSizeBytes, now)
-    args.members.forEach((m, i) => {
-      insertMember.run(args.subPieceCid, m.cid, i, m.sha256, m.rawSize)
-    })
-  }
-
-  /**
-   * Transition a planned sub-piece to `built`: the assembled CAR is on disk
-   * (under `--car-store`), its sha256 matched the planning digest, and the
-   * server may serve it for pulls.
-   */
-  markSubPieceBuilt(subPieceCid: string, carPath: string, assembledSha256: string): void {
-    this.#db
-      .prepare(
-        `UPDATE sub_pieces SET status='built', car_path=?, assembled_sha256=?, built_at=?, error=NULL
-         WHERE sub_piece_cid=?`
-      )
-      .run(carPath, assembledSha256, new Date().toISOString(), subPieceCid)
-  }
-
   markSubPieceFailed(subPieceCid: string, error: string): void {
     this.#db
       .prepare(`UPDATE sub_pieces SET status='failed', error=? WHERE sub_piece_cid=?`)
@@ -767,6 +718,43 @@ export class MigrationDB {
       )
       args.members.forEach((m, i) => insertMember.run(args.subPieceCid, m.cid, i, m.sha256, m.rawSize))
       this.#db.exec('COMMIT')
+      return
+    } catch (err) {
+      this.#db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  /**
+   * Insert a passthrough sub-piece — one source CID wrapped as a single-member
+   * sub-piece whose pull source is the gateway URL. No CAR file on disk.
+   * Same atomicity contract as `recordBuiltSubPiece`: sub_piece row + the
+   * single member row land together or not at all.
+   */
+  recordPassthroughSubPiece(args: {
+    subPieceCid: string
+    sourceCid: string
+    url: string
+    rawSize: number
+    memberSha256: string | null
+  }): void {
+    const now = new Date().toISOString()
+    this.#db.exec('BEGIN')
+    try {
+      this.#db
+        .prepare(
+          `INSERT INTO sub_pieces (sub_piece_cid, assembled_car_length, target_size_bytes,
+                                    status, url, assembled_sha256, built_at, created_at)
+           VALUES (?, ?, ?, 'built', ?, ?, ?, ?)`
+        )
+        .run(args.subPieceCid, args.rawSize, args.rawSize, args.url, args.memberSha256, now, now)
+      this.#db
+        .prepare(
+          `INSERT INTO sub_piece_members (sub_piece_cid, member_cid, member_sort_order, member_sha256, member_raw_size)
+           VALUES (?, ?, 0, ?, ?)`
+        )
+        .run(args.subPieceCid, args.sourceCid, args.memberSha256, args.rawSize)
+      this.#db.exec('COMMIT')
     } catch (err) {
       this.#db.exec('ROLLBACK')
       throw err
@@ -778,7 +766,7 @@ export class MigrationDB {
     const row = this.#db
       .prepare(
         `SELECT sub_piece_cid, assembled_car_length, assembled_sha256, target_size_bytes,
-                car_path, status FROM sub_pieces WHERE sub_piece_cid = ? LIMIT 1`
+                car_path, url, status FROM sub_pieces WHERE sub_piece_cid = ? LIMIT 1`
       )
       .get(subPieceCid) as Record<string, unknown> | undefined
     if (row == null) return null
@@ -788,6 +776,7 @@ export class MigrationDB {
       assembledSha256: row.assembled_sha256 == null ? null : String(row.assembled_sha256),
       targetSizeBytes: Number(row.target_size_bytes),
       carPath: row.car_path == null ? null : String(row.car_path),
+      url: row.url == null ? null : String(row.url),
       status: row.status as SubPieceStatus,
     }
   }
@@ -797,7 +786,7 @@ export class MigrationDB {
     const rows = this.#db
       .prepare(
         `SELECT sub_piece_cid, assembled_car_length, assembled_sha256, target_size_bytes,
-                car_path, status FROM sub_pieces WHERE status = ? ORDER BY sub_piece_cid`
+                car_path, url, status FROM sub_pieces WHERE status = ? ORDER BY sub_piece_cid`
       )
       .all(status)
     return rows.map((r) => {
@@ -808,6 +797,7 @@ export class MigrationDB {
         assembledSha256: row.assembled_sha256 == null ? null : String(row.assembled_sha256),
         targetSizeBytes: Number(row.target_size_bytes),
         carPath: row.car_path == null ? null : String(row.car_path),
+        url: row.url == null ? null : String(row.url),
         status: row.status as SubPieceStatus,
       }
     })
@@ -837,7 +827,20 @@ export class MigrationDB {
     return rows.map((r) => String((r as { member_cid: string }).member_cid))
   }
 
-  /** Pieces marked done that are not already locked into a sub-piece or in-flight aggregate. */
+  /** Sub-piece CIDs that already belong to an aggregate (any status). */
+  subPieceCidsAlreadyAggregated(): Set<string> {
+    const rows = this.#db
+      .prepare(`SELECT DISTINCT sub_piece_cid FROM aggregate_members`)
+      .all() as Array<{ sub_piece_cid: string }>
+    return new Set(rows.map((r) => String(r.sub_piece_cid)))
+  }
+
+  /**
+   * Pieces marked done that have not yet been wrapped into a sub-piece.
+   * Membership in any sub-piece (passthrough or packed) excludes a piece;
+   * lifecycle status of the aggregate containing that sub-piece does not
+   * matter because composition is set at INSERT and never mutates.
+   */
   donePiecesFreeForPacking(): PieceRow[] {
     const rows = this.#db
       .prepare(
@@ -845,12 +848,6 @@ export class MigrationDB {
          FROM pieces p
          WHERE p.status='done'
            AND p.cid NOT IN (SELECT member_cid FROM sub_piece_members)
-           AND p.cid NOT IN (
-             SELECT am.cid FROM aggregate_members am
-             JOIN aggregates a ON a.idx = am.aggregate_idx
-             WHERE am.cid IS NOT NULL
-               AND a.status IN ('submitted', 'parked', 'committed')
-           )
          ORDER BY p.cid`
       )
       .all()

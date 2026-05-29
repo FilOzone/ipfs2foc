@@ -176,6 +176,7 @@ async function cmdPlan(argv: string[]): Promise<void> {
       'ipfs-fallback': { type: 'boolean', default: false },
       'ipfs-fallback-mode': { type: 'string' },
       'ipfs-fallback-timeout-seconds': { type: 'string' },
+      'no-auto-pack': { type: 'boolean', default: false },
     },
   })
   if (values.cids == null) {
@@ -196,6 +197,7 @@ async function cmdPlan(argv: string[]): Promise<void> {
       concurrency: parsePositiveInt(values.concurrency as string, '--concurrency'),
       ipfsFallback: fallback.ipfsFallback,
       fallbackTimeoutMs: fallback.fallbackTimeoutMs,
+      autoPack: values['no-auto-pack'] !== true,
     })
 
     log('')

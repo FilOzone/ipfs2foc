@@ -56,15 +56,17 @@ export function makeRedirectHandler(db: MigrationDB): (req: IncomingMessage, res
 
     const pieceCid = match[1]
 
-    // Packed multi-asset sub-piece path. Built rows have an assembled CAR on
-    // disk; planned/failed rows are not yet serveable.
+    // One lookup. Every piece commitment in the schema is a sub-piece —
+    // passthrough sub-pieces carry the gateway URL, assembled sub-pieces
+    // carry the CAR file path. The branch picks the response shape.
     const subPiece = db.subPieceByCid(pieceCid)
-    if (subPiece != null) {
-      if (subPiece.status !== 'built' || subPiece.carPath == null) {
-        res.writeHead(404, { 'content-type': 'text/plain' })
-        res.end('sub-piece not built')
-        return
-      }
+    if (subPiece == null || subPiece.status !== 'built') {
+      res.writeHead(404, { 'content-type': 'text/plain' })
+      res.end(subPiece == null ? 'unknown piece' : 'sub-piece not built')
+      return
+    }
+
+    if (subPiece.carPath != null) {
       serveAssembledCar(res, subPiece.carPath, subPiece.assembledCarLength).catch((err) => {
         const message = err instanceof Error ? err.message : String(err)
         log(`serve ${pieceCid}: ${message}`)
@@ -72,18 +74,17 @@ export function makeRedirectHandler(db: MigrationDB): (req: IncomingMessage, res
       return
     }
 
-    // Single-piece path: 302 to the upstream gateway CAR.
-    const target = db.pieceUrlByPieceCid(pieceCid)
-    if (target == null) {
-      res.writeHead(404, { 'content-type': 'text/plain' })
-      res.end('unknown piece')
+    if (subPiece.url != null) {
+      // 302 to the upstream gateway CAR. no-store keeps intermediaries from
+      // pinning the redirect, so each provider pull resolves freshly.
+      res.writeHead(302, { location: subPiece.url, 'cache-control': 'no-store' })
+      res.end()
       return
     }
 
-    // 302 to the gateway CAR. no-store keeps intermediaries from pinning the
-    // redirect, so each provider pull resolves freshly.
-    res.writeHead(302, { location: target, 'cache-control': 'no-store' })
-    res.end()
+    // Should be unreachable given the CHECK ((car_path IS NULL) != (url IS NULL)).
+    res.writeHead(500, { 'content-type': 'text/plain' })
+    res.end('sub-piece has neither car_path nor url')
   }
 }
 

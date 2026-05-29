@@ -13,7 +13,16 @@ async function dbAt(name: string) {
 function seedSubmittedAggregate(db: MigrationDB) {
   db.addCids(['bafkreia'])
   db.recordPieceSuccess('bafkreia', 'bafkzcibe-piece', 100, 'g', 'u', 'sha-a')
-  db.saveAggregate(0, 'bafkzcibe-root', 256n, [{ cid: 'bafkreia' }])
+  // saveAggregate now takes sub_piece_cids only. Wrap the source as a
+  // passthrough sub-piece first, then point the aggregate at that sub-piece.
+  db.recordPassthroughSubPiece({
+    subPieceCid: 'bafkzcibe-piece',
+    sourceCid: 'bafkreia',
+    url: 'u',
+    rawSize: 100,
+    memberSha256: null,
+  })
+  db.saveAggregate(0, 'bafkzcibe-root', 256n, ['bafkzcibe-piece'])
   db.markSubmitted(0, 'pull-0')
 }
 

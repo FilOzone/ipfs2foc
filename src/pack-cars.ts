@@ -43,7 +43,7 @@ import * as Link from 'multiformats/link'
 import * as Raw from 'multiformats/codecs/raw'
 import type { MigrationDB, PieceRow } from './db.ts'
 import { fetchCar } from './gateway.ts'
-import { repackAfterPackCars } from './migrate.ts'
+import { appendAggregatesFromFreeSubPieces } from './migrate.ts'
 import { log, pool } from './util.ts'
 
 /** Default target raw size for one assembled sub-piece. Stays under the 1_069_547_520-byte raw cap. */
@@ -398,13 +398,14 @@ export async function runPackCars(db: MigrationDB, opts: PackCarsOptions): Promi
   // of which are below the provider's minimum piece size). Frozen aggregates
   // (submitted/parked/committed) are left untouched.
   if (summary.built > 0) {
-    // Inherit the aggregate size from the planned aggregates `plan` wrote, so
-    // we do not need to thread `--piece-size` through here. All planned
-    // aggregates share the same size by construction.
+    // Append new aggregates over the freshly built multi-asset sub-pieces.
+    // No DELETE of existing aggregates — `plan` already added passthrough
+    // aggregates over the source pieces, and those stay as the alternative
+    // path for any operator who prefers single-asset commits.
     const existing = db.aggregates().find((a) => a.status === 'planned')
     const aggregateSizeBytes = opts.aggregateSizeBytes
       ?? (existing != null ? BigInt(existing.pieceSizeBytes) : 32n * 1024n * 1024n * 1024n)
-    repackAfterPackCars(db, aggregateSizeBytes)
+    appendAggregatesFromFreeSubPieces(db, aggregateSizeBytes)
   }
 
   return summary

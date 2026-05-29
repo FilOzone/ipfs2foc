@@ -9,7 +9,7 @@
  */
 
 import type { MigrationDB } from './db.ts'
-import { repackPlanned } from './migrate.ts'
+import { wrapDonePiecesAsPassthroughSubPieces, appendAggregatesFromFreeSubPieces } from './migrate.ts'
 import { categoryOf, fetchAndComputePiece } from './piece.ts'
 import { log } from './util.ts'
 
@@ -147,6 +147,7 @@ export class Runner {
   }
 
   #repack(): void {
-    repackPlanned(this.#db, this.#aggregateSizeBytes)
+    wrapDonePiecesAsPassthroughSubPieces(this.#db)
+    appendAggregatesFromFreeSubPieces(this.#db, this.#aggregateSizeBytes)
   }
 }

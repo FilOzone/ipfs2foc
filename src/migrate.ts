@@ -1,9 +1,13 @@
 /**
- * Plan orchestration: CID list -> piece commitments -> aggregates.
+ * Plan orchestration: CID list → piece commitments → passthrough sub-pieces →
+ * aggregates.
  *
- * All state lives in the SQLite database (see db.ts), so a run resumes after
- * interruption: `plan` computes commitments for CIDs that are not yet `done`,
- * then packs completed pieces into aggregates.
+ * `plan` computes piece commitments for every pending source CID and wraps
+ * each successful commitment as a passthrough sub-piece (one member CID,
+ * `url` set to the source-gateway URL, no CAR file on disk). Aggregates are
+ * appended over the newly available sub-pieces. Everything is INSERT-only:
+ * rerunning `plan` after adding CIDs adds new pieces, sub-pieces, and
+ * aggregates without touching prior state.
  */
 
 import { packAggregates } from './aggregate.ts'
@@ -18,6 +22,13 @@ export interface PlanOptions {
   concurrency: number
   ipfsFallback?: boolean
   fallbackTimeoutMs?: number
+  /**
+   * Default true. When false, `plan` stops after commP — the operator is
+   * expected to run `pack-cars` (multi-asset) before `pdp-submit`. Set
+   * `--no-auto-pack` on the CLI when packing multiple source CIDs into one
+   * sub-piece is intended.
+   */
+  autoPack?: boolean
 }
 
 export interface PlanSummary {
@@ -29,8 +40,9 @@ export interface PlanSummary {
 }
 
 /**
- * Compute piece commitments for all pending CIDs, then (re)pack every completed
- * piece into aggregates. Idempotent and resumable.
+ * Compute commitments, wrap each as a passthrough sub-piece, append aggregates
+ * over the un-aggregated sub-piece set. Idempotent: pieces already done, sub-
+ * pieces already recorded, and aggregates already created are left alone.
  */
 export async function runPlan(db: MigrationDB, opts: PlanOptions): Promise<PlanSummary> {
   const pending = db.pendingCids()
@@ -55,7 +67,12 @@ export async function runPlan(db: MigrationDB, opts: PlanOptions): Promise<PlanS
   })
   log(formatStageSummary('commP pass', stats.summary()))
 
-  const oversized = repackPlanned(db, opts.aggregateSizeBytes)
+  const autoPack = opts.autoPack !== false
+  let oversized: string[] = []
+  if (autoPack) {
+    wrapDonePiecesAsPassthroughSubPieces(db)
+    oversized = appendAggregatesFromFreeSubPieces(db, opts.aggregateSizeBytes)
+  }
 
   const counts = db.counts()
   return {
@@ -68,88 +85,50 @@ export async function runPlan(db: MigrationDB, opts: PlanOptions): Promise<PlanS
 }
 
 /**
- * Pack every completed piece that is not already locked into a submitted-or-later
- * aggregate. Replaces only the `planned` aggregates, so in-flight ones keep their
- * index and members. Returns the CIDs too large for one aggregate of this size.
+ * Wrap every successful piece that is not already a sub-piece member as a
+ * passthrough sub-piece. The sub-piece's PieceCID equals the source piece's
+ * PieceCID; the pull source is the gateway URL captured at commP time.
+ * Skips pieces already wrapped (resumable / re-runnable).
  */
-export function repackPlanned(db: MigrationDB, aggregateSizeBytes: bigint): string[] {
-  const locked = db.lockedMemberCids()
-  const free = db.donePieces().filter((p) => !locked.has(p.cid))
+export function wrapDonePiecesAsPassthroughSubPieces(db: MigrationDB): void {
+  const free = db.donePiecesFreeForPacking()
+  for (const p of free) {
+    if (p.pieceCid == null || p.rawSize == null || p.url == null || p.url === '') continue
+    db.recordPassthroughSubPiece({
+      subPieceCid: p.pieceCid,
+      sourceCid: p.cid,
+      url: p.url,
+      rawSize: p.rawSize,
+      memberSha256: null,
+    })
+  }
+}
 
-  const { aggregates, oversized } = packAggregates(
-    free.map((p) => ({
-      cid: p.cid,
-      pieceCid: p.pieceCid ?? '',
-      rawSize: p.rawSize ?? 0,
-      gateway: p.gateway ?? '',
-      url: p.url ?? '',
-    })),
-    aggregateSizeBytes
-  )
+/**
+ * Append new planned aggregates over every built sub-piece that is not yet
+ * part of an aggregate. Existing aggregates are never deleted — composition
+ * is set at INSERT and frozen for the row's lifetime.
+ */
+export function appendAggregatesFromFreeSubPieces(db: MigrationDB, aggregateSizeBytes: bigint): string[] {
+  const aggregated = db.subPieceCidsAlreadyAggregated()
+  const subPieces = db.subPiecesByStatus('built').filter((sp) => !aggregated.has(sp.subPieceCid))
+  if (subPieces.length === 0) return []
 
-  db.deletePlannedAggregates()
+  const units = subPieces.map((sp) => ({
+    cid: sp.subPieceCid,
+    pieceCid: sp.subPieceCid,
+    rawSize: sp.assembledCarLength,
+    gateway: '',
+    url: sp.url ?? '',
+  }))
+
+  const { aggregates, oversized } = packAggregates(units, aggregateSizeBytes)
+
   const base = db.nextAggregateIndex()
   aggregates.forEach((agg, i) => {
     db.saveAggregate(base + i, agg.rootPieceCid, aggregateSizeBytes, agg.members.map((m) => m.cid))
   })
 
-  const oversizedCids = oversized.map((p) => p.cid)
-  db.markOversized(oversizedCids)
-
-  log(`Packed ${free.length} piece(s) into ${aggregates.length} planned aggregate(s).`)
-  return oversizedCids
-}
-
-/**
- * After `pack-cars` builds sub-pieces, rebuild `planned` aggregates so their
- * members reference the packed sub-pieces instead of the original source CIDs.
- * Each unit (built sub-piece or still-free single-asset piece) becomes one
- * member; binning is by raw size against `aggregateSizeBytes`. Only planned
- * aggregates are replaced — submitted/parked/committed compositions are frozen.
- */
-export function repackAfterPackCars(db: MigrationDB, aggregateSizeBytes: bigint): void {
-  const subPieces = db.subPiecesByStatus('built')
-  const free = db.donePiecesFreeForPacking()
-
-  type Unit = { pieceCid: string; rawSize: number; cid: string; gateway: string; url: string; isSubPiece: boolean }
-  const units: Unit[] = [
-    ...subPieces.map((sp) => ({
-      pieceCid: sp.subPieceCid,
-      rawSize: sp.assembledCarLength,
-      cid: sp.subPieceCid,
-      gateway: '',
-      url: '',
-      isSubPiece: true,
-    })),
-    ...free.map((p) => ({
-      pieceCid: p.pieceCid ?? '',
-      rawSize: p.rawSize ?? 0,
-      cid: p.cid,
-      gateway: p.gateway ?? '',
-      url: p.url ?? '',
-      isSubPiece: false,
-    })),
-  ]
-
-  const { aggregates, oversized } = packAggregates(units, aggregateSizeBytes)
-
-  db.deletePlannedAggregates()
-  const base = db.nextAggregateIndex()
-  const subPieceSet = new Set(subPieces.map((s) => s.subPieceCid))
-  aggregates.forEach((agg, i) => {
-    db.saveAggregate(
-      base + i,
-      agg.rootPieceCid,
-      aggregateSizeBytes,
-      agg.members.map((m) => (subPieceSet.has(m.cid) ? { subPieceCid: m.cid } : { cid: m.cid }))
-    )
-  })
-
-  const oversizedCids = oversized.filter((u) => !subPieceSet.has(u.cid)).map((u) => u.cid)
-  db.markOversized(oversizedCids)
-
-  log(
-    `Repacked ${subPieces.length} sub-piece(s) + ${free.length} single-asset piece(s) ` +
-      `into ${aggregates.length} planned aggregate(s).`
-  )
+  log(`Appended ${aggregates.length} planned aggregate(s) over ${subPieces.length} free sub-piece(s).`)
+  return oversized.map((p) => p.cid)
 }

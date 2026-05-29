@@ -10,31 +10,29 @@ async function dbAt(name: string) {
   return { dir, db: new MigrationDB(join(dir, 'migrate.db')) }
 }
 
-test('donePiecesFreeForPacking excludes cids locked in submitted aggregates', async () => {
-  const { dir, db } = await dbAt('free-pack-submitted')
+test('donePiecesFreeForPacking excludes cids wrapped as passthrough sub-pieces', async () => {
+  const { dir, db } = await dbAt('free-pack-passthrough')
   try {
     db.addCids(['bafA', 'bafB', 'bafC'])
-    db.recordPieceSuccess('bafA', 'pcA', 100, 'g', 'u', 'shaA')
-    db.recordPieceSuccess('bafB', 'pcB', 200, 'g', 'u', 'shaB')
-    db.recordPieceSuccess('bafC', 'pcC', 300, 'g', 'u', 'shaC')
-    db.saveAggregate(0, 'root-0', 256n, [{ cid: 'bafA' }, { cid: 'bafB' }])
-    db.markSubmitted(0, 'pull-0')
+    db.recordPieceSuccess('bafA', 'pcA', 100, 'g', 'u', null)
+    db.recordPieceSuccess('bafB', 'pcB', 200, 'g', 'u', null)
+    db.recordPieceSuccess('bafC', 'pcC', 300, 'g', 'u', null)
+    db.recordPassthroughSubPiece({ subPieceCid: 'pcA', sourceCid: 'bafA', url: 'u', rawSize: 100, memberSha256: null })
+    db.recordPassthroughSubPiece({ subPieceCid: 'pcB', sourceCid: 'bafB', url: 'u', rawSize: 200, memberSha256: null })
     const free = db.donePiecesFreeForPacking().map((p) => p.cid).sort()
-    assert.deepEqual(free, ['bafC'], 'bafA and bafB are locked in a submitted aggregate')
+    assert.deepEqual(free, ['bafC'], 'bafA and bafB are already members of a sub-piece')
   } finally {
     db.close()
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('donePiecesFreeForPacking includes cids in still-planned aggregates (re-pack allowed)', async () => {
-  const { dir, db } = await dbAt('free-pack-planned')
+test('donePiecesFreeForPacking returns every done piece when no sub-pieces exist yet', async () => {
+  const { dir, db } = await dbAt('free-pack-bare')
   try {
     db.addCids(['bafA', 'bafB'])
-    db.recordPieceSuccess('bafA', 'pcA', 100, 'g', 'u', 'shaA')
-    db.recordPieceSuccess('bafB', 'pcB', 200, 'g', 'u', 'shaB')
-    db.saveAggregate(0, 'root-0', 256n, [{ cid: 'bafA' }, { cid: 'bafB' }])
-    // Status stays 'planned' — operator may still re-pack.
+    db.recordPieceSuccess('bafA', 'pcA', 100, 'g', 'u', null)
+    db.recordPieceSuccess('bafB', 'pcB', 200, 'g', 'u', null)
     const free = db.donePiecesFreeForPacking().map((p) => p.cid).sort()
     assert.deepEqual(free, ['bafA', 'bafB'])
   } finally {
@@ -43,7 +41,7 @@ test('donePiecesFreeForPacking includes cids in still-planned aggregates (re-pac
   }
 })
 
-test('donePiecesFreeForPacking excludes cids already locked into a sub_piece', async () => {
+test('donePiecesFreeForPacking excludes cids already locked into an assembled sub-piece', async () => {
   const { dir, db } = await dbAt('free-pack-subpiece')
   try {
     db.addCids(['bafA', 'bafB'])
