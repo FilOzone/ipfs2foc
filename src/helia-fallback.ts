@@ -19,25 +19,32 @@
  * config includes those services anyway; they are harmless when unused.
  */
 
-import { car as createCarExporter } from '@helia/car'
-import { createHelia, type Helia } from 'helia'
 import { CID } from 'multiformats/cid'
+
+// Helia and @helia/car are imported dynamically inside the functions below so
+// the module load itself stays cheap (no transitive native modules pulled in
+// at startup). Required for the case where the operator never opts into
+// `--ipfs-fallback` and we should not pay a Helia startup cost.
+type HeliaInstance = Awaited<ReturnType<typeof loadHelia>> extends () => Promise<infer H> ? H : any
+async function loadHelia() {
+  const { createHelia } = await import('helia')
+  return createHelia
+}
 
 /** Default upper bound on a fallback fetch. The CLI exposes this as `--ipfs-fallback-timeout-seconds`. */
 export const DEFAULT_FALLBACK_TIMEOUT_MS = 120_000
 
-let heliaPromise: Promise<Helia> | null = null
+let heliaPromise: Promise<HeliaInstance> | null = null
 
 /**
  * Lazily construct a Helia node. The first caller pays the startup cost;
  * subsequent callers share the same node for the lifetime of the process.
- *
- * Uses Helia's default libp2p stack: TCP + Yamux + Noise transports, bitswap
- * + trustless-gateway block brokers, identify, AutoNAT and UPnP services.
- * This is the upstream-vetted configuration; we do not redefine it here.
  */
-export async function getHelia(): Promise<Helia> {
-  heliaPromise ??= createHelia()
+export async function getHelia(): Promise<HeliaInstance> {
+  if (heliaPromise == null) {
+    const createHelia = await loadHelia()
+    heliaPromise = createHelia()
+  }
   return heliaPromise
 }
 
@@ -67,6 +74,7 @@ export async function fetchCarViaHelia(
   const timeoutMs = opts.timeoutMs ?? DEFAULT_FALLBACK_TIMEOUT_MS
   const helia = await getHelia()
   const root = CID.parse(cid)
+  const { car: createCarExporter } = await import('@helia/car')
   const exporter = createCarExporter(helia)
   const signal = AbortSignal.timeout(timeoutMs)
 
