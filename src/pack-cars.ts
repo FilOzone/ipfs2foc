@@ -250,20 +250,46 @@ async function* toAsyncIterable(
  */
 export function createCarStoreSink(filePath: string): WritableStreamWithLength {
   const stream = createWriteStream(filePath)
+  let firstError: Error | null = null
+  let cleanupDone = false
+  const unlinkPartial = async () => {
+    if (cleanupDone) return
+    cleanupDone = true
+    // The file may not exist (createWriteStream's open failed) or may be
+    // partially written. unlink errors are swallowed: the failure we surface
+    // is the write/open error, not the cleanup error.
+    await unlink(filePath).catch(() => undefined)
+  }
+  stream.on('error', (err) => {
+    if (firstError == null) firstError = err
+    void unlinkPartial()
+  })
   return {
     write(chunk) {
+      if (firstError != null) return Promise.reject(firstError)
       return new Promise<void>((resolve, reject) => {
-        if (stream.write(chunk)) {
-          resolve()
-        } else {
-          stream.once('drain', resolve)
-        }
-        stream.once('error', reject)
+        if (firstError != null) return reject(firstError)
+        const onError = (err: Error) => reject(err)
+        stream.once('error', onError)
+        const cleanup = () => stream.off('error', onError)
+        const ok = stream.write(chunk, (err) => {
+          cleanup()
+          if (err) reject(err)
+          else if (ok) resolve()
+        })
+        if (!ok) stream.once('drain', () => { cleanup(); resolve() })
       })
     },
-    end() {
-      return new Promise<void>((resolve, reject) => {
+    async end() {
+      if (firstError != null) {
+        await unlinkPartial()
+        throw firstError
+      }
+      await new Promise<void>((resolve, reject) => {
         stream.end((err?: Error | null) => (err ? reject(err) : resolve()))
+      }).catch(async (err) => {
+        await unlinkPartial()
+        throw err
       })
     },
   }
