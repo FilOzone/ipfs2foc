@@ -26,6 +26,7 @@ import { formatBytes, formatDuration, formatRate, Timer } from './metrics.ts'
 import { PdpClient, PullBackpressure, type PullResponse } from './pdp.ts'
 import { activePieceCids, fetchAddPiecesEvent } from './pdp-verifier.ts'
 import { pieceAggregateCommP } from './piece-aggregate.ts'
+import { checkMinPieceSize } from './min-piece-guard.ts'
 import { unlink } from 'node:fs/promises'
 import { log } from './util.ts'
 
@@ -77,8 +78,12 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
   const provider = await ctx.getProviderInfo()
   const pdp = new PdpClient(provider.pdp.serviceURL)
   const base = opts.sourceBase.replace(/\/+$/, '')
+  const minPieceSize = provider.pdp.minPieceSizeInBytes
 
-  log(`PDP submit to ${provider.pdp.serviceURL} (data set ${opts.dataSetId}), pull source ${base}/piece/{pcidv2}`)
+  log(
+    `PDP submit to ${provider.pdp.serviceURL} (data set ${opts.dataSetId}), pull source ${base}/piece/{pcidv2}, ` +
+      `provider min piece size ${minPieceSize} bytes`
+  )
 
   const runTimer = new Timer()
   let committedCount = 0
@@ -104,6 +109,24 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
 
     const members = db.aggregateManifest(agg.idx)
     const aggBytesPlanned = members.reduce((sum, m) => sum + m.rawSize, 0)
+
+    // Refuse to pull an aggregate whose sub-pieces fall below the provider's
+    // padded min piece size. Without the guard the provider rejects mid-pull
+    // and the operator burns a tunnel cycle (issue #17). Skip only aggregates
+    // that have not yet been submitted; a resume row (txHash set, status
+    // submitted/parked) has already cleared this check on a prior run.
+    if (agg.txHash == null && agg.status === 'planned') {
+      const check = checkMinPieceSize(members, minPieceSize)
+      if (!check.ok) {
+        const names = check.tooSmall.map((s) => `${s.pieceCid} (padded ${s.paddedSize})`).join(', ')
+        const reason =
+          `sub-piece(s) below provider min piece size ${minPieceSize}: ${names}. ` +
+          `Re-pack with \`pack-cars --pack-target-size\` at or above the provider minimum.`
+        db.markAggregateFailed(agg.idx, reason)
+        log(`aggregate ${agg.idx}: ${reason}`)
+        continue
+      }
+    }
 
     // Resume path: a prior run sent the AddPieces tx but was killed before the
     // receipt parse landed. Skip pull + add and jump straight to receipt
