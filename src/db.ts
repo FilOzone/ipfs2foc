@@ -59,7 +59,19 @@ export function classifyFailure(message: string): FailureCategory {
  * `parked` without reaching `committed`. Submission uses it to keep parked data
  * moving to commitment rather than accumulating on a provider.
  */
-export type AggregateStatus = 'planned' | 'submitted' | 'parked' | 'committed' | 'failed'
+// `add_unconfirmed`: an AddPieces was attempted (tx may or may not have been
+// broadcast/landed) but the outcome is not yet confirmed on chain. Distinct from
+// `failed` so it is never auto-reset into a blind re-add — a second AddPieces for
+// the same root would be a duplicate on-chain commit. Resolved by reconciling
+// against `activePieceCids` (commit if the root is on chain) or, once the
+// operator confirms the root is absent, `resetUnconfirmedAggregates`.
+export type AggregateStatus =
+  | 'planned'
+  | 'submitted'
+  | 'parked'
+  | 'add_unconfirmed'
+  | 'committed'
+  | 'failed'
 
 /**
  * Packed sub-piece lifecycle. A sub-piece is a synthetic multi-root CAR that
@@ -506,6 +518,35 @@ export class MigrationDB {
       .run(txHash, idx)
   }
 
+  /**
+   * Mark an aggregate as having an attempted-but-unconfirmed AddPieces. Set this
+   * immediately before the provider add call, so a process kill mid-add (tx
+   * broadcast, no response persisted) and a provider error that returns no tx
+   * hash both leave a durable breadcrumb. The submit resume path reconciles such
+   * a row against the chain instead of re-adding it (which would land a
+   * duplicate AddPieces tx for the same root). Never reset by
+   * `resetFailedAggregates`; see `resetUnconfirmedAggregates`.
+   */
+  markAggregateAddUnconfirmed(idx: number, error?: string): void {
+    this.#db
+      .prepare(`UPDATE aggregates SET status='add_unconfirmed', error=COALESCE(?, error) WHERE idx=?`)
+      .run(error ?? null, idx)
+  }
+
+  /**
+   * Re-arm `add_unconfirmed` aggregates back to `planned`, clearing the stale tx
+   * hash so the next run re-pulls and re-adds. Only safe after the operator has
+   * confirmed the aggregate's root is absent on chain — otherwise this is the
+   * lever that creates a duplicate AddPieces. Separate from
+   * `resetFailedAggregates` precisely so a bulk failed-reset cannot trigger it.
+   */
+  resetUnconfirmedAggregates(): number {
+    const result = this.#db
+      .prepare(`UPDATE aggregates SET status='planned', tx_hash=NULL, error=NULL WHERE status='add_unconfirmed'`)
+      .run()
+    return Number(result.changes)
+  }
+
   /** Aggregates whose AddPieces tx is in flight but whose local commit row has not landed yet. */
   aggregatesAwaitingReceipt(): AggregateRow[] {
     return this.aggregates().filter((a) => a.txHash != null && a.status !== 'committed')
@@ -609,7 +650,7 @@ export class MigrationDB {
    */
   inFlightUncommittedCount(): number {
     const row = this.#db
-      .prepare(`SELECT COUNT(*) AS n FROM aggregates WHERE status IN ('submitted', 'parked')`)
+      .prepare(`SELECT COUNT(*) AS n FROM aggregates WHERE status IN ('submitted', 'parked', 'add_unconfirmed')`)
       .get() as { n: number }
     return Number(row.n)
   }

@@ -67,6 +67,7 @@ Usage:
   foc-migrate pack-cars --car-store <dir> [--db <file>] [--gateway URL]...
                      [--pack-target-size 512MiB] [--fetch-concurrency 4]
   foc-migrate reset-failed-aggregates [--db <file>] [--network mainnet|calibration]
+  foc-migrate retry-unconfirmed-aggregates [--db <file>] [--network mainnet|calibration]
   foc-migrate analyze [--cids <file>] [--db <file>] [--car-store <dir>] [--gateway URL]
                      [--sample 100|--all] [--probe-concurrency 8] [--bw-target URL]
                      [--network mainnet|calibration] [--json]
@@ -512,6 +513,31 @@ async function cmdResetFailedAggregates(argv: string[]): Promise<void> {
   }
 }
 
+async function cmdRetryUnconfirmedAggregates(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      db: { type: 'string', default: DEFAULT_DB },
+      network: { type: 'string', default: 'mainnet' },
+    },
+  })
+  const network = values.network as string
+  if (network !== 'mainnet' && network !== 'calibration') {
+    throw new Error(`unknown --network ${network} (expected mainnet|calibration)`)
+  }
+  const db = new MigrationDB(values.db as string)
+  try {
+    // Only run this after confirming on chain that the aggregate's root is
+    // absent — re-arming an add whose tx actually landed lands a duplicate.
+    const changed = db.resetUnconfirmedAggregates()
+    log(`re-armed ${changed} unconfirmed aggregate(s) back to planned (network=${network})`)
+    log('Only do this after verifying on chain that their roots are NOT present.')
+    console.log(JSON.stringify({ network, retried: changed }, null, 2))
+  } finally {
+    db.close()
+  }
+}
+
 async function cmdAnalyze(argv: string[]): Promise<void> {
   const { values } = parseArgs({
     args: argv,
@@ -635,6 +661,9 @@ async function main(): Promise<void> {
       break
     case 'reset-failed-aggregates':
       await cmdResetFailedAggregates(rest)
+      break
+    case 'retry-unconfirmed-aggregates':
+      await cmdRetryUnconfirmedAggregates(rest)
       break
     case 'analyze':
       await cmdAnalyze(rest)

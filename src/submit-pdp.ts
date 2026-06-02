@@ -65,6 +65,25 @@ export interface SubmitPdpOptions {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * Give up waiting for an AddPieces tx to confirm after this long. The tx hash is
+ * already persisted, so the next run resumes from the receipt poll rather than
+ * re-adding — a stuck provider or RPC blackhole no longer hangs the whole run.
+ */
+const ADD_CONFIRM_TIMEOUT_MS = 15 * 60_000
+/**
+ * Treat a pull as stalled if no additional sub-piece reaches a terminal state
+ * (complete/failed) within this window. A genuinely slow-but-progressing pull
+ * keeps advancing and resets the timer; a hung provider trips it. Pulls have no
+ * on-chain effect, so a stalled pull fails the aggregate and the run moves on.
+ */
+const PULL_STALL_TIMEOUT_MS = 15 * 60_000
+
+/** Sub-pieces that have reached a terminal pull state (complete or failed). */
+function terminalPieceCount(resp: PullResponse): number {
+  return resp.pieces.filter((p) => p.status === 'complete' || p.status === 'failed').length
+}
+
 export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Promise<void> {
   const rpcUrl = resolveRpcUrl({ rpcUrl: opts.rpcUrl, network: opts.network })
   const chain = opts.network === 'mainnet' ? mainnet : calibration
@@ -95,7 +114,7 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
   // by (sha256(extraData), dataSetId), so re-issuing on an already-parked aggregate
   // returns complete fast, and the active-pieces guard skips an aggregate whose root
   // is already on chain. A 'failed' aggregate is left for a manual reset.
-  const resumable = new Set<string>(['planned', 'submitted', 'parked'])
+  const resumable = new Set<string>(['planned', 'submitted', 'parked', 'add_unconfirmed'])
   for (const agg of db.aggregates().filter((a) => resumable.has(a.status))) {
     if (db.inFlightUncommittedCount() >= opts.maxInFlight) {
       log(`in-flight cap reached (${opts.maxInFlight}); stopping`)
@@ -163,6 +182,31 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
       continue
     }
 
+    // Resume path: an add was attempted but no tx hash was ever persisted — the
+    // process was killed mid-add, or the provider errored without returning a
+    // hash. Re-pulling and re-adding here would risk a second AddPieces for the
+    // same root, so reconcile against the chain instead: commit if the root
+    // landed, otherwise leave the row for the operator to verify and reset
+    // (`--retry-unconfirmed`). Never blindly re-add.
+    if (agg.status === 'add_unconfirmed') {
+      const aggregate = pieceAggregateCommP(members.map((m) => ({ pieceCid: m.pieceCid, rawSize: m.rawSize })))
+      const onChain = await activePieceCids(rpcUrl, opts.network, opts.dataSetId)
+      if (onChain.has(aggregate.rootPieceCid)) {
+        db.markCommitted(agg.idx, { dataSetId: String(opts.dataSetId) })
+        await evictCachedCars(db, agg.idx)
+        committedCount += 1
+        committedBytes += aggBytesPlanned
+        log(`aggregate ${agg.idx}: unconfirmed add reconciled — root ${aggregate.rootPieceCid} on chain; marked committed`)
+      } else {
+        log(
+          `aggregate ${agg.idx}: AddPieces was attempted but root ${aggregate.rootPieceCid} is not on chain ` +
+            `and no tx hash was recorded. Not re-adding (would risk a duplicate). Verify on chain; ` +
+            `if absent, re-run with --retry-unconfirmed.`
+        )
+      }
+      continue
+    }
+
     // 1. Pull sub-pieces in batches. The pull admission eth_call-simulates
     // AddPieces over the batch, and PDPVerifier's PiecesAdded event carries one
     // pieceCid per piece; the FVM caps an actor event at 8192 bytes, so a batch
@@ -178,7 +222,12 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
     db.markSubmitted(agg.idx, `pull-${agg.idx}`)
     const pullTimer = new Timer()
     let failed = 0
-    for (let start = 0; start < members.length; start += opts.pullBatch) {
+    // A pull error/stall fails this aggregate and moves on to the next, rather
+    // than throwing out of the loop and aborting every later aggregate. Pulls
+    // have no on-chain effect and are idempotent, so a failed aggregate is safe
+    // to reset and re-pull.
+    let pullErrored: string | null = null
+    for (let start = 0; start < members.length && pullErrored == null; start += opts.pullBatch) {
       const batch = members.slice(start, start + opts.pullBatch)
       const batchCids = batch.map((m) => m.pieceCid)
       const attemptId = db.recordPullBatchStart(agg.idx, batchCids)
@@ -190,24 +239,41 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
         dataSetId: opts.dataSetId,
         pieces: batch.map((m) => ({ pieceCid: m.pieceCid, sourceUrl: `${base}/piece/${m.pieceCid}` })),
       }
-      let resp: Awaited<ReturnType<typeof pullWithBackpressure>>
       try {
-        resp = await pullWithBackpressure(pdp, pullBody)
+        let resp = await pullWithBackpressure(pdp, pullBody)
+        // Stall watchdog: reset the deadline whenever another sub-piece reaches a
+        // terminal state. Only a pull that makes no progress at all trips it.
+        let progress = terminalPieceCount(resp)
+        let stallDeadline = Date.now() + PULL_STALL_TIMEOUT_MS
         while (!isTerminal(resp)) {
           await sleep(opts.pollMs)
           resp = await pullWithBackpressure(pdp, pullBody)
+          const now = terminalPieceCount(resp)
+          if (now > progress) {
+            progress = now
+            stallDeadline = Date.now() + PULL_STALL_TIMEOUT_MS
+          } else if (Date.now() > stallDeadline) {
+            throw new Error(
+              `pull stalled: no sub-piece reached a terminal state for ${formatDuration(PULL_STALL_TIMEOUT_MS)}`
+            )
+          }
         }
+        const batchFailed = resp.pieces.filter((p) => p.status === 'failed').length
+        db.recordPullBatchResult(attemptId, batch.length - batchFailed, batchFailed)
+        failed += batchFailed
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         db.recordPullBatchResult(attemptId, 0, batch.length, message)
         failed += batch.length
-        throw err
+        pullErrored = message
       }
-      const batchFailed = resp.pieces.filter((p) => p.status === 'failed').length
-      db.recordPullBatchResult(attemptId, batch.length - batchFailed, batchFailed)
-      failed += batchFailed
     }
     const pullMs = pullTimer.stop()
+    if (pullErrored != null) {
+      db.markAggregateFailed(agg.idx, `pull error: ${pullErrored}`)
+      log(`aggregate ${agg.idx}: pull error — ${pullErrored}`)
+      continue
+    }
     if (failed > 0) {
       db.markAggregateFailed(agg.idx, `pull failed for ${failed} piece(s)`)
       log(`aggregate ${agg.idx}: pull failed for ${failed} piece(s)`)
@@ -239,6 +305,12 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
 
     const addExtra = (await ctx.presignForCommit([{ pieceCid: CID.parse(aggregate.rootPieceCid) as never }])) as Hex
     const addTimer = new Timer()
+    // Durable breadcrumb BEFORE the add. If the process is killed mid-add (tx
+    // broadcast, no response persisted) or the provider errors without returning
+    // a tx hash, the row is left `add_unconfirmed` — the resume path reconciles
+    // it against the chain instead of re-pulling and re-adding, which would land
+    // a duplicate AddPieces tx for the same root.
+    db.markAggregateAddUnconfirmed(agg.idx, 'AddPieces submitted; awaiting on-chain confirmation')
     let txHash: string
     try {
       ;({ txHash } = await pdp.addAggregate(
@@ -247,15 +319,14 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
         aggregate.orderedSubPieceCids,
         addExtra
       ))
-      // Persist tx_hash before any further work so a kill between here and
-      // markCommitted leaves a recoverable breadcrumb. Restart picks the
-      // aggregate up via `aggregatesAwaitingReceipt` and resumes from the
-      // receipt poll instead of re-pulling and re-adding (which would land
-      // a duplicate AddPieces tx for the same root).
+      // Persist the tx hash as soon as we have it so resume can poll the receipt
+      // (`aggregatesAwaitingReceipt`) rather than re-adding.
       db.markAggregateTxSubmitted(agg.idx, txHash)
     } catch (err) {
       // The add may have landed on chain before the provider errored. Confirm
-      // against active pieces before treating it as a failure.
+      // against active pieces first; otherwise leave it `add_unconfirmed` (NOT
+      // `failed`) so a bulk failed-reset can't blindly re-add a root that may
+      // already be on chain.
       if ((await activePieceCids(rpcUrl, opts.network, opts.dataSetId)).has(aggregate.rootPieceCid)) {
         db.markCommitted(agg.idx, { dataSetId: String(opts.dataSetId) })
         committedCount += 1
@@ -264,17 +335,32 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
         continue
       }
       const addErr = err instanceof Error ? err.message : String(err)
-      db.markAggregateFailed(agg.idx, `add failed: ${addErr}`)
-      log(`aggregate ${agg.idx}: add failed — ${addErr}`)
+      db.markAggregateAddUnconfirmed(
+        agg.idx,
+        `add errored: ${addErr}; outcome unknown — verify root on chain before retrying (--retry-unconfirmed)`
+      )
+      log(`aggregate ${agg.idx}: add errored, outcome unconfirmed — ${addErr}`)
       continue
     }
     log(`aggregate ${agg.idx}: AddPieces tx ${txHash} (root ${aggregate.rootPieceCid})`)
 
     let status: Awaited<ReturnType<typeof pdp.addStatus>> = { done: false, ok: false }
+    const addDeadline = Date.now() + ADD_CONFIRM_TIMEOUT_MS
     while (!status.done) {
+      if (Date.now() > addDeadline) {
+        log(
+          `aggregate ${agg.idx}: AddPieces tx ${txHash} not confirmed within ` +
+            `${formatDuration(ADD_CONFIRM_TIMEOUT_MS)}; tx hash persisted, will resume on next run`
+        )
+        break
+      }
       await sleep(opts.pollMs)
       status = await pdp.addStatus(opts.dataSetId, txHash)
     }
+    // Timed out waiting for confirmation: the row is `add_unconfirmed` with a tx
+    // hash set, so the next run resumes via the receipt branch. Do not fall
+    // through to the failure branch.
+    if (!status.done) continue
     const addMs = addTimer.stop()
     if (status.ok) {
       // addStatus's three signals (txStatus + addMessageOk + piecesAdded)
