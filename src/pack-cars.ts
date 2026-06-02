@@ -330,42 +330,22 @@ export async function runPackCars(db: MigrationDB, opts: PackCarsOptions): Promi
   }
   await mkdir(opts.carStore, { recursive: true })
 
-  // 1. Bin pack any pieces not already locked into an existing sub-piece.
+  // Snapshot the free pieces once. planBins partitions them into disjoint bins,
+  // so the member-size map built here stays valid for every bin even as each
+  // recordBuiltSubPiece locks its own members — a later bin never references a
+  // CID an earlier bin already claimed.
   const free = db.donePiecesFreeForPacking()
-  if (free.length > 0) {
-    const inputs: PackPlanInput[] = free.map((p) => ({
-      cid: p.cid,
-      rawSize: p.rawSize ?? 0,
-    }))
-    const { bins } = planBins(inputs, target)
-    for (const bin of bins) {
-      // The planned sub-piece CID is the piece commitment over the assembled
-      // bytes; we can only know it after the build step. The placeholder used
-      // here is a content-addressed key over the member set so re-runs
-      // recognise the same bin. The row is filled in once the build matches.
-      // Build then persists under the real piece CID.
-      // (Implementation note: we skip the planned row and persist on build
-      // success only; this keeps the schema clean of intermediate state.)
-      void bin
-    }
-  }
-
-  // 2. Build any bins we have not yet assembled. For first ship the planning
-  // and build steps both run here in one pass, so the bin list above doubles
-  // as the assembly worklist.
-  const inputsForBuild: PackPlanInput[] = db.donePiecesFreeForPacking().map((p) => ({
+  const piecesByCid = new Map<string, PieceRow>(free.map((p) => [p.cid, p]))
+  const inputsForBuild: PackPlanInput[] = free.map((p) => ({
     cid: p.cid,
     rawSize: p.rawSize ?? 0,
   }))
-  const { bins } = planBins(inputsForBuild, target)
+  const { bins, oversizedForPacking } = planBins(inputsForBuild, target)
 
   const summary: PackCarsSummary = { bins: bins.length, built: 0, failed: 0, skipped: 0 }
   const fetchConcurrency = opts.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY
   for (const bin of bins) {
     try {
-      const piecesByCid = new Map<string, PieceRow>(
-        db.donePiecesFreeForPacking().map((p) => [p.cid, p])
-      )
       const built = await buildOneBin(bin, target, opts.carStore, opts.gateways, fetchConcurrency)
       // One transaction inserts the sub_piece row in `built` status alongside
       // its members. A crash anywhere before this returns leaves no partial DB
@@ -392,12 +372,44 @@ export async function runPackCars(db: MigrationDB, opts: PackCarsOptions): Promi
     }
   }
 
+  // Pieces too large to share a bin still need to migrate. planBins returns
+  // them in `oversizedForPacking`; register each as a single-CID passthrough
+  // sub-piece served from its gateway URL — the same shape plan's default path
+  // produces. Dropping them here (the prior bug) left them stranded as `done`
+  // with no sub-piece and no aggregate, silently absent from the migration.
+  let passthroughAdded = 0
+  const noGatewayUrl: string[] = []
+  for (const p of oversizedForPacking) {
+    const row = piecesByCid.get(p.cid)
+    if (row?.pieceCid == null || row.rawSize == null || row.url == null || row.url === '') {
+      // No gateway URL (IPFS-fallback only): cannot be served by the HTTP pull
+      // and cannot be re-fetched for assembly either. Surface, do not drop.
+      noGatewayUrl.push(p.cid)
+      continue
+    }
+    db.recordPassthroughSubPiece({
+      subPieceCid: row.pieceCid,
+      sourceCid: row.cid,
+      url: row.url,
+      rawSize: row.rawSize,
+      memberSha256: null,
+    })
+    passthroughAdded += 1
+    log(`  + passthrough sub-piece ${row.pieceCid} (${row.rawSize} bytes, oversized for packing)`)
+  }
+  if (noGatewayUrl.length > 0) {
+    log(
+      `! ${noGatewayUrl.length} oversized piece(s) have no gateway URL (IPFS-fallback only) and ` +
+        `cannot be served by the provider pull; not migrated: ${noGatewayUrl.join(', ')}`
+    )
+  }
+
   // Repack planned aggregates so their members reference the freshly built
   // sub-pieces. Without this, `pdp-submit` still sees the per-source-CID
   // composition `plan` wrote and asks the SP to pull individual files (most
   // of which are below the provider's minimum piece size). Frozen aggregates
   // (submitted/parked/committed) are left untouched.
-  if (summary.built > 0) {
+  if (summary.built > 0 || passthroughAdded > 0) {
     // Append new aggregates over the freshly built multi-asset sub-pieces.
     // No DELETE of existing aggregates — `plan` already added passthrough
     // aggregates over the source pieces, and those stay as the alternative
@@ -409,6 +421,26 @@ export async function runPackCars(db: MigrationDB, opts: PackCarsOptions): Promi
   }
 
   return summary
+}
+
+/**
+ * Fetch a member CAR, trying each gateway in order until one yields a body.
+ * Mirrors `fetchAndComputePiece`'s gateway iteration — a single gateway flap
+ * must not fail the whole bin when fallbacks are configured.
+ */
+async function fetchCarFromAnyGateway(
+  gateways: string[],
+  cid: string
+): Promise<Awaited<ReturnType<typeof fetchCar>>> {
+  const errors: string[] = []
+  for (const gateway of gateways) {
+    try {
+      return await fetchCar(gateway, cid)
+    } catch (err) {
+      errors.push(`${gateway}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  throw new Error(`all gateways failed for ${cid}: ${errors.join('; ')}`)
 }
 
 async function buildOneBin(
@@ -440,7 +472,7 @@ async function buildOneBin(
       configurable: true,
       get() {
         // Replace the getter with a resolved stream on first access.
-        const promise = fetchCar(gateways[0]!, m.cid).then((r) => r.body)
+        const promise = fetchCarFromAnyGateway(gateways, m.cid).then((r) => r.body)
         const lazy = new ReadableStream<Uint8Array>({
           async start(controller) {
             try {

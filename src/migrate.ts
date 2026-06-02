@@ -92,8 +92,18 @@ export async function runPlan(db: MigrationDB, opts: PlanOptions): Promise<PlanS
  */
 export function wrapDonePiecesAsPassthroughSubPieces(db: MigrationDB): void {
   const free = db.donePiecesFreeForPacking()
+  const noGatewayUrl: string[] = []
   for (const p of free) {
-    if (p.pieceCid == null || p.rawSize == null || p.url == null || p.url === '') continue
+    if (p.pieceCid == null || p.rawSize == null) continue
+    // A piece fetched only through the IPFS fallback has no gateway URL to
+    // 302 to (gateway === 'helia', url === ''). The provider pull is HTTP-only,
+    // so such a piece cannot be served as a passthrough sub-piece and pack-cars
+    // (HTTP re-fetch) cannot assemble it either. Surface it instead of dropping
+    // it silently — leaving it unmigrated with no warning is the worse failure.
+    if (p.url == null || p.url === '') {
+      noGatewayUrl.push(p.cid)
+      continue
+    }
     db.recordPassthroughSubPiece({
       subPieceCid: p.pieceCid,
       sourceCid: p.cid,
@@ -101,6 +111,13 @@ export function wrapDonePiecesAsPassthroughSubPieces(db: MigrationDB): void {
       rawSize: p.rawSize,
       memberSha256: null,
     })
+  }
+  if (noGatewayUrl.length > 0) {
+    log(
+      `! ${noGatewayUrl.length} piece(s) resolved only via the IPFS fallback and have no ` +
+        `gateway URL for the provider to pull from; they were NOT wrapped and will not ` +
+        `migrate: ${noGatewayUrl.join(', ')}`
+    )
   }
 }
 

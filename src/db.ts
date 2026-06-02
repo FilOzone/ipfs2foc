@@ -353,19 +353,29 @@ export class MigrationDB {
     pieceSizeBytes: bigint,
     members: string[]
   ): void {
-    this.#db
-      .prepare(
-        `INSERT INTO aggregates (idx, root_piece_cid, piece_size_bytes, status, created_at)
-         VALUES (?, ?, ?, 'planned', ?)`
-      )
-      .run(idx, rootPieceCid, pieceSizeBytes.toString(), new Date().toISOString())
+    const aggregateStmt = this.#db.prepare(
+      `INSERT INTO aggregates (idx, root_piece_cid, piece_size_bytes, status, created_at)
+       VALUES (?, ?, ?, 'planned', ?)`
+    )
     const memberStmt = this.#db.prepare(
       `INSERT INTO aggregate_members (aggregate_idx, segment_index, sub_piece_cid)
        VALUES (?, ?, ?)`
     )
-    members.forEach((subPieceCid, segmentIndex) => {
-      memberStmt.run(idx, segmentIndex, subPieceCid)
-    })
+    // The aggregate row and its members land together or not at all — a crash
+    // between them would leave a planned aggregate whose stored root no longer
+    // matches its persisted members. Same atomicity contract as the
+    // recordBuiltSubPiece / recordPassthroughSubPiece writers.
+    this.#db.exec('BEGIN')
+    try {
+      aggregateStmt.run(idx, rootPieceCid, pieceSizeBytes.toString(), new Date().toISOString())
+      members.forEach((subPieceCid, segmentIndex) => {
+        memberStmt.run(idx, segmentIndex, subPieceCid)
+      })
+      this.#db.exec('COMMIT')
+    } catch (err) {
+      this.#db.exec('ROLLBACK')
+      throw err
+    }
   }
 
   aggregates(): AggregateRow[] {
