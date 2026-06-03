@@ -206,9 +206,31 @@ export function computeReportComplete(args: {
   )
 }
 
-export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<Report> {
+/**
+ * The on-chain reads `runReport` performs, injected so the report-assembly logic
+ * (root matching, committed accounting, proof gating, discrepancies) can be
+ * tested against fixed chain state — no RPC. Production uses the real reads.
+ */
+export interface ReportDeps {
+  activePieceCids(rpcUrl: string, network: 'calibration' | 'mainnet', dataSetId: number): Promise<Set<string>>
+  maxBlockOfTxHashes(rpcUrl: string, network: 'calibration' | 'mainnet', txHashes: string[]): Promise<bigint | null>
+  dataSetProofHealth(
+    rpcUrl: string,
+    network: 'calibration' | 'mainnet',
+    dataSetId: number,
+    maxAddEpoch: bigint | null
+  ): Promise<ProofHealth>
+}
+
+const defaultReportDeps: ReportDeps = { activePieceCids, maxBlockOfTxHashes, dataSetProofHealth }
+
+export async function runReport(
+  db: MigrationDB,
+  opts: ReportOptions,
+  deps: ReportDeps = defaultReportDeps
+): Promise<Report> {
   const rpcUrl = resolveRpcUrl({ rpcUrl: opts.rpcUrl, network: opts.network })
-  const onChainRoots = await activePieceCids(rpcUrl, opts.network, opts.dataSetId)
+  const onChainRoots = await deps.activePieceCids(rpcUrl, opts.network, opts.dataSetId)
   const counts = db.counts()
 
   const aggregates: AggregateReport[] = []
@@ -259,8 +281,8 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
   // already on-chain by an earlier run) contribute nothing to the max; if
   // every committed aggregate is in that state, `maxAddEpoch` is null and
   // `provenSinceAdd` then means "any proof for this set after any add".
-  const maxAddEpoch = await maxBlockOfTxHashes(rpcUrl, opts.network, committedTxHashes)
-  const proof = await dataSetProofHealth(rpcUrl, opts.network, opts.dataSetId, maxAddEpoch)
+  const maxAddEpoch = await deps.maxBlockOfTxHashes(rpcUrl, opts.network, committedTxHashes)
+  const proof = await deps.dataSetProofHealth(rpcUrl, opts.network, opts.dataSetId, maxAddEpoch)
 
   const unaccountedOnChain = findUnaccountedOnChain(
     onChainRoots,

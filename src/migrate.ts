@@ -44,7 +44,15 @@ export interface PlanSummary {
  * over the un-aggregated sub-piece set. Idempotent: pieces already done, sub-
  * pieces already recorded, and aggregates already created are left alone.
  */
-export async function runPlan(db: MigrationDB, opts: PlanOptions): Promise<PlanSummary> {
+/** The piece fetcher `runPlan` drives; injectable so the plan loop is testable
+ *  without a gateway. Defaults to the real {@link fetchAndComputePiece}. */
+export type PieceFetcher = typeof fetchAndComputePiece
+
+export async function runPlan(
+  db: MigrationDB,
+  opts: PlanOptions,
+  fetchPiece: PieceFetcher = fetchAndComputePiece
+): Promise<PlanSummary> {
   const pending = db.pendingCids()
   log(`Computing piece commitments for ${pending.length} pending CID(s) (concurrency ${opts.concurrency})...`)
 
@@ -52,7 +60,7 @@ export async function runPlan(db: MigrationDB, opts: PlanOptions): Promise<PlanS
   await pool(pending, opts.concurrency, async (cid) => {
     const timer = new Timer()
     try {
-      const piece = await fetchAndComputePiece(cid, opts.gateways, {
+      const piece = await fetchPiece(cid, opts.gateways, {
         ipfsFallback: opts.ipfsFallback,
         fallbackTimeoutMs: opts.fallbackTimeoutMs,
       })
