@@ -329,7 +329,21 @@ export interface PackCarsSummary {
  * then assemble each bin to disk. Idempotent — re-running picks up only rows
  * that are still in `planned`.
  */
-export async function runPackCars(db: MigrationDB, opts: PackCarsOptions): Promise<PackCarsSummary> {
+/** The bin assembler `runPackCars` drives; injectable so the pack loop's
+ *  success/failure accounting is testable without re-fetching member CARs. */
+export type BinBuilder = (
+  bin: PackedBin,
+  target: number,
+  carStore: string,
+  gateways: string[],
+  fetchConcurrency: number
+) => Promise<{ pieceCid: string; assembledBytes: number; sha256: string; filePath: string }>
+
+export async function runPackCars(
+  db: MigrationDB,
+  opts: PackCarsOptions,
+  buildBin: BinBuilder = buildOneBin
+): Promise<PackCarsSummary> {
   const target = opts.targetSizeBytes ?? Number(DEFAULT_PACK_TARGET_BYTES)
   if (target > PIECE_RAW_SIZE_LIMIT) {
     throw new Error(
@@ -354,7 +368,7 @@ export async function runPackCars(db: MigrationDB, opts: PackCarsOptions): Promi
   const fetchConcurrency = opts.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY
   for (const bin of bins) {
     try {
-      const built = await buildOneBin(bin, target, opts.carStore, opts.gateways, fetchConcurrency)
+      const built = await buildBin(bin, target, opts.carStore, opts.gateways, fetchConcurrency)
       // One transaction inserts the sub_piece row in `built` status alongside
       // its members. A crash anywhere before this returns leaves no partial DB
       // state — the CAR file on disk is the only stranded artifact, and the
