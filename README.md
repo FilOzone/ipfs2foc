@@ -393,11 +393,16 @@ Tables: `pieces`, `sub_pieces`, `sub_piece_members`, `aggregates`,
 
 ## Documentation
 
-- [`docs/personas.md`](docs/personas.md) — operator profiles: disk, bandwidth, and time
-  budgets mapped to knob settings, with per-profile failure modes and recovery.
-- [`docs/sources.md`](docs/sources.md) — per-gateway notes and probe commands.
-- [`docs/ingress.md`](docs/ingress.md) — public-HTTPS ingress options for `redirect-serve`.
-- [`docs/glossary.md`](docs/glossary.md) — operator-level definitions for the protocol terms.
+The [`docs/`](docs/README.md) folder is organized by [Diátaxis](https://diataxis.fr/):
+
+- **Tutorial** — [your first migration on calibration](docs/tutorial-first-migration.md),
+  one CID end-to-end with a checkpoint at every step.
+- **How-to** — [operator profiles](docs/personas.md) (disk/bandwidth/time budgets →
+  knob settings, failure modes, recovery), [choosing a gateway](docs/sources.md),
+  [public ingress](docs/ingress.md).
+- **Reference** — [command reference](#commands) and [glossary](docs/glossary.md).
+- **Explanation** — [how it works](#how-it-works),
+  [gas and payments](#network-gas-and-payments), [scope and limits](#scope-and-limits).
 
 ## Roadmap
 
