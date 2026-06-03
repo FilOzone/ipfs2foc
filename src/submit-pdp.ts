@@ -23,8 +23,8 @@ import { privateKeyToAccount } from 'viem/accounts'
 import type { MigrationDB } from './db.ts'
 import { classifyBaseFee, getBaseFee, resolveRpcUrl } from './gas.ts'
 import { formatBytes, formatDuration, formatRate, Timer } from './metrics.ts'
-import { PdpClient, PullBackpressure, type PullResponse } from './pdp.ts'
-import { activePieceCids, fetchAddPiecesEvent } from './pdp-verifier.ts'
+import { PdpClient, PullBackpressure, type PullResponse, type AddStatusResult } from './pdp.ts'
+import { activePieceCids, fetchAddPiecesEvent, type AddPiecesEvent } from './pdp-verifier.ts'
 import { pieceAggregateCommP } from './piece-aggregate.ts'
 import { checkMinPieceSize } from './min-piece-guard.ts'
 import { unlink } from 'node:fs/promises'
@@ -61,6 +61,10 @@ export interface SubmitPdpOptions {
   /** Max sub-pieces per pull request, bounded by the 8192-byte FVM event cap on
    *  the admission eth_call's simulated AddPieces. */
   pullBatch: number
+  /** Override the AddPieces-confirm deadline (default `ADD_CONFIRM_TIMEOUT_MS`). */
+  addConfirmTimeoutMs?: number
+  /** Override the pull no-progress stall window (default `PULL_STALL_TIMEOUT_MS`). */
+  pullStallTimeoutMs?: number
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
@@ -84,23 +88,77 @@ function terminalPieceCount(resp: PullResponse): number {
   return resp.pieces.filter((p) => p.status === 'complete' || p.status === 'failed').length
 }
 
-export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Promise<void> {
-  const rpcUrl = resolveRpcUrl({ rpcUrl: opts.rpcUrl, network: opts.network })
-  const chain = opts.network === 'mainnet' ? mainnet : calibration
-  const account = privateKeyToAccount(opts.privateKey)
+/** Presigning surface the submit loop needs from a storage context. */
+export interface PresignContext {
+  presignForCommit(pieces: Array<{ pieceCid: unknown }>): Promise<unknown>
+}
 
-  const synapse = await Synapse.create({ account, transport: http(rpcUrl), chain, source: null })
-  const [ctx] = await synapse.storage.createContexts({ dataSetIds: [BigInt(opts.dataSetId)] })
-  if (ctx == null) {
-    throw new Error(`no storage context for data set ${opts.dataSetId}`)
-  }
-  const provider = await ctx.getProviderInfo()
-  const pdp = new PdpClient(provider.pdp.serviceURL)
+/** The PdpClient surface the submit loop drives. */
+export interface PdpLike {
+  pull(body: { extraData: Hex; dataSetId: number; pieces: Array<{ pieceCid: string; sourceUrl: string }> }): Promise<PullResponse>
+  addAggregate(dataSetId: number, root: string, subPieceCids: string[], extraData: Hex): Promise<{ txHash: string; statusUrl: string }>
+  addStatus(dataSetId: number, txHash: string): Promise<AddStatusResult>
+}
+
+/**
+ * External dependencies of the submit loop, injected so the control flow (pull,
+ * add, confirm, resume, reconcile) can be driven in tests with a fake provider
+ * and chain. Production uses `defaultSubmitDeps`, which wires the real Synapse
+ * context, PdpClient, and on-chain reads.
+ */
+export interface SubmitDeps {
+  setup(opts: SubmitPdpOptions, rpcUrl: string): Promise<{
+    ctx: PresignContext
+    pdp: PdpLike
+    minPieceSize: bigint
+    serviceURL: string
+  }>
+  activePieceCids(rpcUrl: string, network: 'calibration' | 'mainnet', dataSetId: number): Promise<Set<string>>
+  fetchAddPiecesEvent(
+    rpcUrl: string,
+    network: 'calibration' | 'mainnet',
+    dataSetId: number,
+    txHash: string
+  ): Promise<AddPiecesEvent | null>
+  getBaseFee(rpcUrl: string): Promise<bigint>
+}
+
+export const defaultSubmitDeps: SubmitDeps = {
+  async setup(opts, rpcUrl) {
+    const chain = opts.network === 'mainnet' ? mainnet : calibration
+    const account = privateKeyToAccount(opts.privateKey)
+    const synapse = await Synapse.create({ account, transport: http(rpcUrl), chain, source: null })
+    const [ctx] = await synapse.storage.createContexts({ dataSetIds: [BigInt(opts.dataSetId)] })
+    if (ctx == null) {
+      throw new Error(`no storage context for data set ${opts.dataSetId}`)
+    }
+    const provider = await ctx.getProviderInfo()
+    return {
+      ctx: ctx as unknown as PresignContext,
+      pdp: new PdpClient(provider.pdp.serviceURL),
+      minPieceSize: provider.pdp.minPieceSizeInBytes,
+      serviceURL: provider.pdp.serviceURL,
+    }
+  },
+  activePieceCids,
+  fetchAddPiecesEvent,
+  getBaseFee,
+}
+
+export async function runSubmitPdp(
+  db: MigrationDB,
+  opts: SubmitPdpOptions,
+  deps: SubmitDeps = defaultSubmitDeps
+): Promise<void> {
+  const rpcUrl = resolveRpcUrl({ rpcUrl: opts.rpcUrl, network: opts.network })
+  const addConfirmTimeoutMs = opts.addConfirmTimeoutMs ?? ADD_CONFIRM_TIMEOUT_MS
+  const pullStallTimeoutMs = opts.pullStallTimeoutMs ?? PULL_STALL_TIMEOUT_MS
+
+  const { ctx, pdp, minPieceSize, serviceURL } = await deps.setup(opts, rpcUrl)
   const base = opts.sourceBase.replace(/\/+$/, '')
-  const minPieceSize = provider.pdp.minPieceSizeInBytes
 
   log(
-    `PDP submit to ${provider.pdp.serviceURL} (data set ${opts.dataSetId}), pull source ${base}/piece/{pcidv2}, ` +
+    `PDP submit to ${serviceURL} (data set ${opts.dataSetId}), pull source ${base}/piece/{pcidv2}, ` +
       `provider min piece size ${minPieceSize} bytes`
   )
 
@@ -120,7 +178,7 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
       log(`in-flight cap reached (${opts.maxInFlight}); stopping`)
       break
     }
-    const reading = classifyBaseFee(await getBaseFee(rpcUrl), opts.maxBaseFee)
+    const reading = classifyBaseFee(await deps.getBaseFee(rpcUrl), opts.maxBaseFee)
     if (reading.pause) {
       log(`base fee ${reading.baseFee} at/above ${opts.maxBaseFee}; pausing`)
       break
@@ -153,10 +211,10 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
     if (agg.txHash != null) {
       const aggregate = pieceAggregateCommP(members.map((m) => ({ pieceCid: m.pieceCid, rawSize: m.rawSize })))
       log(`aggregate ${agg.idx}: resuming receipt validation for tx ${agg.txHash} (root ${aggregate.rootPieceCid})`)
-      const onChain = await activePieceCids(rpcUrl, opts.network, opts.dataSetId)
+      const onChain = await deps.activePieceCids(rpcUrl, opts.network, opts.dataSetId)
       if (onChain.has(aggregate.rootPieceCid)) {
         let event: Awaited<ReturnType<typeof fetchAddPiecesEvent>> = null
-        try { event = await fetchAddPiecesEvent(rpcUrl, opts.network, opts.dataSetId, agg.txHash) } catch { /* fall through */ }
+        try { event = await deps.fetchAddPiecesEvent(rpcUrl, opts.network, opts.dataSetId, agg.txHash) } catch { /* fall through */ }
         if (event != null && event.pieceCids.includes(aggregate.rootPieceCid)) {
           const eventPieceId = event.pieceIds[event.pieceCids.indexOf(aggregate.rootPieceCid)]!.toString()
           db.markCommitted(agg.idx, {
@@ -190,7 +248,7 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
     // (`--retry-unconfirmed`). Never blindly re-add.
     if (agg.status === 'add_unconfirmed') {
       const aggregate = pieceAggregateCommP(members.map((m) => ({ pieceCid: m.pieceCid, rawSize: m.rawSize })))
-      const onChain = await activePieceCids(rpcUrl, opts.network, opts.dataSetId)
+      const onChain = await deps.activePieceCids(rpcUrl, opts.network, opts.dataSetId)
       if (onChain.has(aggregate.rootPieceCid)) {
         db.markCommitted(agg.idx, { dataSetId: String(opts.dataSetId) })
         await evictCachedCars(db, agg.idx)
@@ -244,17 +302,17 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
         // Stall watchdog: reset the deadline whenever another sub-piece reaches a
         // terminal state. Only a pull that makes no progress at all trips it.
         let progress = terminalPieceCount(resp)
-        let stallDeadline = Date.now() + PULL_STALL_TIMEOUT_MS
+        let stallDeadline = Date.now() + pullStallTimeoutMs
         while (!isTerminal(resp)) {
           await sleep(opts.pollMs)
           resp = await pullWithBackpressure(pdp, pullBody)
           const now = terminalPieceCount(resp)
           if (now > progress) {
             progress = now
-            stallDeadline = Date.now() + PULL_STALL_TIMEOUT_MS
+            stallDeadline = Date.now() + pullStallTimeoutMs
           } else if (Date.now() > stallDeadline) {
             throw new Error(
-              `pull stalled: no sub-piece reached a terminal state for ${formatDuration(PULL_STALL_TIMEOUT_MS)}`
+              `pull stalled: no sub-piece reached a terminal state for ${formatDuration(pullStallTimeoutMs)}`
             )
           }
         }
@@ -295,7 +353,7 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
     // bookkeeping step, returning an error without a tx hash. Reconcile against
     // the data set's active pieces so a re-run skips an aggregate that is already
     // committed rather than adding it a second time.
-    if ((await activePieceCids(rpcUrl, opts.network, opts.dataSetId)).has(aggregate.rootPieceCid)) {
+    if ((await deps.activePieceCids(rpcUrl, opts.network, opts.dataSetId)).has(aggregate.rootPieceCid)) {
       db.markCommitted(agg.idx, { dataSetId: String(opts.dataSetId) })
       committedCount += 1
       committedBytes += aggBytes
@@ -327,7 +385,7 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
       // against active pieces first; otherwise leave it `add_unconfirmed` (NOT
       // `failed`) so a bulk failed-reset can't blindly re-add a root that may
       // already be on chain.
-      if ((await activePieceCids(rpcUrl, opts.network, opts.dataSetId)).has(aggregate.rootPieceCid)) {
+      if ((await deps.activePieceCids(rpcUrl, opts.network, opts.dataSetId)).has(aggregate.rootPieceCid)) {
         db.markCommitted(agg.idx, { dataSetId: String(opts.dataSetId) })
         committedCount += 1
         committedBytes += aggBytes
@@ -345,12 +403,12 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
     log(`aggregate ${agg.idx}: AddPieces tx ${txHash} (root ${aggregate.rootPieceCid})`)
 
     let status: Awaited<ReturnType<typeof pdp.addStatus>> = { done: false, ok: false }
-    const addDeadline = Date.now() + ADD_CONFIRM_TIMEOUT_MS
+    const addDeadline = Date.now() + addConfirmTimeoutMs
     while (!status.done) {
       if (Date.now() > addDeadline) {
         log(
           `aggregate ${agg.idx}: AddPieces tx ${txHash} not confirmed within ` +
-            `${formatDuration(ADD_CONFIRM_TIMEOUT_MS)}; tx hash persisted, will resume on next run`
+            `${formatDuration(addConfirmTimeoutMs)}; tx hash persisted, will resume on next run`
         )
         break
       }
@@ -374,7 +432,7 @@ export async function runSubmitPdp(db: MigrationDB, opts: SubmitPdpOptions): Pro
       let event: Awaited<ReturnType<typeof fetchAddPiecesEvent>> = null
       let eventErr: string | null = null
       try {
-        event = await fetchAddPiecesEvent(rpcUrl, opts.network, opts.dataSetId, txHash)
+        event = await deps.fetchAddPiecesEvent(rpcUrl, opts.network, opts.dataSetId, txHash)
       } catch (err) {
         eventErr = err instanceof Error ? err.message : String(err)
       }
@@ -443,7 +501,7 @@ function isTerminal(resp: PullResponse): boolean {
 
 /** POST the pull, waiting out provider backpressure (429 + Retry-After). */
 async function pullWithBackpressure(
-  pdp: PdpClient,
+  pdp: PdpLike,
   body: { extraData: Hex; dataSetId: number; pieces: Array<{ pieceCid: string; sourceUrl: string }> }
 ): Promise<PullResponse> {
   for (;;) {
