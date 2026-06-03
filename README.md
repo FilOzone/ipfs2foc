@@ -1,12 +1,260 @@
 # ipfs2foc
 
-Migrate already-pinned IPFS CIDs onto **Filecoin Onchain Cloud (FOC)** without
-re-chunking. Each original CID stays byte-for-byte intact and individually
-retrievable over IPFS, while far fewer pieces are committed on-chain.
+[![npm version](https://img.shields.io/npm/v/ipfs2foc.svg)](https://www.npmjs.com/package/ipfs2foc)
+[![Node](https://img.shields.io/node/v/ipfs2foc.svg)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-The storage provider pulls each object's bytes directly from a [trustless IPFS
-gateway](docs/glossary.md#trustless-gateway). Your machine streams each object once to compute its piece commitment
-and stores none of the payload.
+Migrate already-pinned IPFS CIDs onto Filecoin Onchain Cloud (FOC) without re-chunking.
+
+Each original CID stays byte-for-byte intact and individually retrievable over
+IPFS, while far fewer pieces are committed on-chain. The storage provider pulls
+each object's bytes directly from a [trustless IPFS
+gateway](docs/glossary.md#trustless-gateway); your machine streams each object
+once to compute its piece commitment and stores none of the payload.
+
+## Contents
+
+- [Install](#install)
+- [Requirements](#requirements)
+- [Prerequisites](#prerequisites)
+- [Quickstart](#quickstart)
+- [Commands](#commands)
+- [Recovery commands](#recovery-commands)
+- [Troubleshooting](#troubleshooting)
+- [How it works](#how-it-works)
+- [Aggregate lifecycle and park/commit safety](#aggregate-lifecycle-and-parkcommit-safety)
+- [Public ingress for the redirect server](#public-ingress-for-the-redirect-server)
+- [Network gas and payments](#network-gas-and-payments)
+- [State](#state)
+- [Scope and limits](#scope-and-limits)
+- [Documentation](#documentation)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Install
+
+```bash
+npm install -g ipfs2foc      # the `ipfs2foc` command
+# or run without installing:
+npx ipfs2foc --help
+```
+
+From source:
+
+```bash
+git clone https://github.com/SgtPooki/ipfs2foc
+cd ipfs2foc
+npm install
+npm link                     # puts `ipfs2foc` on PATH; or run `node src/index.ts <command>`
+```
+
+## Requirements
+
+- **Node 26+** (uses the built-in `node:sqlite`).
+- A source that serves **deterministic trustless CARs**. Known working:
+  `gateway.pinata.cloud`, `trustless-gateway.link`. A gateway that returns
+  reassembled files instead of CARs does not work; `probe` reports which case a
+  gateway falls into. See [`docs/sources.md`](docs/sources.md) for per-provider
+  notes and probe commands.
+
+## Prerequisites
+
+Before running the quickstart, complete the one-time wallet setup on the network
+you target (default `mainnet`; pass `--network calibration` for the testnet).
+
+- **Wallet**: a wallet whose address is the FWSS payer for the data set you create
+  or own. Export the key as `PRIVATE_KEY` (`0x` + 64 hex) in the environment. The
+  same key signs the data-set creation, the pull authorization, and every
+  AddPieces submission.
+- **FIL** in that wallet for the migrator's own transactions: USDFC ERC-20 approve,
+  FilecoinPay deposit, FilecoinWarmStorageService operator approval. These three
+  steps happen once per payer; the storage provider pays gas for everything it
+  submits on chain (createDataSet, AddPieces, proof of possession).
+- **USDFC** deposited into the FilecoinPay contract, with FWSS approved as a
+  payments operator with sufficient `rateAllowance` and `lockupAllowance`, and a
+  funded balance that covers the minimum lockup plus a one-time sybil fee.
+  `create-data-set` reverts otherwise. [`filecoin-pin`](https://github.com/FilOzone/filecoin-pin)
+  automates the approve / deposit / operator-approval calls from its CLI or as a
+  library. The [Synapse SDK](https://github.com/FilOzone/synapse-sdk) `Payments`
+  helper exposes the same calls directly. PDP Scan
+  (`https://pdp.vxb.ai/{network}`) shows the resulting account state.
+- **Provider id**: choose a PDP-capable provider from the SP registry. PDP Scan
+  lists registered providers at `https://pdp.vxb.ai/{network}/providers`; pass
+  that numeric id as `--provider-id` to `create-data-set`. Skip this step if you
+  are reusing an existing data set you own.
+- **Trustless gateway**: confirm the gateway you intend to use returns
+  byte-stable CARs for one of your CIDs with `probe` before running `plan`.
+
+## Quickstart
+
+Complete **Prerequisites** above first. Default network is **mainnet**; pass
+`--network calibration` for the testnet. `redirect-serve` and `pdp-submit` run
+concurrently in separate terminals.
+
+```bash
+export PRIVATE_KEY=0x...
+
+# 0. (Once per provider) Provision a data set with withIPFSIndexing. Note the
+#    printed `dataSetId`; reuse it in steps 4 and 5.
+ipfs2foc create-data-set --provider-id <provider-id>
+
+# 1. Confirm a trustless gateway returns a deterministic CAR for one of your CIDs.
+ipfs2foc probe <sample-cid> --gateway https://trustless-gateway.link
+
+# 2. Compute piece commitments and pack aggregates (one source CID per sub-piece).
+printf '%s\n' <cid> > cids.txt
+ipfs2foc plan --cids cids.txt --db migrate.db
+
+# 3. (Terminal A — leave running) Serve sub-pieces over public HTTPS.
+#    `--ingress cloudflared` spawns a no-signup Cloudflare tunnel and logs the URL.
+ipfs2foc redirect-serve --db migrate.db --port 4322 --ingress cloudflared
+
+# 4. (Terminal B) Pull, park, and add each aggregate onto the provider's data set.
+#    `--source-base` is the public HTTPS origin only (no path) from step 3.
+ipfs2foc pdp-submit --db migrate.db --data-set-id <data-set-id> \
+  --source-base https://<public-host>
+
+# 5. Confirm every CID landed: reconcile local state against the on-chain pieces.
+ipfs2foc report --db migrate.db --data-set-id <data-set-id>
+```
+
+`cids.txt`: one CID per line; blank lines and `#` comments are ignored.
+
+`plan` is **INSERT-only**: re-running it after appending CIDs adds new
+sub-pieces and aggregates without rewriting prior planning state. Existing
+`submitted`/`parked`/`committed` aggregates are never touched.
+
+### Single-asset vs multi-asset
+
+The quickstart runs the **single-asset** path: each source CID becomes one
+passthrough sub-piece pulled straight from the gateway, with no staging disk.
+Use the **multi-asset** path when source CIDs are smaller than the provider's
+`Min Piece Size` or you want fewer on-chain pieces per source CID. It replaces
+step 2 with a plan that defers packing, then assembles multi-root CARs on disk:
+
+```bash
+ipfs2foc plan --cids cids.txt --db migrate.db --no-auto-pack
+ipfs2foc pack-cars --db migrate.db --car-store /var/foc-cars --pack-target-size 512MiB
+```
+
+[`docs/personas.md`](docs/personas.md) maps disk, bandwidth, and time budgets to
+concrete knob settings for both paths.
+
+## Commands
+
+```bash
+# Check whether a gateway serves deterministic CARs for a CID
+ipfs2foc probe <cid> [--gateway https://gateway.pinata.cloud]...
+
+# Compute one PieceCID v2
+ipfs2foc commp <cid> [--gateway URL]...
+
+# Full pipeline: commitments + aggregate packing into a SQLite DB.
+# Default auto-wraps each source CID as a passthrough sub-piece. Pass
+# --no-auto-pack to defer sub-piece assembly to `pack-cars` (multi-asset).
+ipfs2foc plan --cids cids.txt [--db migrate.db] [--gateway URL]... \
+  [--piece-size 32GiB] [--concurrency 8] [--no-auto-pack]
+
+# Multi-asset packer: assemble many source CIDs into one multi-root CAR per
+# sub-piece, append aggregates over the new sub-pieces.
+ipfs2foc pack-cars --db migrate.db --car-store <dir> [--gateway URL]... \
+  [--pack-target-size 512MiB] [--fetch-concurrency 4]
+
+# Progress and the aggregate plan
+ipfs2foc status [--db migrate.db] [--json]
+
+# Pre-flight a CID list against a gateway: pass rate, sizes, throughput estimate
+ipfs2foc analyze [--cids cids.txt] [--db migrate.db] [--car-store <dir>] [--gateway URL] \
+  [--sample 100|--all] [--probe-concurrency 8] [--bw-target URL] \
+  [--network mainnet|calibration] [--json]
+
+# Background daemon + browser dashboard (start/pause/resume, add CIDs, add gateways)
+ipfs2foc serve [--db migrate.db] [--cids cids.txt] [--gateway URL]... \
+  [--port 4321] [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
+
+# Current network base fee and whether to pause submission
+ipfs2foc gas [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee 1000000]
+
+# Sub-piece server: GET /piece/{pcidv2} -> 302 to the gateway CAR for a
+# passthrough sub-piece, or byte-serves the assembled CAR file for a
+# multi-asset sub-piece.
+ipfs2foc redirect-serve [--db migrate.db] [--port 4322] [--ingress funnel|cloudflared]
+
+# Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env)
+ipfs2foc create-data-set --provider-id <id> \
+  [--network mainnet|calibration] [--rpc-url URL] [--cdn] [--timeout-seconds 600]
+
+# Migrate via the PDP pull path (PRIVATE_KEY env)
+ipfs2foc pdp-submit --db migrate.db --data-set-id <id> \
+  --source-base https://<public-host> [--network mainnet|calibration] [--rpc-url URL] \
+  [--max-in-flight 4] [--max-base-fee 1000000] [--pull-batch 32] [--poll-seconds 15]
+
+# Verification report: reconcile a run against the data set's on-chain pieces
+ipfs2foc report --db migrate.db --data-set-id <id> \
+  [--network mainnet|calibration] [--rpc-url URL] [--json] \
+  [--check-ipni <delegated-routing-url>] [--ipni-sample 100|--ipni-all] [--ipni-concurrency 8]
+```
+
+`plan`, `commp`, and `serve` also accept an opt-in IPFS fallback that recovers
+from source-gateway 5xx/429 through an embedded node:
+
+```bash
+[--ipfs-fallback] [--ipfs-fallback-mode gateway-first] [--ipfs-fallback-timeout-seconds 120]
+```
+
+`pdp-submit` honors the in-flight cap, the base-fee gate, and provider pull
+backpressure (HTTP 429 + `Retry-After`). If the provider's add errors after the
+on-chain AddPieces already landed, `pdp-submit` confirms the aggregate against the
+data set's active pieces and marks it committed instead of adding it again.
+
+### Dashboard
+
+`serve` starts an HTTP server (default `http://localhost:4321`) that runs the commP pass
+in the background and shows live progress: piece counts, the aggregate plan with each
+aggregate's status and parent CID, parked-but-uncommitted count, and failures. Controls:
+start, pause, resume, retry failed, add CIDs (`POST /api/cids`), set gateways
+(`POST /api/gateways`). All state lives in the DB, so the process can stop and resume.
+
+## Recovery commands
+
+These re-arm aggregates that did not reach `committed`. They are not part of a
+routine migration; reach for them only when a run is stuck and you have read
+[`docs/personas.md`](docs/personas.md) failure modes.
+
+```bash
+# Move `failed` aggregates back to `planned` so the next pdp-submit retries them
+ipfs2foc reset-failed-aggregates [--db migrate.db] [--network mainnet|calibration]
+
+# Re-arm `submitted`/`parked` aggregates that never confirmed.
+# Only after verifying on chain that their roots are NOT present — re-arming an
+# aggregate whose AddPieces actually landed lands a duplicate.
+ipfs2foc retry-unconfirmed-aggregates [--db migrate.db] [--network mainnet|calibration]
+```
+
+## Troubleshooting
+
+- **`probe` reports `WARN`.** The gateway answered but the bytes do not re-hash
+  to the requested CID, or the response is not a CAR. That gateway cannot be a
+  source. Fix the gateway config (Kubo: set `Gateway.DeserializedResponses` to
+  `false`) or pick another from [`docs/sources.md`](docs/sources.md).
+- **`set PRIVATE_KEY (0x + 64 hex)`.** `create-data-set` and `pdp-submit` read
+  the signing key from the environment. Export it (`export PRIVATE_KEY=0x...`) or
+  `source .env` before running.
+- **`create-data-set` reverts.** The payer's USDFC deposit, FWSS operator
+  approval, or allowances are insufficient. See [Prerequisites](#prerequisites).
+- **Provider rejects the pull / public-host error.** `--source-base` must be the
+  public HTTPS origin only (scheme + host, no path) and resolve to a public IP.
+  CGNAT and private ranges are rejected. See [`docs/ingress.md`](docs/ingress.md).
+- **`plan` reports a CID as `oversized`.** Its padded piece size exceeds the
+  `--piece-size` aggregate budget. A CAR above the provider's per-piece pull
+  limit (~1 GiB raw) cannot be migrated as one piece either; hold it out of the
+  run until re-chunking is supported.
+- **Submission pauses on `spike`.** The network base fee is above `--max-base-fee`.
+  `pdp-submit` waits out the congestion; check with `ipfs2foc gas`.
+
+[`docs/personas.md`](docs/personas.md) covers per-profile failure modes (gateway
+flakes, disk pressure, idle-timeout cascades) and recovery.
 
 ## How it works
 
@@ -55,165 +303,17 @@ add. `src/piece-aggregate.ts` computes it locally so the on-chain add validates;
 add rejects a mismatched root, so a successful commit confirms the local computation.
 This value is verified byte-for-byte against `go-commp-utils` in `test/`.
 
-## Requirements
+## Aggregate lifecycle and park/commit safety
 
-- **Node 26+** (uses the built-in `node:sqlite`).
-- A source that serves **deterministic trustless CARs**. Known working:
-  `gateway.pinata.cloud`, `trustless-gateway.link`. A gateway that returns reassembled
-  files instead of CARs does not work; `probe` reports which case a gateway falls into.
-  See [`docs/sources.md`](docs/sources.md) for per-provider notes and probe commands.
+Each aggregate moves through `planned` → `submitted` → `parked` → `committed` (or
+`failed`). `parked` means the provider has downloaded and verified every sub-piece but
+nothing is on-chain yet. `pdp-submit` caps the count of aggregates at `submitted`/`parked`
+that have not reached `committed` (`--max-in-flight`), so a provider is not asked to
+download far more than is then committed, and it pauses when the network base fee is above
+`--max-base-fee`.
 
-```bash
-npm install   # or pnpm install
-```
-
-## Prerequisites
-
-Before running the quickstart, complete the one-time wallet setup on the network
-you target (default `mainnet`; pass `--network calibration` for the testnet).
-
-- **Wallet**: a wallet whose address is the FWSS payer for the data set you create
-  or own. Export the key as `PRIVATE_KEY` (`0x` + 64 hex) in the environment. The
-  same key signs the data-set creation, the pull authorization, and every
-  AddPieces submission.
-- **FIL** in that wallet for the migrator's own transactions: USDFC ERC-20 approve,
-  FilecoinPay deposit, FilecoinWarmStorageService operator approval. These three
-  steps happen once per payer; the storage provider pays gas for everything it
-  submits on chain (createDataSet, AddPieces, proof of possession).
-- **USDFC** deposited into the FilecoinPay contract, with FWSS approved as a
-  payments operator with sufficient `rateAllowance` and `lockupAllowance`, and a
-  funded balance that covers the minimum lockup plus a one-time sybil fee.
-  `create-data-set` reverts otherwise. [`filecoin-pin`](https://github.com/FilOzone/filecoin-pin)
-  automates the approve / deposit / operator-approval calls from its CLI or as a
-  library. The [Synapse SDK](https://github.com/FilOzone/synapse-sdk) `Payments`
-  helper exposes the same calls directly. PDP Scan
-  (`https://pdp.vxb.ai/{network}`) shows the resulting account state.
-- **Provider id**: choose a PDP-capable provider from the SP registry. PDP Scan
-  lists registered providers at `https://pdp.vxb.ai/{network}/providers`; pass
-  that numeric id as `--provider-id` to `create-data-set`. Skip this step if you
-  are reusing an existing data set you own.
-- **Trustless gateway**: confirm the gateway you intend to use returns
-  byte-stable CARs for one of your CIDs with `probe` before running `plan`.
-
-## Quickstart
-
-Complete **Prerequisites** above first. Default network is **mainnet**; pass
-`--network calibration` for the testnet. Two paths share steps 0, 1, 3, 4, 5:
-
-- **Single-asset** (default): one source CID per sub-piece. No staging disk; `plan`
-  alone produces aggregates ready for `pdp-submit`.
-- **Multi-asset**: concatenate many source CIDs into one assembled CAR per
-  sub-piece. Use when source CIDs are smaller than the provider's `Min Piece Size`
-  or when you want fewer on-chain pieces per source CID.
-
-`redirect-serve` and `pdp-submit` run concurrently in separate terminals.
-
-```bash
-export PRIVATE_KEY=0x...
-
-# 0. (Once per provider) Provision a data set with withIPFSIndexing on a chosen
-#    PDP provider. Skip if you already have a data set id you own. Note the
-#    `dataSetId` printed; reuse it in steps 3 and 4.
-node src/index.ts create-data-set --provider-id <provider-id>
-
-# 1. Confirm a trustless gateway returns a deterministic CAR for one of your CIDs.
-node src/index.ts probe <sample-cid> --gateway https://trustless-gateway.link
-
-# 2a. Single-asset: compute piece commitments and pack aggregates over passthrough
-#     sub-pieces (one source CID per sub-piece).
-printf '%s\n' <cid> > cids.txt
-node src/index.ts plan --cids cids.txt --db migrate.db
-
-# 2b. Multi-asset: plan without auto-pack, then assemble multi-root CARs.
-#     `--pack-target-size` must meet the provider's Min Piece Size.
-# node src/index.ts plan --cids cids.txt --db migrate.db --no-auto-pack
-# node src/index.ts pack-cars --db migrate.db --car-store /var/foc-cars \
-#   --pack-target-size 512MiB
-
-# 3. (Terminal A — leave running) Serve sub-pieces with a public HTTPS
-#    ingress. `--ingress cloudflared` spawns a no-signup Cloudflare tunnel and
-#    logs the public URL; the default `funnel` mode expects you to front the
-#    local port yourself (Tailscale Funnel / Cloudflare Tunnel / VPS). See
-#    docs/ingress.md.
-node src/index.ts redirect-serve --db migrate.db --port 4322 --ingress cloudflared
-
-# 4. (Terminal B) Pull, park, and add each aggregate onto the provider's data set.
-#    `--source-base` is the public HTTPS origin only (no path) — the URL
-#    cloudflared (or `tailscale funnel status`) prints.
-node src/index.ts pdp-submit --db migrate.db --data-set-id <data-set-id> \
-  --source-base https://<public-host>
-
-# 5. Confirm every CID landed: reconcile local state against the on-chain pieces.
-node src/index.ts report --db migrate.db --data-set-id <data-set-id>
-```
-
-`cids.txt`: one CID per line; blank lines and `#` comments are ignored.
-
-`plan` is **INSERT-only**: re-running it after appending CIDs adds new
-sub-pieces and aggregates without rewriting prior planning state. Existing
-`submitted`/`parked`/`committed` aggregates are never touched.
-
-## Commands
-
-```bash
-# Check whether a gateway serves deterministic CARs for a CID
-node src/index.ts probe <cid> [--gateway https://gateway.pinata.cloud]...
-
-# Compute one PieceCID v2
-node src/index.ts commp <cid>
-
-# Full pipeline: commitments + aggregate packing into a SQLite DB.
-# Default auto-wraps each source CID as a passthrough sub-piece. Pass
-# --no-auto-pack to defer sub-piece assembly to `pack-cars` (multi-asset).
-node src/index.ts plan --cids cids.txt [--db migrate.db] [--gateway URL]... \
-  [--piece-size 32GiB] [--concurrency 8] [--no-auto-pack]
-
-# Multi-asset packer: assemble many source CIDs into one multi-root CAR per
-# sub-piece, append aggregates over the new sub-pieces.
-node src/index.ts pack-cars --db migrate.db --car-store <dir> [--gateway URL]... \
-  [--pack-target-size 512MiB] [--fetch-concurrency 4]
-
-# Progress and the aggregate plan
-node src/index.ts status [--db migrate.db]
-
-# Background daemon + browser dashboard (start/pause/resume, add CIDs, add gateways)
-node src/index.ts serve [--db migrate.db] [--cids cids.txt] [--gateway URL]... \
-  [--port 4321] [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
-
-# Current network base fee and whether to pause submission
-node src/index.ts gas [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee 1000000]
-
-# Sub-piece server: GET /piece/{pcidv2} -> 302 to the gateway CAR for a
-# passthrough sub-piece, or byte-serves the assembled CAR file for a
-# multi-asset sub-piece.
-node src/index.ts redirect-serve [--db migrate.db] [--port 4322]
-
-# Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env)
-node src/index.ts create-data-set --provider-id <id> \
-  [--network mainnet|calibration] [--rpc-url URL] [--cdn] [--timeout-seconds 600]
-
-# Migrate via the PDP pull path (PRIVATE_KEY env)
-node src/index.ts pdp-submit --db migrate.db --data-set-id <id> \
-  --source-base https://<public-host> [--network mainnet|calibration] [--rpc-url URL] \
-  [--max-in-flight 4] [--max-base-fee 1000000] [--pull-batch 32] [--poll-seconds 15]
-
-# Verification report: reconcile a run against the data set's on-chain pieces
-node src/index.ts report --db migrate.db --data-set-id <id> \
-  [--network mainnet|calibration] [--rpc-url URL] [--json]
-```
-
-`pdp-submit` honors the in-flight cap, the base-fee gate, and provider pull
-backpressure (HTTP 429 + `Retry-After`). If the provider's add errors after the
-on-chain AddPieces already landed, `pdp-submit` confirms the aggregate against the data
-set's active pieces and marks it committed instead of adding it again.
-
-### Dashboard
-
-`serve` starts an HTTP server (default `http://localhost:4321`) that runs the commP pass
-in the background and shows live progress: piece counts, the aggregate plan with each
-aggregate's status and parent CID, parked-but-uncommitted count, and failures. Controls:
-start, pause, resume, retry failed, add CIDs (`POST /api/cids`), set gateways
-(`POST /api/gateways`). All state lives in the DB, so the process can stop and resume.
+Repacking touches only `planned` aggregates. Once an aggregate is `submitted` or beyond,
+its index and members are frozen, and its CIDs are excluded from future packing.
 
 ## Public ingress for the redirect server
 
@@ -229,18 +329,6 @@ built-in paths:
 Setup details, prerequisites, and the public-HTTPS shape the provider
 validates live in [`docs/ingress.md`](docs/ingress.md). Pass the **HTTPS
 origin only** (scheme + host, no path) as `--source-base`.
-
-## Aggregate lifecycle and park/commit safety
-
-Each aggregate moves through `planned` → `submitted` → `parked` → `committed` (or
-`failed`). `parked` means the provider has downloaded and verified every sub-piece but
-nothing is on-chain yet. `pdp-submit` caps the count of aggregates at `submitted`/`parked`
-that have not reached `committed` (`--max-in-flight`), so a provider is not asked to
-download far more than is then committed, and it pauses when the network base fee is above
-`--max-base-fee`.
-
-Repacking touches only `planned` aggregates. Once an aggregate is `submitted` or beyond,
-its index and members are frozen, and its CIDs are excluded from future packing.
 
 ## Network gas and payments
 
@@ -303,6 +391,14 @@ Tables: `pieces`, `sub_pieces`, `sub_piece_members`, `aggregates`,
 - **All-or-nothing aggregate**: one unretrievable sub-piece fails its aggregate. The commP
   pass validates per-CID retrievability first.
 
+## Documentation
+
+- [`docs/personas.md`](docs/personas.md) — operator profiles: disk, bandwidth, and time
+  budgets mapped to knob settings, with per-profile failure modes and recovery.
+- [`docs/sources.md`](docs/sources.md) — per-gateway notes and probe commands.
+- [`docs/ingress.md`](docs/ingress.md) — public-HTTPS ingress options for `redirect-serve`.
+- [`docs/glossary.md`](docs/glossary.md) — operator-level definitions for the protocol terms.
+
 ## Roadmap
 
 - **Concurrent pull batches.** `pdp-submit` pulls sub-piece batches one after another. The
@@ -315,3 +411,16 @@ Tables: `pieces`, `sub_pieces`, `sub_piece_members`, `aggregates`,
 - **Sources without trustless CARs.** Retrieve through Helia (bitswap +
   trustless-gateway block brokers), assemble canonical CARs locally, and host each
   aggregate over public HTTPS for the provider to pull.
+
+## Contributing
+
+Issues and pull requests welcome at
+[github.com/SgtPooki/ipfs2foc](https://github.com/SgtPooki/ipfs2foc). See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev loop and conventions, and
+[`SECURITY.md`](SECURITY.md) for key-handling and on-chain-spend guidance.
+
+## License
+
+[MIT](LICENSE)
+</content>
+</invoke>
