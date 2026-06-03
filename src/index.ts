@@ -13,6 +13,10 @@
  *   create-data-set --provider-id ID [opts] Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env).
  *   pdp-submit --data-set-id ID [opts]      Pull, park, and add aggregates over PDP (PRIVATE_KEY env).
  *   report  --data-set-id ID [opts]         Reconcile a run against on-chain pieces; emit explorer links.
+ *   pack-cars --car-store DIR [opts]        Assemble multi-root CARs for the multi-asset path.
+ *   analyze  [--cids FILE] [opts]           Pre-flight a CID list against a gateway (pass rate, sizes, throughput).
+ *   reset-failed-aggregates [opts]          Recovery: move `failed` aggregates back to `planned`.
+ *   retry-unconfirmed-aggregates [opts]     Recovery: re-arm unconfirmed aggregates (verify on chain first).
  *
  * stdout carries machine-readable output; logs go to stderr. State lives in a
  * sqlite DB (default ./migrate.db).
@@ -80,11 +84,72 @@ Defaults:
   port        4321
   network     mainnet (serve base-fee monitor off unless --network or --rpc-url given)
 
+Examples:
+  # Pre-flight a gateway, then plan a CID list
+  ipfs2foc probe <cid> --gateway https://trustless-gateway.link
+  ipfs2foc plan --cids cids.txt
+
+  # Serve sub-pieces (terminal A) and submit them (terminal B)
+  ipfs2foc redirect-serve --ingress cloudflared --port 4322
+  ipfs2foc pdp-submit --data-set-id 42 --source-base https://<public-host>
+
+  # Confirm everything landed on chain
+  ipfs2foc report --data-set-id 42
+
 IPFS fallback (plan, commp, serve):
   --ipfs-fallback                    Enable embedded ipfs node to recover from source-gateway 5xx/429 (default: off; opt-in)
   --ipfs-fallback-mode MODE          Fallback ordering (default: gateway-first; only value supported in this release)
   --ipfs-fallback-timeout-seconds N  Per-CID upper bound on the fallback fetch (default: 120)
+
+Docs: https://github.com/SgtPooki/ipfs2foc#readme
+  Quickstart and troubleshooting in the README; operator profiles, gateways,
+  and ingress setup under docs/.
 `
+
+/** Subcommands `main` dispatches, used for did-you-mean on a mistyped command. */
+const KNOWN_COMMANDS = [
+  'probe',
+  'commp',
+  'plan',
+  'status',
+  'serve',
+  'gas',
+  'redirect-serve',
+  'create-data-set',
+  'pdp-submit',
+  'report',
+  'pack-cars',
+  'reset-failed-aggregates',
+  'retry-unconfirmed-aggregates',
+  'analyze',
+]
+
+/** Levenshtein edit distance between two short strings. */
+function editDistance(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
+  for (let j = 1; j <= b.length; j++) d[0][j] = j
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+    }
+  }
+  return d[a.length][b.length]
+}
+
+/** Closest known command within an edit distance of 3, or null if none is close. */
+function suggestCommand(input: string): string | null {
+  let best: string | null = null
+  let bestDistance = Infinity
+  for (const cmd of KNOWN_COMMANDS) {
+    const dist = editDistance(input, cmd)
+    if (dist < bestDistance) {
+      bestDistance = dist
+      best = cmd
+    }
+  }
+  return bestDistance <= 3 ? best : null
+}
 
 function gatewaysFrom(values: { gateway?: string[] }): string[] {
   return values.gateway != null && values.gateway.length > 0 ? values.gateway : DEFAULT_GATEWAYS
@@ -136,6 +201,9 @@ async function cmdProbe(argv: string[]): Promise<void> {
       log(`FAIL ${gateway} — ${message}`)
       results.push({ gateway, cid, servesCar: false, deterministic: false, error: message })
     }
+  }
+  if (results.some((r) => r.deterministic === true)) {
+    log("Next: pre-flight a whole list with 'ipfs2foc analyze --cids <file>', then 'ipfs2foc plan --cids <file>'")
   }
   console.log(JSON.stringify(results, null, 2))
 }
@@ -203,6 +271,9 @@ async function cmdPlan(argv: string[]): Promise<void> {
 
     log('')
     log(`Done. ${summary.succeeded}/${summary.total} pieces, ${summary.aggregateCount} aggregate(s) -> ${values.db}`)
+    if (summary.succeeded > 0) {
+      log("Next: serve sub-pieces with 'ipfs2foc redirect-serve', then 'ipfs2foc pdp-submit --data-set-id <id> --source-base <url>'")
+    }
     if (summary.failed > 0) {
       log(`Failed: ${summary.failed} (run 'status' for details; re-run 'plan' to retry)`)
     }
@@ -387,6 +458,7 @@ async function cmdPdpSubmit(argv: string[]): Promise<void> {
     })
     const committed = db.aggregates().filter((a) => a.status === 'committed')
     log(`committed ${committed.length} aggregate(s). Confirm at ${explorerBase(network)} (data set ${values['data-set-id']})`)
+    log(`Next: 'ipfs2foc report --data-set-id ${values['data-set-id']}' to reconcile against the on-chain pieces`)
     console.log(JSON.stringify({ dataSetId: values['data-set-id'], committed: committed.map((a) => ({ root: a.rootPieceCid, tx: a.txHash })) }, null, 2))
   } finally {
     db.close()
@@ -419,6 +491,7 @@ async function cmdCreateDataSet(argv: string[]): Promise<void> {
     cdn: values.cdn === true,
     timeoutMs: parsePositiveInt(values['timeout-seconds'] as string, '--timeout-seconds') * 1000,
   })
+  log(`Next: 'ipfs2foc plan --cids <file>', then 'ipfs2foc pdp-submit --data-set-id ${result.dataSetId} --source-base <url>'`)
   console.log(JSON.stringify(result, null, 2))
 }
 
@@ -673,9 +746,12 @@ async function main(): Promise<void> {
     case '--help':
       process.stdout.write(USAGE)
       break
-    default:
-      process.stderr.write(`unknown command: ${command}\n\n${USAGE}`)
+    default: {
+      const suggestion = suggestCommand(command)
+      const hint = suggestion != null ? ` Did you mean '${suggestion}'?` : ''
+      process.stderr.write(`unknown command: ${command}.${hint}\n\n${USAGE}`)
       process.exitCode = 1
+    }
   }
 }
 
