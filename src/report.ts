@@ -156,14 +156,14 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
   const discrepancies: string[] = []
   const committedAggs: Array<{ idx: number; memberCount: number }> = []
   const committedTxHashes: string[] = []
-  let committed = 0
+  const onChainAggIdxs: number[] = []
 
   for (const agg of db.aggregates()) {
     const members = db.aggregateManifest(agg.idx)
     const root = pieceAggregateCommP(members.map((m) => ({ pieceCid: m.pieceCid, rawSize: m.rawSize }))).rootPieceCid
     const onChain = onChainRoots.has(root)
     if (onChain) {
-      committed += agg.memberCount
+      onChainAggIdxs.push(agg.idx)
       committedAggs.push({ idx: agg.idx, memberCount: agg.memberCount })
       if (agg.txHash != null) committedTxHashes.push(agg.txHash)
     }
@@ -185,14 +185,36 @@ export async function runReport(db: MigrationDB, opts: ReportOptions): Promise<R
     })
   }
 
+  // Count DISTINCT source CIDs committed across on-chain aggregates, intersected
+  // with the local pieces table. Deduping (M3) stops a CID that lands in two
+  // committed aggregates — e.g. a passthrough and a packed aggregate over the
+  // same source — from inflating the committed count.
+  const committedStats = db.committedSourceCidStats(onChainAggIdxs)
+  const committed = committedStats.inPieces
+  if (committedStats.total > committedStats.inPieces) {
+    discrepancies.push(
+      `${committedStats.total - committedStats.inPieces} CID(s) committed on chain are absent from the ` +
+        `local pieces table (this DB did not produce them, or piece rows were lost)`
+    )
+  }
+
   const pending = counts.pending + counts.processing + counts.done
   // `done` CIDs not yet in a committed aggregate count as pending from the
-  // operator's perspective. Subtract committed to avoid double counting.
-  const pendingNotCommitted = Math.max(0, pending - committed)
-  const unaccounted = Math.max(
-    0,
-    counts.total - committed - pendingNotCommitted - counts.failed - counts.oversized
-  )
+  // operator's perspective. Surface — rather than clamp away (M2) — any
+  // inconsistency where the numbers cannot conserve, so a miscount is reported
+  // instead of silently hidden. Displayed values are still clamped to >= 0 so
+  // the JSON stays sane.
+  const rawPendingNotCommitted = pending - committed
+  const pendingNotCommitted = Math.max(0, rawPendingNotCommitted)
+  const rawUnaccounted = counts.total - committed - pendingNotCommitted - counts.failed - counts.oversized
+  const unaccounted = Math.max(0, rawUnaccounted)
+  if (rawPendingNotCommitted < 0 || rawUnaccounted !== 0) {
+    discrepancies.push(
+      `CID accounting does not conserve (total=${counts.total}, committed=${committed}, ` +
+        `pending=${pending}, failed=${counts.failed}, oversized=${counts.oversized}); ` +
+        `investigate duplicate or foreign aggregate membership`
+    )
+  }
 
   // Pull the latest AddPieces block across all committed aggregates so the
   // proof check can ask "has the SP proven possession after the run's final

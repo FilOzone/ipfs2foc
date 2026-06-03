@@ -314,6 +314,14 @@ export interface PackCarsSummary {
   built: number
   failed: number
   skipped: number
+  /**
+   * Source CIDs whose bin failed to assemble. They stay `done` and re-enter the
+   * free pool on the next run (a transient gateway flap recovers); a CID that
+   * keeps reappearing here across runs has a permanent assembly problem the
+   * operator must investigate. Surfaced per-CID because `failed` counts bins,
+   * not CIDs.
+   */
+  failedMemberCids: string[]
 }
 
 /**
@@ -342,7 +350,7 @@ export async function runPackCars(db: MigrationDB, opts: PackCarsOptions): Promi
   }))
   const { bins, oversizedForPacking } = planBins(inputsForBuild, target)
 
-  const summary: PackCarsSummary = { bins: bins.length, built: 0, failed: 0, skipped: 0 }
+  const summary: PackCarsSummary = { bins: bins.length, built: 0, failed: 0, skipped: 0, failedMemberCids: [] }
   const fetchConcurrency = opts.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY
   for (const bin of bins) {
     try {
@@ -367,7 +375,13 @@ export async function runPackCars(db: MigrationDB, opts: PackCarsOptions): Promi
       summary.built += 1
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      log(`  ! sub-piece build failed: ${message}`)
+      // Surface which source CIDs failed to pack — `failed` alone counts bins,
+      // not CIDs, so without this the operator can't tell what didn't migrate.
+      // No DB write: the members stay `done` and a transient failure recovers on
+      // the next run; a CID that keeps failing here is a permanent problem to
+      // investigate, not a silent drop.
+      summary.failedMemberCids.push(...bin.memberCids)
+      log(`  ! sub-piece build failed (${bin.memberCids.length} member(s): ${bin.memberCids.join(', ')}): ${message}`)
       summary.failed += 1
     }
   }

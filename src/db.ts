@@ -468,6 +468,40 @@ export class MigrationDB {
   }
 
   /**
+   * Distinct source CIDs committed across the given on-chain aggregates.
+   * Membership in "on chain" is decided by `report` (root match against the
+   * verifier), so it passes the on-chain aggregate indexes in. `inPieces` counts
+   * only those that exist in the local `pieces` table; `total - inPieces` is the
+   * count committed on chain but absent locally — a real discrepancy the old
+   * `max(0, …)` clamping silently absorbed. `COUNT(DISTINCT …)` dedupes a CID
+   * that lands in more than one committed aggregate (e.g. a passthrough and a
+   * packed aggregate over the same source), and the SQL aggregation keeps this
+   * scale-safe — no CID list is materialized.
+   */
+  committedSourceCidStats(onChainAggregateIdxs: number[]): { inPieces: number; total: number } {
+    if (onChainAggregateIdxs.length === 0) return { inPieces: 0, total: 0 }
+    const placeholders = onChainAggregateIdxs.map(() => '?').join(',')
+    const total = this.#db
+      .prepare(
+        `SELECT COUNT(DISTINCT spm.member_cid) AS n
+           FROM aggregate_members m
+           JOIN sub_piece_members spm ON spm.sub_piece_cid = m.sub_piece_cid
+          WHERE m.aggregate_idx IN (${placeholders})`
+      )
+      .get(...onChainAggregateIdxs) as { n: number }
+    const inPieces = this.#db
+      .prepare(
+        `SELECT COUNT(DISTINCT spm.member_cid) AS n
+           FROM aggregate_members m
+           JOIN sub_piece_members spm ON spm.sub_piece_cid = m.sub_piece_cid
+           JOIN pieces p ON p.cid = spm.member_cid
+          WHERE m.aggregate_idx IN (${placeholders})`
+      )
+      .get(...onChainAggregateIdxs) as { n: number }
+    return { inPieces: Number(inPieces.n), total: Number(total.n) }
+  }
+
+  /**
    * Sub-piece manifest for one aggregate, in segment order. Every row is one
    * sub-piece (multi-asset CAR file or passthrough source-gateway URL); the
    * pull/add path treats them uniformly.
