@@ -1,7 +1,20 @@
 {
   "name": "ipfs2foc",
   "version": "0.0.1",
-  "description": "Migrate already-pinned IPFS CIDs onto Filecoin Onchain Cloud (FOC) without re-chunking. The storage provider pulls trustless-gateway CARs over PDP; the migrator computes piece commitments and packs aggregates.",
+  "description": "Migrate already-pinned IPFS CIDs onto Filecoin Onchain Cloud without re-chunking.",
+  "keywords": [
+    "ipfs",
+    "filecoin",
+    "pdp",
+    "cli",
+    "migration"
+  ],
+  "homepage": "https://github.com/SgtPooki/ipfs2foc#readme",
+  "bugs": "https://github.com/SgtPooki/ipfs2foc/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SgtPooki/ipfs2foc.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=26"
@@ -9,6 +22,13 @@
   "bin": {
     "ipfs2foc": "src/index.ts"
   },
+  "files": [
+    "src",
+    "docs",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node src/index.ts",
     "probe": "node src/index.ts probe",
