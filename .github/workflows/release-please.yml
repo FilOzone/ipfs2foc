@@ -32,18 +32,23 @@ jobs:
       id-token: write # OIDC trusted publishing; provenance is automatic
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '26'
           registry-url: 'https://registry.npmjs.org'
-      # Trusted publishing needs npm >= 11.5.1; upgrade regardless of what ships.
+          cache: pnpm
+      # Install, verify, and build with pnpm (the repo's package manager).
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
+      # Publish with npm: its OIDC trusted publishing authenticates against the
+      # Trusted Publisher configured on npmjs.com for this repo + workflow, so no
+      # NPM_TOKEN is needed and provenance is automatic. Trusted publishing needs
+      # npm >= 11.5.1. --ignore-scripts skips the prepack rebuild (dist is built
+      # above). The package's initial version had to be published manually once;
+      # OIDC cannot publish a package that does not yet exist.
       - run: npm install -g npm@latest
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-      # No NPM_TOKEN. Authenticates via OIDC against the Trusted Publisher
-      # configured on npmjs.com for this repo + workflow. Provenance is automatic.
-      # Requires a one-time manual publish to create the package first
-      # (OIDC cannot publish a package's initial version).
-      - run: npm publish --access public
+      - run: npm publish --access public --ignore-scripts

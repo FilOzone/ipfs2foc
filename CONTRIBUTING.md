@@ -4,20 +4,25 @@ Thanks for helping improve ipfs2foc. This repo is small; the loop is short.
 
 ## Dev loop
 
+Development uses [pnpm](https://pnpm.io) (Corepack picks the version from
+`package.json`'s `packageManager` field).
+
 ```bash
-npm install
-npm test            # node --test
-npx tsc --noEmit    # type-check
+pnpm install
+pnpm lint            # biome check
+pnpm typecheck       # tsc --noEmit
+pnpm test            # node --test
+pnpm build           # compile to dist/ (what gets published)
 ```
 
-ipfs2foc runs on **Node 26+** and uses the built-in `node:sqlite`, so no build
-step is needed — Node strips the TypeScript types at runtime. Run the CLI
-locally with `node src/index.ts <command>` (or `npm link` once, then
-`ipfs2foc <command>`).
+ipfs2foc runs on **Node 26+** and uses the built-in `node:sqlite`. During
+development, run the CLI straight from source — `node src/index.ts <command>` —
+since Node strips the TypeScript types at runtime. The published package ships
+compiled JS from `dist/` (Node refuses to strip types under `node_modules`).
 
-Keep `tsc` clean and the test suite green before pushing. Tests live under
-`test/` and drive control flow with injectable dependencies rather than live
-network calls; match that pattern when adding coverage.
+Keep `pnpm lint`, `pnpm typecheck`, and the test suite green before pushing.
+Tests live under `test/` and drive control flow with injectable dependencies
+rather than live network calls; match that pattern when adding coverage.
 
 ## Conventions
 

@@ -40,13 +40,13 @@ npm install -g ipfs2foc      # the `ipfs2foc` command
 npx ipfs2foc --help
 ```
 
-From source:
+From source (development uses [pnpm](https://pnpm.io)):
 
 ```bash
 git clone https://github.com/SgtPooki/ipfs2foc
 cd ipfs2foc
-npm install
-npm link                     # puts `ipfs2foc` on PATH; or run `node src/index.ts <command>`
+pnpm install
+node src/index.ts --help     # run directly; Node 26 strips the TypeScript types
 ```
 
 ## Requirements

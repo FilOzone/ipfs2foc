@@ -16,6 +16,7 @@
     "url": "git+https://github.com/SgtPooki/ipfs2foc.git"
   },
   "type": "module",
+  "packageManager": "pnpm@10.16.1",
   "engines": {
     "node": ">=26"
   },
