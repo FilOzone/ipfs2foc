@@ -29,16 +29,20 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance
+      id-token: write # OIDC trusted publishing; provenance is automatic
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '26'
           registry-url: 'https://registry.npmjs.org'
+      # Trusted publishing needs npm >= 11.5.1; upgrade regardless of what ships.
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm test
-      - run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # No NPM_TOKEN. Authenticates via OIDC against the Trusted Publisher
+      # configured on npmjs.com for this repo + workflow. Provenance is automatic.
+      # Requires a one-time manual publish to create the package first
+      # (OIDC cannot publish a package's initial version).
+      - run: npm publish --access public
