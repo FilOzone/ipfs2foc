@@ -39,12 +39,12 @@ import path from 'node:path'
 import { CarBlockIterator, CarWriter } from '@ipld/car'
 import * as Hasher from '@web3-storage/data-segment/multihash'
 import { CID } from 'multiformats/cid'
-import * as Link from 'multiformats/link'
 import * as Raw from 'multiformats/codecs/raw'
+import * as Link from 'multiformats/link'
 import type { MigrationDB, PieceRow } from './db.ts'
 import { fetchCar } from './gateway.ts'
 import { appendAggregatesFromFreeSubPieces } from './migrate.ts'
-import { log, pool } from './util.ts'
+import { log } from './util.ts'
 
 /** Default target raw size for one assembled sub-piece. Stays under the 1_069_547_520-byte raw cap. */
 export const DEFAULT_PACK_TARGET_BYTES = 512n * 1024n * 1024n
@@ -237,9 +237,7 @@ export interface WritableStreamWithLength {
   end(): Promise<void>
 }
 
-async function* toAsyncIterable(
-  body: ReadableStream<Uint8Array>
-): AsyncIterable<Uint8Array> {
+async function* toAsyncIterable(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
   for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
     yield chunk
   }
@@ -278,7 +276,11 @@ export function createCarStoreSink(filePath: string): WritableStreamWithLength {
           if (err) reject(err)
           else if (ok) resolve()
         })
-        if (!ok) stream.once('drain', () => { cleanup(); resolve() })
+        if (!ok)
+          stream.once('drain', () => {
+            cleanup()
+            resolve()
+          })
       })
     },
     async end() {
@@ -346,9 +348,7 @@ export async function runPackCars(
 ): Promise<PackCarsSummary> {
   const target = opts.targetSizeBytes ?? Number(DEFAULT_PACK_TARGET_BYTES)
   if (target > PIECE_RAW_SIZE_LIMIT) {
-    throw new Error(
-      `--pack-target-size ${target} exceeds the per-sub-piece raw cap ${PIECE_RAW_SIZE_LIMIT}`
-    )
+    throw new Error(`--pack-target-size ${target} exceeds the per-sub-piece raw cap ${PIECE_RAW_SIZE_LIMIT}`)
   }
   await mkdir(opts.carStore, { recursive: true })
 
@@ -443,8 +443,8 @@ export async function runPackCars(
     // aggregates over the source pieces, and those stay as the alternative
     // path for any operator who prefers single-asset commits.
     const existing = db.aggregates().find((a) => a.status === 'planned')
-    const aggregateSizeBytes = opts.aggregateSizeBytes
-      ?? (existing != null ? BigInt(existing.pieceSizeBytes) : 32n * 1024n * 1024n * 1024n)
+    const aggregateSizeBytes =
+      opts.aggregateSizeBytes ?? (existing == null ? 32n * 1024n * 1024n * 1024n : BigInt(existing.pieceSizeBytes))
     appendAggregatesFromFreeSubPieces(db, aggregateSizeBytes)
   }
 
@@ -456,10 +456,7 @@ export async function runPackCars(
  * Mirrors `fetchAndComputePiece`'s gateway iteration — a single gateway flap
  * must not fail the whole bin when fallbacks are configured.
  */
-async function fetchCarFromAnyGateway(
-  gateways: string[],
-  cid: string
-): Promise<Awaited<ReturnType<typeof fetchCar>>> {
+async function fetchCarFromAnyGateway(gateways: string[], cid: string): Promise<Awaited<ReturnType<typeof fetchCar>>> {
   const errors: string[] = []
   for (const gateway of gateways) {
     try {
@@ -484,14 +481,12 @@ async function buildOneBin(
   // and the consumer sees `Unexpected end of data`. Streaming each member in
   // turn keeps every response under active read.
   void fetchConcurrency
-  const memberStreams: Array<{ cid: string; body: ReadableStream<Uint8Array> }> = bin.memberCids.map(
-    (cid) => ({
-      cid,
-      get body(): ReadableStream<Uint8Array> {
-        throw new Error(`internal: member body must be fetched lazily for ${cid}`)
-      },
-    })
-  )
+  const memberStreams: Array<{ cid: string; body: ReadableStream<Uint8Array> }> = bin.memberCids.map((cid) => ({
+    cid,
+    get body(): ReadableStream<Uint8Array> {
+      throw new Error(`internal: member body must be fetched lazily for ${cid}`)
+    },
+  }))
   // Override the lazy body with a fetch invoked at consume time. The
   // assembler iterates `memberStreams` sequentially, so this materialises
   // each body just before its bytes are read.
@@ -505,7 +500,9 @@ async function buildOneBin(
           async start(controller) {
             try {
               const body = await promise
-              const reader = (body as unknown as { getReader: () => ReadableStreamDefaultReader<Uint8Array> }).getReader()
+              const reader = (
+                body as unknown as { getReader: () => ReadableStreamDefaultReader<Uint8Array> }
+              ).getReader()
               while (true) {
                 const { value, done } = await reader.read()
                 if (done) break

@@ -1,9 +1,9 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { test } from 'node:test'
 import { MigrationDB } from '../src/db.ts'
 
 test('concurrent MigrationDB writes do not error with SQLITE_BUSY', async () => {
@@ -22,7 +22,7 @@ test('concurrent MigrationDB writes do not error with SQLITE_BUSY', async () => 
       'u',
       'd7e2a92c824bae07'
     )
-    let errors: unknown[] = []
+    const errors: unknown[] = []
     const updaterA = (async () => {
       for (let i = 0; i < 200; i++) {
         try {

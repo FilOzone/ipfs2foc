@@ -347,7 +347,7 @@ export async function runReport(
     log(
       `  aggregate ${a.idx} [${a.onChain ? 'on-chain' : a.status}] ${a.members} CID(s) ${a.root}` +
         `\n    piece:   ${a.pieceUrl}` +
-        (a.txHash != null ? `\n    tx:      ${a.txHash}` : '')
+        (a.txHash == null ? '' : `\n    tx:      ${a.txHash}`)
     )
   }
   if (discrepancies.length > 0) {

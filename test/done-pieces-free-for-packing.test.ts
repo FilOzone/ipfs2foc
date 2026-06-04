@@ -1,8 +1,8 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { test } from 'node:test'
 import { MigrationDB } from '../src/db.ts'
 
 async function dbAt(name: string) {
@@ -19,7 +19,10 @@ test('donePiecesFreeForPacking excludes cids wrapped as passthrough sub-pieces',
     db.recordPieceSuccess('bafC', 'pcC', 300, 'g', 'u', null)
     db.recordPassthroughSubPiece({ subPieceCid: 'pcA', sourceCid: 'bafA', url: 'u', rawSize: 100, memberSha256: null })
     db.recordPassthroughSubPiece({ subPieceCid: 'pcB', sourceCid: 'bafB', url: 'u', rawSize: 200, memberSha256: null })
-    const free = db.donePiecesFreeForPacking().map((p) => p.cid).sort()
+    const free = db
+      .donePiecesFreeForPacking()
+      .map((p) => p.cid)
+      .sort()
     assert.deepEqual(free, ['bafC'], 'bafA and bafB are already members of a sub-piece')
   } finally {
     db.close()
@@ -33,7 +36,10 @@ test('donePiecesFreeForPacking returns every done piece when no sub-pieces exist
     db.addCids(['bafA', 'bafB'])
     db.recordPieceSuccess('bafA', 'pcA', 100, 'g', 'u', null)
     db.recordPieceSuccess('bafB', 'pcB', 200, 'g', 'u', null)
-    const free = db.donePiecesFreeForPacking().map((p) => p.cid).sort()
+    const free = db
+      .donePiecesFreeForPacking()
+      .map((p) => p.cid)
+      .sort()
     assert.deepEqual(free, ['bafA', 'bafB'])
   } finally {
     db.close()

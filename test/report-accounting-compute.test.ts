@@ -1,5 +1,5 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { test } from 'node:test'
 import { computeAccounting } from '../src/report.ts'
 
 // computeAccounting must conserve by construction and surface — not clamp away —

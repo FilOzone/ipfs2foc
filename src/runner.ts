@@ -9,7 +9,7 @@
  */
 
 import type { MigrationDB } from './db.ts'
-import { wrapDonePiecesAsPassthroughSubPieces, appendAggregatesFromFreeSubPieces } from './migrate.ts'
+import { appendAggregatesFromFreeSubPieces, wrapDonePiecesAsPassthroughSubPieces } from './migrate.ts'
 import { categoryOf, fetchAndComputePiece, recordPieceOutcome } from './piece.ts'
 import { log } from './util.ts'
 

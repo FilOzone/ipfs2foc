@@ -1,10 +1,10 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer, type Server } from 'node:http'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AddressInfo } from 'node:net'
+import { test } from 'node:test'
 import { MigrationDB } from '../src/db.ts'
 import { makeRedirectHandler } from '../src/redirect-server.ts'
 

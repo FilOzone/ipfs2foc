@@ -1,11 +1,11 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { test } from 'node:test'
 import { CarWriter } from '@ipld/car'
 import { CID } from 'multiformats/cid'
 import * as raw from 'multiformats/codecs/raw'
 import { sha256 } from 'multiformats/hashes/sha2'
-import { fetchAndComputePiece, categoryOf, type PieceFetchDeps } from '../src/piece.ts'
-import { GatewayError, CAR_ACCEPT } from '../src/gateway.ts'
+import { CAR_ACCEPT, GatewayError } from '../src/gateway.ts'
+import { categoryOf, fetchAndComputePiece, type PieceFetchDeps } from '../src/piece.ts'
 
 // fetchAndComputePiece's gateway-fallthrough, root-mismatch, and IPFS-fallback
 // control flow, exercised with in-memory CARs — no network.

@@ -19,12 +19,7 @@ import { CarBlockIterator, CarWriter } from '@ipld/car'
 import { CID } from 'multiformats/cid'
 import * as Raw from 'multiformats/codecs/raw'
 import { sha256 } from 'multiformats/hashes/sha2'
-import {
-  assembleMultiRootCar,
-  compareCidBytes,
-  planBins,
-  type WritableStreamWithLength,
-} from '../src/pack-cars.ts'
+import { assembleMultiRootCar, compareCidBytes, planBins, type WritableStreamWithLength } from '../src/pack-cars.ts'
 
 async function makeRawBlock(payload: string): Promise<{ cid: CID; bytes: Uint8Array }> {
   const bytes = new TextEncoder().encode(payload)
@@ -109,10 +104,7 @@ test('planBins keeps every bin under the target, largest first', async () => {
   ]
   const { bins } = planBins(realInputs, 500)
   for (const bin of bins) {
-    const total = bin.memberCids.reduce(
-      (sum, cid) => sum + realInputs.find((p) => p.cid === cid)!.rawSize,
-      0
-    )
+    const total = bin.memberCids.reduce((sum, cid) => sum + (realInputs.find((p) => p.cid === cid)?.rawSize ?? 0), 0)
     assert.ok(total <= 500, `bin total ${total} must stay under target`)
   }
   // 400+100 = 500 in one bin; 300+200=500 in another. Two bins expected.
@@ -122,7 +114,14 @@ test('planBins keeps every bin under the target, largest first', async () => {
 test('planBins rejects duplicate source CIDs (aggregate-level collision)', async () => {
   const cid = (await makeRawBlock('dup')).cid.toString()
   assert.throws(
-    () => planBins([{ cid, rawSize: 10 }, { cid, rawSize: 20 }], 1000),
+    () =>
+      planBins(
+        [
+          { cid, rawSize: 10 },
+          { cid, rawSize: 20 },
+        ],
+        1000
+      ),
     /duplicate source CID/
   )
 })
@@ -161,10 +160,7 @@ test('assembleMultiRootCar concatenates two single-root members into a multi-roo
   for await (const block of reader) blockCids.push(block.cid.toString())
   assert.deepEqual(blockCids.sort(), [m1.cid, m2.cid].sort())
   const roots = await reader.getRoots()
-  assert.deepEqual(
-    roots.map((r) => r.toString()).sort(),
-    [m1.cid, m2.cid].sort()
-  )
+  assert.deepEqual(roots.map((r) => r.toString()).sort(), [m1.cid, m2.cid].sort())
 })
 
 test('assembleMultiRootCar rejects a member CAR with a zero-length block section', async () => {
@@ -202,4 +198,3 @@ async function collect(iter: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
   }
   return merged
 }
-

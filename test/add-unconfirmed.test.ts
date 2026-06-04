@@ -1,8 +1,8 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { test } from 'node:test'
 import { MigrationDB } from '../src/db.ts'
 
 // Atomicity guard (HIGH-1): an attempted-but-unconfirmed AddPieces must never be
@@ -49,7 +49,7 @@ test('resetFailedAggregates does NOT re-arm an add_unconfirmed aggregate (no bli
     db.markAggregateAddUnconfirmed(0, 'outcome unknown')
     const changed = db.resetFailedAggregates()
     assert.equal(changed, 0, 'failed-reset must not touch unconfirmed rows')
-    assert.equal(db.aggregates().find((a) => a.idx === 0)!.status, 'add_unconfirmed')
+    assert.equal(db.aggregates().find((a) => a.idx === 0)?.status, 'add_unconfirmed')
   } finally {
     db.close()
     await rm(dir, { recursive: true, force: true })
@@ -84,7 +84,7 @@ test('an unconfirmed aggregate counts as in-flight and is picked up for receipt 
     db.markAggregateTxSubmitted(0, '0xpending')
     const awaiting = db.aggregatesAwaitingReceipt()
     assert.equal(awaiting.length, 1)
-    assert.equal(awaiting[0]!.txHash, '0xpending')
+    assert.equal(awaiting[0]?.txHash, '0xpending')
   } finally {
     db.close()
     await rm(dir, { recursive: true, force: true })

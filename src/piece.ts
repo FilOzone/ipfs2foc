@@ -8,15 +8,15 @@
  * (aggregate root, submission manifest) is metadata derived from the result.
  */
 
-import { CarBlockIterator } from '@ipld/car'
 import { createHash } from 'node:crypto'
+import { CarBlockIterator } from '@ipld/car'
 import * as Hasher from '@web3-storage/data-segment/multihash'
 import { CID } from 'multiformats/cid'
-import * as Link from 'multiformats/link'
 import * as Raw from 'multiformats/codecs/raw'
-import { GatewayError, fetchCar } from './gateway.ts'
-import { fetchCarViaHelia, DEFAULT_FALLBACK_TIMEOUT_MS } from './helia-fallback.ts'
+import * as Link from 'multiformats/link'
 import type { FailureCategory, MigrationDB } from './db.ts'
+import { fetchCar, GatewayError } from './gateway.ts'
+import { DEFAULT_FALLBACK_TIMEOUT_MS, fetchCarViaHelia } from './helia-fallback.ts'
 
 /**
  * Error subclass used internally by piece-compute callers to surface a failure
@@ -38,6 +38,7 @@ export function categoryOf(err: unknown): FailureCategory {
   if (err instanceof PieceComputeError) return err.category
   return 'other'
 }
+
 import { log } from './util.ts'
 
 export interface PieceResult {
@@ -103,8 +104,8 @@ async function computePiece(
   const reader = await CarBlockIterator.fromIterable(tap())
   // Consume all blocks so the entire CAR flows through the hasher. Block data is
   // not retained; only its passage matters for the commitment.
-  // eslint-disable-next-line no-empty
   for await (const _block of reader) {
+    // drain
   }
   const roots = await reader.getRoots()
 

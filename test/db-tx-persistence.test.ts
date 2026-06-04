@@ -1,8 +1,8 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { test } from 'node:test'
 import { MigrationDB } from '../src/db.ts'
 
 async function dbAt(name: string) {
@@ -47,7 +47,7 @@ test('aggregateAwaitingReceipt returns rows with a tx_hash but no commit yet', a
     db.markAggregateTxSubmitted(0, '0xpending')
     const rows = db.aggregatesAwaitingReceipt()
     assert.equal(rows.length, 1)
-    assert.equal(rows[0]!.txHash, '0xpending')
+    assert.equal(rows[0]?.txHash, '0xpending')
     db.markCommitted(0, { dataSetId: '1', txHash: '0xpending', pieceId: '7', committedBlock: '100' })
     assert.deepEqual(db.aggregatesAwaitingReceipt(), [])
   } finally {

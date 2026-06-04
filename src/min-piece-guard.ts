@@ -29,10 +29,7 @@ export interface MinPieceCheckResult {
  * minimum. Returns the offending sub-piece CIDs so the caller can log a
  * single operator-facing line that names them.
  */
-export function checkMinPieceSize(
-  members: MinPieceCheckMember[],
-  minPieceSize: bigint
-): MinPieceCheckResult {
+export function checkMinPieceSize(members: MinPieceCheckMember[], minPieceSize: bigint): MinPieceCheckResult {
   const tooSmall: Array<{ pieceCid: string; paddedSize: bigint }> = []
   for (const m of members) {
     const piece = Piece.fromString(m.pieceCid)

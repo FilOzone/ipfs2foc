@@ -24,27 +24,22 @@
 
 import { readFile } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
-import {
-  DEFAULT_PROBE_CONCURRENCY,
-  DEFAULT_SAMPLE,
-  formatAnalyzeText,
-  runAnalyze,
-} from './analyze.ts'
+import { DEFAULT_PROBE_CONCURRENCY, DEFAULT_SAMPLE, formatAnalyzeText, runAnalyze } from './analyze.ts'
+import { runCreateDataSet } from './create-data-set.ts'
 import { MigrationDB } from './db.ts'
 import { classifyBaseFee, DEFAULT_MAX_BASE_FEE, getBaseFee, resolveRpcUrl } from './gas.ts'
 import { DEFAULT_GATEWAYS, probeGateway } from './gateway.ts'
-import { runCreateDataSet } from './create-data-set.ts'
-import { explorerBase } from './pdp-verifier.ts'
-import { startRedirectServer } from './redirect-server.ts'
-import { startCloudflaredTunnel } from './redirect-server-cloudflared.ts'
-import { runSubmitPdp } from './submit-pdp.ts'
-import { runReport, bigintJsonReplacer } from './report.ts'
+import { stopHeliaFallback } from './helia-fallback.ts'
 import { runPlan } from './migrate.ts'
 import { runPackCars } from './pack-cars.ts'
+import { explorerBase } from './pdp-verifier.ts'
 import { fetchAndComputePiece } from './piece.ts'
-import { stopHeliaFallback } from './helia-fallback.ts'
+import { startRedirectServer } from './redirect-server.ts'
+import { startCloudflaredTunnel } from './redirect-server-cloudflared.ts'
+import { bigintJsonReplacer, runReport } from './report.ts'
 import { Runner } from './runner.ts'
 import { startServer } from './server.ts'
+import { runSubmitPdp } from './submit-pdp.ts'
 import { log, parseCidList, parsePositiveInt, parseSize } from './util.ts'
 
 const DEFAULT_DB = './migrate.db'
@@ -170,9 +165,9 @@ function fallbackFrom(values: {
     throw new Error(`unknown --ipfs-fallback-mode ${mode} (expected gateway-first; helia-first is reserved)`)
   }
   const seconds =
-    values['ipfs-fallback-timeout-seconds'] != null
-      ? parsePositiveInt(values['ipfs-fallback-timeout-seconds'], '--ipfs-fallback-timeout-seconds')
-      : DEFAULT_FALLBACK_SECONDS
+    values['ipfs-fallback-timeout-seconds'] == null
+      ? DEFAULT_FALLBACK_SECONDS
+      : parsePositiveInt(values['ipfs-fallback-timeout-seconds'], '--ipfs-fallback-timeout-seconds')
   return { ipfsFallback, fallbackTimeoutMs: seconds * 1000 }
 }
 
@@ -272,7 +267,9 @@ async function cmdPlan(argv: string[]): Promise<void> {
     log('')
     log(`Done. ${summary.succeeded}/${summary.total} pieces, ${summary.aggregateCount} aggregate(s) -> ${values.db}`)
     if (summary.succeeded > 0) {
-      log("Next: serve sub-pieces with 'ipfs2foc redirect-serve', then 'ipfs2foc pdp-submit --data-set-id <id> --source-base <url>'")
+      log(
+        "Next: serve sub-pieces with 'ipfs2foc redirect-serve', then 'ipfs2foc pdp-submit --data-set-id <id> --source-base <url>'"
+      )
     }
     if (summary.failed > 0) {
       log(`Failed: ${summary.failed} (run 'status' for details; re-run 'plan' to retry)`)
@@ -374,9 +371,8 @@ async function cmdReport(argv: string[]): Promise<void> {
       rpcUrl: values['rpc-url'],
       dataSetId: parsePositiveInt(values['data-set-id'] as string, '--data-set-id'),
       ipniEndpoint: values['check-ipni'],
-      ipniSample: values['ipni-all'] === true
-        ? Infinity
-        : parsePositiveInt(values['ipni-sample'] as string, '--ipni-sample'),
+      ipniSample:
+        values['ipni-all'] === true ? Infinity : parsePositiveInt(values['ipni-sample'] as string, '--ipni-sample'),
       ipniConcurrency: parsePositiveInt(values['ipni-concurrency'] as string, '--ipni-concurrency'),
     })
     if (values.json) {
@@ -452,14 +448,22 @@ async function cmdPdpSubmit(argv: string[]): Promise<void> {
       dataSetId: parsePositiveInt(values['data-set-id'] as string, '--data-set-id'),
       sourceBase: values['source-base'] as string,
       maxInFlight: parsePositiveInt(values['max-in-flight'] as string, '--max-in-flight'),
-      maxBaseFee: values['max-base-fee'] != null ? BigInt(values['max-base-fee']) : DEFAULT_MAX_BASE_FEE,
+      maxBaseFee: values['max-base-fee'] == null ? DEFAULT_MAX_BASE_FEE : BigInt(values['max-base-fee']),
       pollMs: parsePositiveInt(values['poll-seconds'] as string, '--poll-seconds') * 1000,
       pullBatch: parsePositiveInt(values['pull-batch'] as string, '--pull-batch'),
     })
     const committed = db.aggregates().filter((a) => a.status === 'committed')
-    log(`committed ${committed.length} aggregate(s). Confirm at ${explorerBase(network)} (data set ${values['data-set-id']})`)
+    log(
+      `committed ${committed.length} aggregate(s). Confirm at ${explorerBase(network)} (data set ${values['data-set-id']})`
+    )
     log(`Next: 'ipfs2foc report --data-set-id ${values['data-set-id']}' to reconcile against the on-chain pieces`)
-    console.log(JSON.stringify({ dataSetId: values['data-set-id'], committed: committed.map((a) => ({ root: a.rootPieceCid, tx: a.txHash })) }, null, 2))
+    console.log(
+      JSON.stringify(
+        { dataSetId: values['data-set-id'], committed: committed.map((a) => ({ root: a.rootPieceCid, tx: a.txHash })) },
+        null,
+        2
+      )
+    )
   } finally {
     db.close()
   }
@@ -491,7 +495,9 @@ async function cmdCreateDataSet(argv: string[]): Promise<void> {
     cdn: values.cdn === true,
     timeoutMs: parsePositiveInt(values['timeout-seconds'] as string, '--timeout-seconds') * 1000,
   })
-  log(`Next: 'ipfs2foc plan --cids <file>', then 'ipfs2foc pdp-submit --data-set-id ${result.dataSetId} --source-base <url>'`)
+  log(
+    `Next: 'ipfs2foc plan --cids <file>', then 'ipfs2foc pdp-submit --data-set-id ${result.dataSetId} --source-base <url>'`
+  )
   console.log(JSON.stringify(result, null, 2))
 }
 
@@ -526,13 +532,19 @@ async function cmdGas(argv: string[]): Promise<void> {
     },
   })
   const rpcUrl = resolveRpcUrl({ rpcUrl: values['rpc-url'], network: values.network as string })
-  const maxBaseFee = values['max-base-fee'] != null ? BigInt(values['max-base-fee']) : DEFAULT_MAX_BASE_FEE
+  const maxBaseFee = values['max-base-fee'] == null ? DEFAULT_MAX_BASE_FEE : BigInt(values['max-base-fee'])
   const reading = classifyBaseFee(await getBaseFee(rpcUrl), maxBaseFee)
   log(
     `baseFee ${reading.baseFee} attoFIL/gas (${reading.multipleOfFloor}x floor) — ${reading.level}` +
       (reading.pause ? ' — PAUSE submission' : '')
   )
-  console.log(JSON.stringify({ rpcUrl, maxBaseFee: maxBaseFee.toString(), ...reading, baseFee: reading.baseFee.toString() }, null, 2))
+  console.log(
+    JSON.stringify(
+      { rpcUrl, maxBaseFee: maxBaseFee.toString(), ...reading, baseFee: reading.baseFee.toString() },
+      null,
+      2
+    )
+  )
 }
 
 async function cmdPackCars(argv: string[]): Promise<void> {
@@ -688,7 +700,7 @@ async function cmdServe(argv: string[]): Promise<void> {
     values.network != null || values['rpc-url'] != null
       ? {
           rpcUrl: resolveRpcUrl({ rpcUrl: values['rpc-url'], network: values.network as string }),
-          maxBaseFee: values['max-base-fee'] != null ? BigInt(values['max-base-fee']) : DEFAULT_MAX_BASE_FEE,
+          maxBaseFee: values['max-base-fee'] == null ? DEFAULT_MAX_BASE_FEE : BigInt(values['max-base-fee']),
         }
       : undefined
   startServer(db, runner, parsePositiveInt(values.port as string, '--port'), gas)
@@ -748,7 +760,7 @@ async function main(): Promise<void> {
       break
     default: {
       const suggestion = suggestCommand(command)
-      const hint = suggestion != null ? ` Did you mean '${suggestion}'?` : ''
+      const hint = suggestion == null ? '' : ` Did you mean '${suggestion}'?`
       process.stderr.write(`unknown command: ${command}.${hint}\n\n${USAGE}`)
       process.exitCode = 1
     }

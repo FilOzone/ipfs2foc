@@ -16,7 +16,7 @@
  * a named tunnel (which needs an account) or another ingress.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { type ChildProcess, spawn } from 'node:child_process'
 import { log } from './util.ts'
 
 const URL_REGEX = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/
@@ -42,7 +42,9 @@ export async function startCloudflaredTunnel(opts: Options): Promise<{ baseUrl: 
   // Fail-fast on missing binary.
   child.on('error', (err) => {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      log(`cloudflared ingress: '${binary}' not found on PATH. Install: 'brew install cloudflared' (macOS) or https://github.com/cloudflare/cloudflared/releases`)
+      log(
+        `cloudflared ingress: '${binary}' not found on PATH. Install: 'brew install cloudflared' (macOS) or https://github.com/cloudflare/cloudflared/releases`
+      )
     } else {
       log(`cloudflared ingress: spawn error: ${err.message}`)
     }
@@ -65,7 +67,11 @@ export async function startCloudflaredTunnel(opts: Options): Promise<{ baseUrl: 
       if (!resolved) {
         resolved = true
         cleanup()
-        reject(new Error(`cloudflared exited (code ${code ?? 'null'}) before printing a tunnel URL. Tail:\n${buf.join('').split('\n').slice(-20).join('\n')}`))
+        reject(
+          new Error(
+            `cloudflared exited (code ${code ?? 'null'}) before printing a tunnel URL. Tail:\n${buf.join('').split('\n').slice(-20).join('\n')}`
+          )
+        )
       }
     }
     const timer = setTimeout(() => {
@@ -73,7 +79,11 @@ export async function startCloudflaredTunnel(opts: Options): Promise<{ baseUrl: 
         resolved = true
         cleanup()
         child.kill('SIGTERM')
-        reject(new Error(`cloudflared did not print a tunnel URL within ${Math.round(startupTimeoutMs / 1000)}s. Tail:\n${buf.join('').split('\n').slice(-20).join('\n')}`))
+        reject(
+          new Error(
+            `cloudflared did not print a tunnel URL within ${Math.round(startupTimeoutMs / 1000)}s. Tail:\n${buf.join('').split('\n').slice(-20).join('\n')}`
+          )
+        )
       }
     }, startupTimeoutMs)
     const cleanup = (): void => {

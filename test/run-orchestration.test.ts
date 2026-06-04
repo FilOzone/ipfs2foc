@@ -1,15 +1,15 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { test } from 'node:test'
 import { MigrationDB } from '../src/db.ts'
-import { runPlan, type PieceFetcher } from '../src/migrate.ts'
-import { runReport, type ReportDeps } from '../src/report.ts'
-import { pieceAggregateCommP } from '../src/piece-aggregate.ts'
 import { GatewayError } from '../src/gateway.ts'
+import { type PieceFetcher, runPlan } from '../src/migrate.ts'
 import type { ProofHealth } from '../src/pdp-verifier.ts'
 import type { PieceResult } from '../src/piece.ts'
+import { pieceAggregateCommP } from '../src/piece-aggregate.ts'
+import { type ReportDeps, runReport } from '../src/report.ts'
 
 // runPlan and runReport orchestration, driven with injected fakes — no gateway,
 // no RPC.
@@ -69,7 +69,7 @@ test('runPlan marks a fallback-only result as an unservable failure (no aggregat
     })
     await runPlan(db, { gateways: ['g'], aggregateSizeBytes: BIG, concurrency: 1 }, fetch)
     assert.equal(db.counts().failed, 1)
-    assert.equal(db.failuresByCategory()['unservable_fallback_only'], 1)
+    assert.equal(db.failuresByCategory().unservable_fallback_only, 1)
     assert.equal(db.aggregates().length, 0)
   })
 })
@@ -82,7 +82,7 @@ test('runPlan records a thrown fetch as a failure', async () => {
     }
     await runPlan(db, { gateways: ['g'], aggregateSizeBytes: BIG, concurrency: 1 }, fetch)
     assert.equal(db.counts().failed, 1)
-    assert.equal(db.failuresByCategory()['source_gateway_5xx'], 1)
+    assert.equal(db.failuresByCategory().source_gateway_5xx, 1)
   })
 })
 
@@ -122,7 +122,7 @@ test('runReport: root on chain + proven => committed and complete', async () => 
     }
     const r = await runReport(db, { network: 'calibration', dataSetId: 1, rpcUrl: 'http://rpc.local' }, deps)
     assert.equal(r.cids.committed, 1)
-    assert.equal(r.aggregates[0]!.onChain, true)
+    assert.equal(r.aggregates[0]?.onChain, true)
     assert.equal(r.complete, true)
     assert.deepEqual(r.discrepancies, [])
   })
@@ -153,7 +153,7 @@ test('runReport: a chain root with no local aggregate is reported as unaccounted
     }
     const r = await runReport(db, { network: 'calibration', dataSetId: 1, rpcUrl: 'http://rpc.local' }, deps)
     assert.deepEqual(r.unaccountedOnChain, ['bafkzcibstrangerootnotours'])
-    assert.equal(r.aggregates[0]!.onChain, false)
+    assert.equal(r.aggregates[0]?.onChain, false)
     assert.equal(r.complete, false)
     // local row says committed but chain disagrees -> surfaced
     assert.ok(r.discrepancies.some((d) => /committed locally but is not on chain/.test(d)))

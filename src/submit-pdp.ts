@@ -16,18 +16,18 @@
  * backpressure (HTTP 429 + Retry-After).
  */
 
-import { Synapse, calibration, mainnet } from '@filoz/synapse-sdk'
+import { unlink } from 'node:fs/promises'
+import { calibration, mainnet, Synapse } from '@filoz/synapse-sdk'
 import { CID } from 'multiformats/cid'
 import { type Hex, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import type { MigrationDB } from './db.ts'
 import { classifyBaseFee, getBaseFee, resolveRpcUrl } from './gas.ts'
 import { formatBytes, formatDuration, formatRate, Timer } from './metrics.ts'
-import { PdpClient, PullBackpressure, type PullResponse, type AddStatusResult } from './pdp.ts'
-import { activePieceCids, fetchAddPiecesEvent, type AddPiecesEvent } from './pdp-verifier.ts'
-import { pieceAggregateCommP } from './piece-aggregate.ts'
 import { checkMinPieceSize } from './min-piece-guard.ts'
-import { unlink } from 'node:fs/promises'
+import { type AddStatusResult, PdpClient, PullBackpressure, type PullResponse } from './pdp.ts'
+import { type AddPiecesEvent, activePieceCids, fetchAddPiecesEvent } from './pdp-verifier.ts'
+import { pieceAggregateCommP } from './piece-aggregate.ts'
 import { log } from './util.ts'
 
 /**
@@ -95,8 +95,17 @@ export interface PresignContext {
 
 /** The PdpClient surface the submit loop drives. */
 export interface PdpLike {
-  pull(body: { extraData: Hex; dataSetId: number; pieces: Array<{ pieceCid: string; sourceUrl: string }> }): Promise<PullResponse>
-  addAggregate(dataSetId: number, root: string, subPieceCids: string[], extraData: Hex): Promise<{ txHash: string; statusUrl: string }>
+  pull(body: {
+    extraData: Hex
+    dataSetId: number
+    pieces: Array<{ pieceCid: string; sourceUrl: string }>
+  }): Promise<PullResponse>
+  addAggregate(
+    dataSetId: number,
+    root: string,
+    subPieceCids: string[],
+    extraData: Hex
+  ): Promise<{ txHash: string; statusUrl: string }>
   addStatus(dataSetId: number, txHash: string): Promise<AddStatusResult>
 }
 
@@ -107,7 +116,10 @@ export interface PdpLike {
  * context, PdpClient, and on-chain reads.
  */
 export interface SubmitDeps {
-  setup(opts: SubmitPdpOptions, rpcUrl: string): Promise<{
+  setup(
+    opts: SubmitPdpOptions,
+    rpcUrl: string
+  ): Promise<{
     ctx: PresignContext
     pdp: PdpLike
     minPieceSize: bigint
@@ -214,9 +226,13 @@ export async function runSubmitPdp(
       const onChain = await deps.activePieceCids(rpcUrl, opts.network, opts.dataSetId)
       if (onChain.has(aggregate.rootPieceCid)) {
         let event: Awaited<ReturnType<typeof fetchAddPiecesEvent>> = null
-        try { event = await deps.fetchAddPiecesEvent(rpcUrl, opts.network, opts.dataSetId, agg.txHash) } catch { /* fall through */ }
-        if (event != null && event.pieceCids.includes(aggregate.rootPieceCid)) {
-          const eventPieceId = event.pieceIds[event.pieceCids.indexOf(aggregate.rootPieceCid)]!.toString()
+        try {
+          event = await deps.fetchAddPiecesEvent(rpcUrl, opts.network, opts.dataSetId, agg.txHash)
+        } catch {
+          /* fall through */
+        }
+        if (event?.pieceCids.includes(aggregate.rootPieceCid)) {
+          const eventPieceId = event.pieceIds[event.pieceCids.indexOf(aggregate.rootPieceCid)]?.toString()
           db.markCommitted(agg.idx, {
             dataSetId: String(opts.dataSetId),
             txHash: agg.txHash,
@@ -254,7 +270,9 @@ export async function runSubmitPdp(
         await evictCachedCars(db, agg.idx)
         committedCount += 1
         committedBytes += aggBytesPlanned
-        log(`aggregate ${agg.idx}: unconfirmed add reconciled — root ${aggregate.rootPieceCid} on chain; marked committed`)
+        log(
+          `aggregate ${agg.idx}: unconfirmed add reconciled — root ${aggregate.rootPieceCid} on chain; marked committed`
+        )
       } else {
         log(
           `aggregate ${agg.idx}: AddPieces was attempted but root ${aggregate.rootPieceCid} is not on chain ` +
@@ -436,32 +454,7 @@ export async function runSubmitPdp(
       } catch (err) {
         eventErr = err instanceof Error ? err.message : String(err)
       }
-      if (event != null) {
-        if (!event.pieceCids.includes(aggregate.rootPieceCid)) {
-          const reason =
-            `PiecesAdded event root mismatch: expected ${aggregate.rootPieceCid}, ` +
-            `saw [${event.pieceCids.join(', ')}]`
-          db.markAggregateFailed(agg.idx, `AddPieces tx ${txHash}: ${reason}`)
-          log(`aggregate ${agg.idx}: ${reason}`)
-          continue
-        }
-        // PDPVerifier emits one event per AddPieces call with parallel
-        // pieceIds/pieceCids arrays; the aggregate root's pieceId is the
-        // entry at the matching index.
-        const eventPieceId =
-          event.pieceIds[event.pieceCids.indexOf(aggregate.rootPieceCid)]?.toString() ?? pieceId
-        db.markCommitted(agg.idx, {
-          dataSetId: String(opts.dataSetId),
-          txHash,
-          pieceId: eventPieceId,
-          committedBlock: event.blockNumber.toString(),
-        })
-        await evictCachedCars(db, agg.idx)
-        log(
-          `aggregate ${agg.idx}: committed in ${formatDuration(addMs)} ` +
-            `(data set ${opts.dataSetId}, tx ${txHash}, block ${event.blockNumber}, pieceId ${eventPieceId})`
-        )
-      } else {
+      if (event == null) {
         // addStatus said ok but no PiecesAdded event was visible on the
         // receipt the RPC returned. Park the row as committed-unverified
         // so the in-flight cap moves, and let `report`'s on-chain pass
@@ -475,6 +468,30 @@ export async function runSubmitPdp(
         })
         await evictCachedCars(db, agg.idx)
         log(`aggregate ${agg.idx}: committed unverified (tx ${txHash}) — ${reason}`)
+      } else {
+        if (!event.pieceCids.includes(aggregate.rootPieceCid)) {
+          const reason =
+            `PiecesAdded event root mismatch: expected ${aggregate.rootPieceCid}, ` +
+            `saw [${event.pieceCids.join(', ')}]`
+          db.markAggregateFailed(agg.idx, `AddPieces tx ${txHash}: ${reason}`)
+          log(`aggregate ${agg.idx}: ${reason}`)
+          continue
+        }
+        // PDPVerifier emits one event per AddPieces call with parallel
+        // pieceIds/pieceCids arrays; the aggregate root's pieceId is the
+        // entry at the matching index.
+        const eventPieceId = event.pieceIds[event.pieceCids.indexOf(aggregate.rootPieceCid)]?.toString() ?? pieceId
+        db.markCommitted(agg.idx, {
+          dataSetId: String(opts.dataSetId),
+          txHash,
+          pieceId: eventPieceId,
+          committedBlock: event.blockNumber.toString(),
+        })
+        await evictCachedCars(db, agg.idx)
+        log(
+          `aggregate ${agg.idx}: committed in ${formatDuration(addMs)} ` +
+            `(data set ${opts.dataSetId}, tx ${txHash}, block ${event.blockNumber}, pieceId ${eventPieceId})`
+        )
       }
       totalAddMs += addMs
       committedCount += 1

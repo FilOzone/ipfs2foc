@@ -1,8 +1,8 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { test } from 'node:test'
 import { createCarStoreSink } from '../src/pack-cars.ts'
 
 test('createCarStoreSink does not leak error listeners across many writes', async () => {
@@ -53,7 +53,15 @@ test('createCarStoreSink leaves no partial file when writes never succeed', asyn
   await rm(dir, { recursive: true, force: true })
   const filePath = join(dir, 'out.car')
   const sink = createCarStoreSink(filePath)
-  try { await sink.write(new Uint8Array([1, 2, 3])); await sink.end() } catch { /* expected */ }
-  const exists = await stat(filePath).then(() => true, () => false)
+  try {
+    await sink.write(new Uint8Array([1, 2, 3]))
+    await sink.end()
+  } catch {
+    /* expected */
+  }
+  const exists = await stat(filePath).then(
+    () => true,
+    () => false
+  )
   assert.equal(exists, false, 'expected no orphan file at the sink path after rejection')
 })

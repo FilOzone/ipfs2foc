@@ -19,13 +19,13 @@
 
 import { createReadStream, statSync } from 'node:fs'
 import { statfs } from 'node:fs/promises'
+import { platform as osPlatform, release as osRelease } from 'node:os'
 import { dirname, resolve } from 'node:path'
-import { createInterface } from 'node:readline'
 import { performance } from 'node:perf_hooks'
-import { release as osRelease, platform as osPlatform } from 'node:os'
+import { createInterface } from 'node:readline'
 import { DatabaseSync } from 'node:sqlite'
-import { probeGateway } from './gateway.ts'
 import { MigrationDB } from './db.ts'
+import { probeGateway } from './gateway.ts'
 import { log, pool } from './util.ts'
 
 const GIB = 1024 ** 3
@@ -253,13 +253,16 @@ export function matchPersona(input: {
 }): PersonaMatch {
   const { totalAssets, estimatedTotalBytes, carStoreFreeBytes, bandwidthMbit } = input
   const free = carStoreFreeBytes ?? 0
-  const sizeGiB = estimatedTotalBytes != null ? estimatedTotalBytes / GIB : null
+  const sizeGiB = estimatedTotalBytes == null ? null : estimatedTotalBytes / GIB
 
   // Laptop tester: tiny job, tight disk.
   if (totalAssets <= 1000 && (sizeGiB == null || sizeGiB < 5)) {
     return {
       name: 'Laptop tester',
-      reasons: ['CID count ≤ 1000', sizeGiB == null ? 'size unknown, treated as small' : `estimated ${sizeGiB.toFixed(1)} GiB`],
+      reasons: [
+        'CID count ≤ 1000',
+        sizeGiB == null ? 'size unknown, treated as small' : `estimated ${sizeGiB.toFixed(1)} GiB`,
+      ],
       flags: { maxInFlight: 1, pieceSize: '32GiB', pullBatch: 32, ingress: 'cloudflared', carStore: 'recommended' },
     }
   }
@@ -277,7 +280,10 @@ export function matchPersona(input: {
   if (totalAssets >= 100_000 && free >= 4 * 32 * GIB) {
     return {
       name: 'Production migrator',
-      reasons: [`CID count ${totalAssets.toLocaleString()} ≥ 100k`, `car-store free ${(free / GIB).toFixed(0)} GiB ≥ 128 GiB`],
+      reasons: [
+        `CID count ${totalAssets.toLocaleString()} ≥ 100k`,
+        `car-store free ${(free / GIB).toFixed(0)} GiB ≥ 128 GiB`,
+      ],
       flags: { maxInFlight: 4, pieceSize: '32GiB', pullBatch: 32, ingress: 'funnel', carStore: 'recommended' },
     }
   }
@@ -383,7 +389,9 @@ export async function runAnalyze(opts: AnalyzeOptions): Promise<AnalyzeReport> {
     log(`probing ${sample.length} CID(s) against ${opts.gateway} with concurrency ${opts.probeConcurrency}`)
     const probeResults = await pool(sample, opts.probeConcurrency, (cid) => probeOne(opts.gateway, cid))
     const probes: ProbeSampleResult[] = probeResults.map((r) =>
-      r.ok ? r.value : { cid: 'unknown', ok: false, deterministic: false, bytes: null, latencyMs: null, error: r.error.message }
+      r.ok
+        ? r.value
+        : { cid: 'unknown', ok: false, deterministic: false, bytes: null, latencyMs: null, error: r.error.message }
     )
     const okCount = probes.filter((p) => p.ok).length
     const detCount = probes.filter((p) => p.deterministic).length
@@ -492,10 +500,8 @@ export function formatAnalyzeText(report: AnalyzeReport): string {
   lines.push(`Persona match: ${report.persona.name}`)
   if (report.input.cidsFile != null) {
     const size = report.input.estimatedTotalSizeBytes
-    const extra = size != null ? `, extrapolated ${formatBytes(size)}` : ''
-    lines.push(
-      `  Assets: ${report.input.totalCount.toLocaleString()} (sampled ${report.input.sampledCount}${extra})`
-    )
+    const extra = size == null ? '' : `, extrapolated ${formatBytes(size)}`
+    lines.push(`  Assets: ${report.input.totalCount.toLocaleString()} (sampled ${report.input.sampledCount}${extra})`)
   }
   for (const d of report.disk) {
     lines.push(`  Disk free: ${formatBytes(d.freeBytes)} on ${d.path}`)
@@ -506,11 +512,13 @@ export function formatAnalyzeText(report: AnalyzeReport): string {
   if (report.sourceGateway != null) {
     const sg = report.sourceGateway
     const det = `${Math.round(sg.deterministicRate * sg.probes.length)}/${sg.probes.length}`
-    const p50 = sg.latencyP50Ms != null ? `${sg.latencyP50Ms}ms p50, ` : ''
+    const p50 = sg.latencyP50Ms == null ? '' : `${sg.latencyP50Ms}ms p50, `
     lines.push(`  Source gateway: ${sg.gateway} — ${p50}deterministic ${det}`)
   }
   lines.push(`  Network: ${report.network}`)
-  lines.push(`  Runtime: node ${report.runtime.node}, sqlite ${report.runtime.sqliteVersion}, ${report.runtime.platform} ${report.runtime.os}`)
+  lines.push(
+    `  Runtime: node ${report.runtime.node}, sqlite ${report.runtime.sqliteVersion}, ${report.runtime.platform} ${report.runtime.os}`
+  )
   if (report.existingDb != null) {
     const p = report.existingDb.pieces
     lines.push(`  Existing DB: ${p.done} done, ${p.pending} pending, ${p.failed} failed (${report.existingDb.path})`)

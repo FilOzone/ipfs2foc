@@ -1,5 +1,5 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { test } from 'node:test'
 import { bigintJsonReplacer, findUnaccountedOnChain } from '../src/report.ts'
 
 test('bigintJsonReplacer turns bigint values into decimal strings', () => {

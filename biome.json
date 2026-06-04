@@ -1,0 +1,95 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "files": {
+    "ignoreUnknown": true,
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/pnpm-lock.yaml",
+      "!**/coverage",
+      "!**/.research",
+      "!**/CHANGELOG*.md",
+      "!**/*.min.*",
+      "!**/LICENSE*"
+    ]
+  },
+  "vcs": {
+    "clientKind": "git",
+    "enabled": true,
+    "useIgnoreFile": true,
+    "defaultBranch": "main"
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineEnding": "lf",
+    "lineWidth": 120
+  },
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "on",
+        "useSortedAttributes": "on",
+        "useSortedKeys": "off"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "complexity": {
+        "useSimpleNumberKeys": "off"
+      },
+      "correctness": {
+        "noUnusedVariables": "warn",
+        "noInvalidBuiltinInstantiation": "error",
+        "useImportExtensions": "error"
+      },
+      "style": {
+        "noNamespace": "off",
+        "noNegationElse": "error",
+        "noNonNullAssertion": "error",
+        "noParameterAssign": "off",
+        "useCollapsedElseIf": "error",
+        "useFilenamingConvention": {
+          "level": "error",
+          "options": { "requireAscii": true, "filenameCases": ["kebab-case"] }
+        },
+        "useNodejsImportProtocol": "off",
+        "useDefaultParameterLast": "warn"
+      },
+      "suspicious": {
+        "noAssignInExpressions": "warn",
+        "noExportsInTest": "off",
+        "noEmptyBlockStatements": "error",
+        "useAwait": "off",
+        "noExplicitAny": "off"
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "jsxQuoteStyle": "double",
+      "trailingCommas": "es5",
+      "semicolons": "asNeeded",
+      "quoteStyle": "single"
+    },
+    "globals": ["document", "navigator", "window"]
+  },
+  "overrides": [
+    {
+      "includes": ["test/**"],
+      "linter": {
+        "rules": {
+          "style": { "noNonNullAssertion": "off" },
+          "suspicious": { "noEmptyBlockStatements": "off" }
+        }
+      }
+    }
+  ]
+}

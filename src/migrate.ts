@@ -151,7 +151,12 @@ export function appendAggregatesFromFreeSubPieces(db: MigrationDB, aggregateSize
 
   const base = db.nextAggregateIndex()
   aggregates.forEach((agg, i) => {
-    db.saveAggregate(base + i, agg.rootPieceCid, aggregateSizeBytes, agg.members.map((m) => m.cid))
+    db.saveAggregate(
+      base + i,
+      agg.rootPieceCid,
+      aggregateSizeBytes,
+      agg.members.map((m) => m.cid)
+    )
   })
 
   // A sub-piece whose padded size exceeds the aggregate budget can never be

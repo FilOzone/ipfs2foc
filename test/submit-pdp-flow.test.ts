@@ -1,14 +1,13 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { test } from 'node:test'
 import { MigrationDB } from '../src/db.ts'
-import { runSubmitPdp, type SubmitDeps, type SubmitPdpOptions } from '../src/submit-pdp.ts'
-import { pieceAggregateCommP } from '../src/piece-aggregate.ts'
-import type { PullResponse } from '../src/pdp.ts'
-import type { AddStatusResult } from '../src/pdp.ts'
+import type { AddStatusResult, PullResponse } from '../src/pdp.ts'
 import type { AddPiecesEvent } from '../src/pdp-verifier.ts'
+import { pieceAggregateCommP } from '../src/piece-aggregate.ts'
+import { runSubmitPdp, type SubmitDeps, type SubmitPdpOptions } from '../src/submit-pdp.ts'
 
 // Drives the real runSubmitPdp control flow with a fake provider + chain, to
 // lock in the atomicity guarantees (HIGH-1 at-most-once, MED-1 bounded polls,
@@ -19,8 +18,7 @@ const M1 = { pcid: 'bafkzcibf3ck4uais4fgennh4hbfx5z3i6hue4xgq2cdeamtus4hjbsrjs5l
 const M2 = { pcid: 'bafkzcibewpkqwewyhz3yxutlxbpt2nkb6si5qilg4qqtzzij32uw7ammsc73a4wkgi', raw: 8131917 }
 
 // A one-member aggregate's root is the member's pieceCid.
-const rootOf = (pcid: string, raw: number) =>
-  pieceAggregateCommP([{ pieceCid: pcid, rawSize: raw }]).rootPieceCid
+const rootOf = (pcid: string, raw: number) => pieceAggregateCommP([{ pieceCid: pcid, rawSize: raw }]).rootPieceCid
 
 async function dbAt(name: string) {
   const dir = await mkdtemp(join(tmpdir(), `foc-${name}-`))
@@ -58,7 +56,10 @@ function fakeDeps(b: FakeBehavior) {
           async pull(body) {
             calls.pull++
             if (b.pull) return b.pull(body)
-            return { status: 'complete', pieces: body.pieces.map((p) => ({ pieceCid: p.pieceCid, status: 'complete' })) }
+            return {
+              status: 'complete',
+              pieces: body.pieces.map((p) => ({ pieceCid: p.pieceCid, status: 'complete' })),
+            }
           },
           async addAggregate() {
             calls.addAggregate++
@@ -152,7 +153,7 @@ test('HIGH-1: add errors but the root IS on chain -> committed (reconciled)', as
       activeRoots: () => (seen++ === 0 ? new Set() : new Set([root])),
     })
     await runSubmitPdp(db, baseOpts, deps)
-    assert.equal(db.aggregates()[0]!.status, 'committed')
+    assert.equal(db.aggregates()[0]?.status, 'committed')
   })
 })
 
@@ -162,7 +163,7 @@ test('HIGH-1 resume: add_unconfirmed with no tx hash, root absent -> never re-ad
     db.markAggregateAddUnconfirmed(0, 'prior attempt, outcome unknown')
     const { deps, calls } = fakeDeps({ activeRoots: () => new Set() })
     await runSubmitPdp(db, baseOpts, deps)
-    assert.equal(db.aggregates()[0]!.status, 'add_unconfirmed', 'stays unconfirmed')
+    assert.equal(db.aggregates()[0]?.status, 'add_unconfirmed', 'stays unconfirmed')
     assert.equal(calls.addAggregate, 0, 'must NOT re-add (no duplicate AddPieces)')
   })
 })
@@ -174,7 +175,7 @@ test('HIGH-1 resume: add_unconfirmed with no tx hash, root present -> reconciled
     const root = rootOf(M1.pcid, M1.raw)
     const { deps, calls } = fakeDeps({ activeRoots: () => new Set([root]) })
     await runSubmitPdp(db, baseOpts, deps)
-    assert.equal(db.aggregates()[0]!.status, 'committed')
+    assert.equal(db.aggregates()[0]?.status, 'committed')
     assert.equal(calls.addAggregate, 0)
   })
 })
@@ -190,8 +191,8 @@ test('MED-3: a pull error fails one aggregate and the run continues to the next'
     })
     await runSubmitPdp(db, baseOpts, deps)
     const [a0, a1] = db.aggregates()
-    assert.equal(a0!.status, 'failed')
-    assert.equal(a1!.status, 'failed', 'second aggregate was still processed (loop did not abort)')
+    assert.equal(a0?.status, 'failed')
+    assert.equal(a1?.status, 'failed', 'second aggregate was still processed (loop did not abort)')
     assert.equal(calls.addAggregate, 0)
   })
 })
@@ -215,7 +216,10 @@ test('MED-1: a pull that never progresses trips the stall watchdog and fails the
     seedPlanned(db, 0, 'bafSrc', M1)
     const { deps, calls } = fakeDeps({
       // Always non-terminal -> no progress -> stall.
-      pull: (body) => ({ status: 'pending', pieces: body.pieces.map((p) => ({ pieceCid: p.pieceCid, status: 'pending' })) }),
+      pull: (body) => ({
+        status: 'pending',
+        pieces: body.pieces.map((p) => ({ pieceCid: p.pieceCid, status: 'pending' })),
+      }),
     })
     await runSubmitPdp(db, { ...baseOpts, pullStallTimeoutMs: 5 }, deps)
     const agg = db.aggregates()[0]!

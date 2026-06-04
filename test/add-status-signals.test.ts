@@ -1,5 +1,5 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { test } from 'node:test'
 import { interpretAddStatus } from '../src/pdp.ts'
 
 // addStatus carries three independent signals; success requires all three.

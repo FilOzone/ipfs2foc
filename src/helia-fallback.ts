@@ -92,8 +92,9 @@ export async function getHelia(): Promise<HeliaInstance> {
       const { createLibp2p } = await import('libp2p')
       const { Helia } = await import('@helia/utils')
       const { trustlessGateway, bitswap } = await import('@helia/block-brokers')
-      const { libp2pRouting, httpGatewayRouting, delegatedHTTPRouting, delegatedHTTPRoutingDefaults } =
-        await import('@helia/routers')
+      const { libp2pRouting, httpGatewayRouting, delegatedHTTPRouting, delegatedHTTPRoutingDefaults } = await import(
+        '@helia/routers'
+      )
       const { MemoryBlockstore } = await import('blockstore-core')
       const { MemoryDatastore } = await import('datastore-core')
 
@@ -104,11 +105,7 @@ export async function getHelia(): Promise<HeliaInstance> {
         datastore: new MemoryDatastore(),
         blockstore: new MemoryBlockstore(),
         blockBrokers: [trustlessGateway(), bitswap()],
-        routers: [
-          libp2pRouting(libp2p),
-          httpGatewayRouting(),
-          delegatedHTTPRouting(delegatedHTTPRoutingDefaults()),
-        ],
+        routers: [libp2pRouting(libp2p), httpGatewayRouting(), delegatedHTTPRouting(delegatedHTTPRoutingDefaults())],
       })
       await helia.start()
       return helia

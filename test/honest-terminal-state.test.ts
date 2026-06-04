@@ -1,12 +1,12 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { test } from 'node:test'
 import { MigrationDB } from '../src/db.ts'
-import { recordPieceOutcome, type PieceResult } from '../src/piece.ts'
+import { appendAggregatesFromFreeSubPieces, wrapDonePiecesAsPassthroughSubPieces } from '../src/migrate.ts'
+import { type PieceResult, recordPieceOutcome } from '../src/piece.ts'
 import { computeReportComplete } from '../src/report.ts'
-import { wrapDonePiecesAsPassthroughSubPieces, appendAggregatesFromFreeSubPieces } from '../src/migrate.ts'
 
 // A real PieceCID v2 (from test/fixtures/multi-asset-aggregate.json) so
 // `paddedSize` can parse its tree height.
@@ -59,7 +59,7 @@ test('recordPieceOutcome records a fallback-only piece as failed (unservable_fal
     const counts = db.counts()
     assert.equal(counts.done, 0, 'must not be a done success')
     assert.equal(counts.failed, 1)
-    assert.equal(db.failuresByCategory()['unservable_fallback_only'], 1)
+    assert.equal(db.failuresByCategory().unservable_fallback_only, 1)
   } finally {
     db.close()
     await rm(dir, { recursive: true, force: true })

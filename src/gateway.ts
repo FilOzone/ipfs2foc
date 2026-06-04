@@ -44,8 +44,23 @@ function categoryForFetchError(err: unknown): FailureCategory {
     const name = (cur as { name?: string }).name
     if (name === 'AbortError' || name === 'TimeoutError') return 'source_gateway_timeout'
     const code = (cur as { code?: string }).code
-    if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_BODY_TIMEOUT') return 'source_gateway_timeout'
-    if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH' || code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'UND_ERR_SOCKET') return 'source_gateway_network'
+    if (
+      code === 'ETIMEDOUT' ||
+      code === 'UND_ERR_CONNECT_TIMEOUT' ||
+      code === 'UND_ERR_HEADERS_TIMEOUT' ||
+      code === 'UND_ERR_BODY_TIMEOUT'
+    )
+      return 'source_gateway_timeout'
+    if (
+      code === 'ECONNREFUSED' ||
+      code === 'ECONNRESET' ||
+      code === 'EHOSTUNREACH' ||
+      code === 'ENETUNREACH' ||
+      code === 'ENOTFOUND' ||
+      code === 'EAI_AGAIN' ||
+      code === 'UND_ERR_SOCKET'
+    )
+      return 'source_gateway_network'
     cur = (cur as { cause?: unknown }).cause
   }
   return 'source_gateway_network'

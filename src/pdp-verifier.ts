@@ -7,17 +7,17 @@
  * `readContract` call against the canonical `abis.pdp` ABI.
  */
 
-import { type Client, type Hash, type Transport, createPublicClient, http, parseEventLogs } from 'viem'
-import { getBlockNumber, getTransactionReceipt, readContract, waitForTransactionReceipt } from 'viem/actions'
 import { pdp as PDP_ABI } from '@filoz/synapse-core/abis'
-import { type Chain as SynapseChain, calibration, mainnet } from '@filoz/synapse-core/chains'
+import { calibration, mainnet, type Chain as SynapseChain } from '@filoz/synapse-core/chains'
 import {
   dataSetLive,
   getActivePieceCount,
-  getActivePieces as synapseGetActivePieces,
   getNextChallengeEpoch,
+  getActivePieces as synapseGetActivePieces,
 } from '@filoz/synapse-core/pdp-verifier'
 import { hexToPieceCID } from '@filoz/synapse-core/piece'
+import { type Client, createPublicClient, type Hash, http, parseEventLogs, type Transport } from 'viem'
+import { getBlockNumber, getTransactionReceipt, readContract, waitForTransactionReceipt } from 'viem/actions'
 
 function chainFor(network: 'calibration' | 'mainnet'): SynapseChain {
   return network === 'mainnet' ? mainnet : calibration
@@ -136,8 +136,7 @@ export async function dataSetProofHealth(
   // yet (fresh data set, pre-first-proving-period). Treat that as "in good
   // standing" since the SP cannot have missed a deadline that does not exist.
   const nextChallenge = nextChallengeMaybe ?? currentEpoch
-  const provenSinceAdd =
-    lastProvenEpoch != null && (maxAddEpoch == null || lastProvenEpoch >= maxAddEpoch)
+  const provenSinceAdd = lastProvenEpoch != null && (maxAddEpoch == null || lastProvenEpoch >= maxAddEpoch)
   const inGoodStanding = nextChallenge >= currentEpoch
 
   return {

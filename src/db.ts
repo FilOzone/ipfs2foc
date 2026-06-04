@@ -65,13 +65,7 @@ export function classifyFailure(message: string): FailureCategory {
 // the same root would be a duplicate on-chain commit. Resolved by reconciling
 // against `activePieceCids` (commit if the root is on chain) or, once the
 // operator confirms the root is absent, `resetUnconfirmedAggregates`.
-export type AggregateStatus =
-  | 'planned'
-  | 'submitted'
-  | 'parked'
-  | 'add_unconfirmed'
-  | 'committed'
-  | 'failed'
+export type AggregateStatus = 'planned' | 'submitted' | 'parked' | 'add_unconfirmed' | 'committed' | 'failed'
 
 /**
  * Packed sub-piece lifecycle. A sub-piece is a synthetic multi-root CAR that
@@ -316,15 +310,15 @@ export class MigrationDB {
 
   /** Clear `oversized` status back to `done` so a re-pack with a larger budget includes them. */
   resetOversized(): void {
-    this.#db
-      .prepare(`UPDATE pieces SET status='done', failure_category=NULL WHERE status='oversized'`)
-      .run()
+    this.#db.prepare(`UPDATE pieces SET status='done', failure_category=NULL WHERE status='oversized'`).run()
   }
 
   /** All successfully-computed pieces, in stable order, for packing. */
   donePieces(): PieceRow[] {
     const rows = this.#db
-      .prepare(`SELECT cid, piece_cid, raw_size, gateway, url, status, error FROM pieces WHERE status='done' ORDER BY cid`)
+      .prepare(
+        `SELECT cid, piece_cid, raw_size, gateway, url, status, error FROM pieces WHERE status='done' ORDER BY cid`
+      )
       .all()
     return rows.map(toPieceRow)
   }
@@ -348,7 +342,6 @@ export class MigrationDB {
     return new Set(rows.map((r) => String((r as { member_cid: string }).member_cid)))
   }
 
-
   /** Next free aggregate index, above any existing (including submitted) aggregate. */
   nextAggregateIndex(): number {
     const row = this.#db.prepare(`SELECT COALESCE(MAX(idx), -1) AS m FROM aggregates`).get() as { m: number }
@@ -360,12 +353,7 @@ export class MigrationDB {
    * a sub-piece — single-asset source CIDs become 1-member passthrough
    * sub-pieces at plan time, so the pull/add path has one canonical shape.
    */
-  saveAggregate(
-    idx: number,
-    rootPieceCid: string,
-    pieceSizeBytes: bigint,
-    members: string[]
-  ): void {
+  saveAggregate(idx: number, rootPieceCid: string, pieceSizeBytes: bigint, members: string[]): void {
     const aggregateStmt = this.#db.prepare(
       `INSERT INTO aggregates (idx, root_piece_cid, piece_size_bytes, status, created_at)
        VALUES (?, ?, ?, 'planned', ?)`
@@ -547,9 +535,7 @@ export class MigrationDB {
    * resumes from the receipt step instead of re-pulling and re-adding.
    */
   markAggregateTxSubmitted(idx: number, txHash: string): void {
-    this.#db
-      .prepare(`UPDATE aggregates SET tx_hash=? WHERE idx=?`)
-      .run(txHash, idx)
+    this.#db.prepare(`UPDATE aggregates SET tx_hash=? WHERE idx=?`).run(txHash, idx)
   }
 
   /**
@@ -592,12 +578,15 @@ export class MigrationDB {
    * event was parsed and matched against the local aggregate root; absence
    * marks an unverified commit (see `markCommittedUnverified`).
    */
-  markCommitted(idx: number, info: {
-    dataSetId: string
-    pieceId?: string
-    txHash?: string
-    committedBlock?: string
-  }): void {
+  markCommitted(
+    idx: number,
+    info: {
+      dataSetId: string
+      pieceId?: string
+      txHash?: string
+      committedBlock?: string
+    }
+  ): void {
     this.#db
       .prepare(
         `UPDATE aggregates SET status='committed', data_set_id=?, piece_id=?, tx_hash=?,
@@ -634,14 +623,7 @@ export class MigrationDB {
         `UPDATE aggregates SET status='committed', data_set_id=?, piece_id=?, tx_hash=?,
                                 committed_block=NULL, error=?, committed_at=? WHERE idx=?`
       )
-      .run(
-        info.dataSetId,
-        info.pieceId ?? null,
-        info.txHash ?? null,
-        info.reason,
-        new Date().toISOString(),
-        idx
-      )
+      .run(info.dataSetId, info.pieceId ?? null, info.txHash ?? null, info.reason, new Date().toISOString(), idx)
   }
 
   markAggregateFailed(idx: number, error?: string): void {
@@ -656,18 +638,14 @@ export class MigrationDB {
    * on-chain active-pieces guard skips an aggregate whose root already landed.
    */
   resetFailedAggregates(): number {
-    const result = this.#db
-      .prepare(`UPDATE aggregates SET status='planned', error=NULL WHERE status='failed'`)
-      .run()
+    const result = this.#db.prepare(`UPDATE aggregates SET status='planned', error=NULL WHERE status='failed'`).run()
     return Number(result.changes)
   }
 
   /** Insert a pull-batch attempt row at start; the caller updates it via `recordPullBatchResult`. */
   recordPullBatchStart(aggregateIdx: number, pieceCids: string[]): number {
     const result = this.#db
-      .prepare(
-        `INSERT INTO pull_batch_attempts (aggregate_idx, started_at, piece_cids) VALUES (?, ?, ?)`
-      )
+      .prepare(`INSERT INTO pull_batch_attempts (aggregate_idx, started_at, piece_cids) VALUES (?, ?, ?)`)
       .run(aggregateIdx, new Date().toISOString(), JSON.stringify(pieceCids))
     return Number(result.lastInsertRowid)
   }
@@ -761,9 +739,7 @@ export class MigrationDB {
    * set `Content-Length` without re-walking the bytes.
    */
   markSubPieceFailed(subPieceCid: string, error: string): void {
-    this.#db
-      .prepare(`UPDATE sub_pieces SET status='failed', error=? WHERE sub_piece_cid=?`)
-      .run(error, subPieceCid)
+    this.#db.prepare(`UPDATE sub_pieces SET status='failed', error=? WHERE sub_piece_cid=?`).run(error, subPieceCid)
   }
 
   /**
@@ -802,7 +778,9 @@ export class MigrationDB {
         now,
         now
       )
-      args.members.forEach((m, i) => insertMember.run(args.subPieceCid, m.cid, i, m.sha256, m.rawSize))
+      args.members.forEach((m, i) => {
+        insertMember.run(args.subPieceCid, m.cid, i, m.sha256, m.rawSize)
+      })
       this.#db.exec('COMMIT')
       return
     } catch (err) {
@@ -891,9 +869,7 @@ export class MigrationDB {
 
   /** Sub-piece member CIDs locked into a planned sub-piece (cannot be re-packed). */
   lockedSubPieceMemberCids(): Set<string> {
-    const rows = this.#db
-      .prepare(`SELECT member_cid FROM sub_piece_members`)
-      .all()
+    const rows = this.#db.prepare(`SELECT member_cid FROM sub_piece_members`).all()
     return new Set(rows.map((r) => String((r as { member_cid: string }).member_cid)))
   }
 
@@ -915,9 +891,9 @@ export class MigrationDB {
 
   /** Sub-piece CIDs that already belong to an aggregate (any status). */
   subPieceCidsAlreadyAggregated(): Set<string> {
-    const rows = this.#db
-      .prepare(`SELECT DISTINCT sub_piece_cid FROM aggregate_members`)
-      .all() as Array<{ sub_piece_cid: string }>
+    const rows = this.#db.prepare(`SELECT DISTINCT sub_piece_cid FROM aggregate_members`).all() as Array<{
+      sub_piece_cid: string
+    }>
     return new Set(rows.map((r) => String(r.sub_piece_cid)))
   }
 

@@ -1,10 +1,10 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { test } from 'node:test'
 import { MigrationDB } from '../src/db.ts'
-import { runPackCars, type BinBuilder } from '../src/pack-cars.ts'
+import { type BinBuilder, runPackCars } from '../src/pack-cars.ts'
 
 // H3: a bin that fails to assemble must surface its source CIDs
 // (summary.failedMemberCids), not just bump a bin-level counter.
