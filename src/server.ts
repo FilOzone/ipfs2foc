@@ -244,6 +244,9 @@ const DASHBOARD_HTML = `<!doctype html>
   .btn:active, .btn.pressed { transform: translateY(1px); }
   .btn.primary { background: linear-gradient(180deg, rgba(70,230,212,.16), rgba(70,230,212,.06)); border-color: rgba(70,230,212,.55); color: var(--signal); }
   .btn.primary:hover { background: rgba(70,230,212,.22); }
+  .btn:disabled { opacity: .3; cursor: not-allowed; transform: none; }
+  .btn:disabled:hover { border-color: var(--line-2); color: var(--muted); }
+  .btn.primary:disabled { background: rgba(255,255,255,.02); border-color: var(--line-2); color: var(--muted); }
 
   /* tables */
   .table-wrap { overflow-x: auto; }
@@ -324,10 +327,10 @@ const DASHBOARD_HTML = `<!doctype html>
       <div class="tile" data-k="workers"><div class="k">workers</div><div class="v" id="t-active">0</div></div>
     </div>
     <div class="controls">
-      <button class="btn primary" onclick="act('start', this)">▸ Start</button>
-      <button class="btn" onclick="act('pause', this)">❙❙ Pause</button>
-      <button class="btn" onclick="act('resume', this)">▸ Resume</button>
-      <button class="btn" onclick="act('retry', this)">⟳ Retry failed</button>
+      <button class="btn primary" id="btn-start" onclick="act('start', this)">▸ Start</button>
+      <button class="btn" id="btn-pause" onclick="act('pause', this)" disabled>❙❙ Pause</button>
+      <button class="btn" id="btn-resume" onclick="act('resume', this)" disabled>▸ Resume</button>
+      <button class="btn" id="btn-retry" onclick="act('retry', this)" disabled>⟳ Retry failed</button>
     </div>
   </section>
 
@@ -411,6 +414,11 @@ function refresh() {
     const st = String(s.state || 'idle')
     document.getElementById('state').textContent = st
     document.getElementById('live').dataset.state = st
+    const running = st === 'running', paused = st === 'paused'
+    document.getElementById('btn-start').disabled = running || paused
+    document.getElementById('btn-pause').disabled = !running
+    document.getElementById('btn-resume').disabled = !paused
+    document.getElementById('btn-retry').disabled = c.failed <= 0
     document.getElementById('pieceTarget').textContent = 'piece target ' + fmtSize(s.aggregateSizeBytes)
     document.getElementById('seg-done').style.width = (100 * c.done / total) + '%'
     document.getElementById('seg-processing').style.width = (100 * c.processing / total) + '%'
@@ -423,8 +431,8 @@ function refresh() {
     const committed = s.aggregates.filter(function (a) { return a.status === 'committed' }).length
     document.getElementById('aggMeta').textContent = s.aggregates.length ? committed + ' committed · ' + s.aggregates.length + ' total' : '—'
     const g = document.getElementById('gas')
-    if (s.gas) { g.textContent = 'base fee ' + s.gas.baseFee + ' · ' + s.gas.multipleOfFloor + '× · ' + (s.gas.pause ? 'SPIKE — pause' : s.gas.level); g.dataset.level = s.gas.pause ? 'spike' : s.gas.level }
-    else { g.textContent = 'base fee —'; g.dataset.level = 'off' }
+    if (s.gas) { g.textContent = 'base fee ' + s.gas.baseFee + ' · ' + s.gas.multipleOfFloor + '× · ' + (s.gas.pause ? 'SPIKE — pause' : s.gas.level); g.dataset.level = s.gas.pause ? 'spike' : s.gas.level; g.title = '' }
+    else { g.textContent = 'base fee · off'; g.dataset.level = 'off'; g.title = 'base-fee monitor is off — start serve with --network or --rpc-url to enable' }
     document.getElementById('lastError').textContent = s.lastError ? ('last error · ' + s.lastError) : ''
     document.getElementById('gwList').innerHTML = s.gateways.map(function (x) { return '<span class="chip gw">' + esc(x) + '</span>' }).join('')
     const aggs = s.aggregates.map(function (a) {
