@@ -10,6 +10,11 @@
   "main": "worker.ts",
   "compatibility_date": "2026-06-01",
   "observability": { "enabled": true },
+  // Per-client-IP rate limit on the pull path, a safety net against direct
+  // hammering of the relay (there is no registration step to throttle). Legit
+  // provider pulls are well under this; it only catches runaway direct abuse.
+  // CF rate-limit periods must be 10 or 60 seconds.
+  "ratelimits": [{ "name": "RELAY_RATE_LIMIT", "namespace_id": "1", "simple": { "limit": 100, "period": 60 } }],
   "vars": {
     // Optional. Extra gateway hostnames to allow on top of the built-ins
     // (gateway.pinata.cloud, trustless-gateway.link). Comma-separated, host

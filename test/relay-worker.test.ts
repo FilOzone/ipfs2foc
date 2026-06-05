@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { RelayEnv } from '../relay/handler.ts'
-import worker from '../relay/worker.ts'
+import { handle, type RelayEnv } from '../relay/handler.ts'
 import { buildCarUrl } from '../src/car-url.ts'
 
 // Real values from the in-browser commP spike: a canonical CIDv1 source and the
@@ -13,7 +12,9 @@ const TRUSTED = 'https://trustless-gateway.link'
 const HOST = 'trustless-gateway.link'
 
 function get(path: string, env: RelayEnv = {}, method = 'GET'): Response {
-  return worker.fetch(new Request(`https://relay.example${path}`, { method }), env) as Response
+  // Exercise the pure routing handler directly. The Worker entry's per-IP rate
+  // limit (a Cloudflare binding) is verified live, not here.
+  return handle(new Request(`https://relay.example${path}`, { method }), env)
 }
 
 /** Build the stateless pull path the dApp would hand the provider. */
