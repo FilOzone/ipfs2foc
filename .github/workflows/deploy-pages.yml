@@ -9,6 +9,8 @@ on:
     paths:
       - 'app/**'
       - 'src/car-url.ts'
+      - 'pnpm-workspace.yaml'
+      - 'pnpm-lock.yaml'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
@@ -24,16 +26,17 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: app
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm ci
-      - run: npm run build
+          cache: pnpm
+      # Install the whole workspace so the app can reuse src/car-url.ts with the
+      # CLI's exact multiformats / data-segment versions.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter ipfs2foc-app build
       - uses: actions/upload-pages-artifact@v3
         with:
           path: app/dist
