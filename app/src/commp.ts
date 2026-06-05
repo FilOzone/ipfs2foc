@@ -5,12 +5,11 @@
 // getReader().
 //
 // The hasher is the Rust/WASM fr32 multihash (same multihash code 0x1011 as
-// @web3-storage/data-segment/multihash, which src/piece.ts uses) — roughly 4x
-// the throughput of the JS implementation, which matters because the stream is
-// backpressured by hashing: hash speed IS the displayed download speed.
-// verified: identical PieceCID v2 for identical input across both hashers
-// (probe: fr32 digestInto + Digest.decode vs data-segment digest(), same
-// Link.create(Raw.code, digest) string).
+// @web3-storage/data-segment/multihash, which src/piece.ts uses) — measured
+// ~2x the throughput of the JS implementation (20 -> 39 MiB/s on Apple
+// Silicon), which matters because the stream is backpressured by hashing: hash
+// speed caps the download speed. PieceCID parity with the JS hasher is pinned
+// by test/commp-wasm-parity.test.ts.
 import { CarBlockIterator } from '@ipld/car'
 import { create as createHasher } from 'fr32-sha2-256-trunc254-padded-binary-tree-multihash'
 // Reuse the single source of truth (ipfs2foc-core) — never re-template these, or
