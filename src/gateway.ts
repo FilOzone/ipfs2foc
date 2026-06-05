@@ -9,7 +9,14 @@
  */
 
 import { createHash } from 'node:crypto'
+import { buildCarUrl, CAR_ACCEPT, DEFAULT_GATEWAYS } from './car-url.ts'
 import type { FailureCategory } from './db.ts'
+
+// Re-export the canonical CAR-URL surface so existing importers of `./gateway`
+// keep working; the definitions now live in `./car-url` (pure, Worker-safe) so
+// the redirect relay can share them without pulling in node:crypto. See
+// `car-url.ts` for why this must be a single source of truth.
+export { buildCarUrl, CAR_ACCEPT, DEFAULT_GATEWAYS }
 
 /**
  * Error subclass thrown by `fetchCar` so callers can categorize failures by
@@ -64,24 +71,6 @@ function categoryForFetchError(err: unknown): FailureCategory {
     cur = (cur as { cause?: unknown }).cause
   }
   return 'source_gateway_network'
-}
-
-/** Gateways that are known to serve deterministic, spec-compliant trustless CARs. */
-export const DEFAULT_GATEWAYS = ['https://gateway.pinata.cloud', 'https://trustless-gateway.link']
-
-export const CAR_ACCEPT = 'application/vnd.ipld.car'
-
-/**
- * Build the canonical trustless-CAR URL for a CID. The query string pins every
- * variable the trustless-gateway spec exposes so byte output is reproducible
- * across fetches and gateways: full DAG scope, CAR v1 framing, depth-first
- * traversal order, no duplicate blocks. Without these, gateway defaults vary
- * (some emit CAR v2; some accept dup blocks), and the recomputed PieceCID will
- * diverge between plan and the provider's pull.
- */
-export function buildCarUrl(gateway: string, cid: string): string {
-  const base = gateway.replace(/\/+$/, '')
-  return `${base}/ipfs/${cid}?format=car&dag-scope=all&car-version=1&car-order=dfs&car-dups=n`
 }
 
 /** Fetch a CID as a CAR stream. Throws on non-2xx or a non-CAR content-type. */

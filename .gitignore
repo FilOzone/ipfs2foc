@@ -21,3 +21,6 @@ out/
 
 # build output
 dist/
+
+# wrangler local dev state (relay/)
+.wrangler/
