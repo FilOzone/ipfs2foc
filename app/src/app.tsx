@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PieceResult } from './commp.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
 import { computePieceInWorker } from './piece-worker.ts'
+import { clearRun, loadRun, saveRun } from './run-store.ts'
 import { connectWallet, NETWORKS, networkOf, refreshWallet, switchToCalibration, type WalletState } from './wallet.ts'
 
 const DEFAULT_RELAY = 'https://ipfs2foc-relay.russell-3c4.workers.dev'
@@ -56,6 +57,65 @@ export default function App() {
   const [rows, setRows] = useState<Row[]>([])
   const [running, setRunning] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
+  // Completed pieces by input CID — the write-through copy of what run-store
+  // persists, and the source for skip-on-resume in run().
+  const savedResults = useRef<Record<string, PieceResult>>({})
+  const [restored, setRestored] = useState(false)
+  // Writes are blocked until the restore attempt settles, so an early debounced
+  // persist of the empty textarea cannot clobber a saved run.
+  const hydrated = useRef(false)
+
+  // Restore the previous run once on load (#26). Done rows come back as done;
+  // anything else shows queued and recomputes on the next prepare.
+  useEffect(() => {
+    loadRun().then((saved) => {
+      hydrated.current = true
+      if (saved == null) return
+      savedResults.current = saved.results
+      setCidsText(saved.cidsText)
+      setRelayBase(saved.relayBase)
+      setGateway(saved.gateway)
+      const savedCids = Array.from(
+        new Set(
+          saved.cidsText
+            .split(/\s+/)
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0)
+        )
+      )
+      const doneCount = savedCids.filter((cid) => saved.results[cid] != null).length
+      if (doneCount > 0) {
+        setRows(
+          savedCids.map((cid) => {
+            const result = saved.results[cid]
+            return { cid, state: result ? { phase: 'done', result } : { phase: 'queued' } }
+          })
+        )
+        setRestored(true)
+      }
+    })
+  }, [])
+
+  const persist = useCallback(
+    (text: string) => {
+      if (!hydrated.current) return
+      void saveRun({
+        cidsText: text,
+        gateway,
+        relayBase,
+        results: savedResults.current,
+        updatedAt: new Date().toISOString(),
+      })
+    },
+    [gateway, relayBase]
+  )
+
+  // Persist input edits (debounced) so a refresh keeps the CID list and source
+  // settings even before a run starts.
+  useEffect(() => {
+    const t = setTimeout(() => persist(cidsText), 500)
+    return () => clearTimeout(t)
+  }, [cidsText, persist])
 
   const cids = useMemo(
     () =>
@@ -96,7 +156,19 @@ export default function App() {
 
   const run = useCallback(async () => {
     setRunning(true)
-    setRows(cids.map((cid) => ({ cid, state: { phase: 'queued' } })))
+    // Prune saved results for CIDs no longer in the input, then seed done rows
+    // from the saved run — pieces are deterministic, so a saved result is final
+    // and only the pending/failed CIDs go back through a worker.
+    savedResults.current = Object.fromEntries(
+      Object.entries(savedResults.current).filter(([cid]) => cids.includes(cid))
+    )
+    setRows(
+      cids.map((cid) => {
+        const result = savedResults.current[cid]
+        return { cid, state: result ? { phase: 'done', result } : { phase: 'queued' } }
+      })
+    )
+    persist(cidsText)
     const patch = (i: number, state: RowState) =>
       setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, state } : r)))
 
@@ -113,21 +185,32 @@ export default function App() {
           patch(i, { phase: 'working', bytes, rate: secs > 0 ? bytes / 1048576 / secs : 0 })
         })
         patch(i, { phase: 'done', result })
+        savedResults.current[cids[i]] = result
+        persist(cidsText)
       } catch (err) {
         patch(i, { phase: 'error', message: err instanceof Error ? err.message : String(err) })
       }
     }
 
-    // Worker pool over the CID indices.
+    // Worker pool over the CID indices that still need computing.
+    const pendingIdx = cids.flatMap((cid, i) => (savedResults.current[cid] ? [] : [i]))
     let next = 0
     const worker = async () => {
-      while (next < cids.length) {
-        await processOne(next++)
+      while (next < pendingIdx.length) {
+        await processOne(pendingIdx[next++])
       }
     }
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, cids.length) }, worker))
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pendingIdx.length) }, worker))
     setRunning(false)
-  }, [cids, gateway, relayBase])
+  }, [cids, cidsText, gateway, relayBase, persist])
+
+  const reset = useCallback(() => {
+    savedResults.current = {}
+    setRows([])
+    setCidsText('')
+    setRestored(false)
+    void clearRun()
+  }, [])
 
   const copy = useCallback((text: string, key: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -227,6 +310,11 @@ export default function App() {
           <button className="btn primary" disabled={running || cids.length === 0} onClick={run} type="button">
             {running ? 'Computing…' : `Prepare ${cids.length || ''} migration${cids.length === 1 ? '' : 's'}`.trim()}
           </button>
+          {(cids.length > 0 || rows.length > 0) && (
+            <button className="btn small" disabled={running} onClick={reset} type="button">
+              Clear
+            </button>
+          )}
         </div>
       </section>
 
@@ -237,6 +325,7 @@ export default function App() {
             <h2>Pieces</h2>
             <span className="panel-note">
               {results.length} ready{errors > 0 ? ` · ${errors} failed` : ''}
+              {restored ? ' · restored from last session' : ''}
             </span>
           </div>
           <div className="table">
