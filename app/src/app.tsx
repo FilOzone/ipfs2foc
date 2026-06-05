@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { PieceResult } from './commp.ts'
+import { computePiece, type PieceResult } from './commp.ts'
+import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
-import { computePieceInWorker } from './piece-worker.ts'
 import { clearRun, loadRun, saveRun } from './run-store.ts'
 import { connectWallet, NETWORKS, networkOf, refreshWallet, switchToCalibration, type WalletState } from './wallet.ts'
 
@@ -15,10 +15,10 @@ type RowState =
   | { phase: 'done'; result: PieceResult }
   | { phase: 'error'; message: string }
 
-// Process several CIDs at once. Each runs in its own worker (fetch + hash off
-// the main thread), so concurrent CIDs use separate cores instead of
-// time-slicing one thread.
-const CONCURRENCY = 4
+// Process several CIDs at once. Retrieval and CAR assembly share one helia
+// node on this thread; the CPU-bound hashing runs in pooled workers, one core
+// per concurrent piece.
+const CONCURRENCY = HASH_POOL_SIZE
 // Don't re-render on every stream chunk — that starves the thread doing the
 // hashing. Emit progress at most this often.
 const PROGRESS_THROTTLE_MS = 250
@@ -177,7 +177,7 @@ export default function App() {
       let lastEmit = 0
       patch(i, { phase: 'working', bytes: 0, rate: 0 })
       try {
-        const result = await computePieceInWorker(gateway, cids[i], relayBase, (bytes) => {
+        const result = await computePiece(gateway, cids[i], relayBase, (bytes) => {
           const now = performance.now()
           if (now - lastEmit < PROGRESS_THROTTLE_MS) return
           lastEmit = now
@@ -384,7 +384,7 @@ export default function App() {
                 Download run manifest ({results.length})
               </button>
               <span className="panel-note">
-                feed this to <code>ipfs2foc pdp-submit --source-relay</code> to submit the migration
+                the portable record of this run — pull URLs and commitments for the submit step
               </span>
             </div>
           )}
@@ -393,8 +393,8 @@ export default function App() {
 
       <footer className="foot">
         <span>
-          piece commitment computed locally via <code>@web3-storage/data-segment</code>; redirect relay 302s the
-          provider pull to the gateway CAR
+          piece commitment computed locally over hash-verified blocks in canonical CAR form; redirect relay 302s the
+          provider pull to the same bytes at the gateway
         </span>
         <a href="https://github.com/SgtPooki/ipfs2foc" rel="noreferrer" target="_blank">
           SgtPooki/ipfs2foc

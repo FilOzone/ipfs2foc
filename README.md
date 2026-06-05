@@ -12,6 +12,10 @@ each object's bytes directly from a [trustless IPFS
 gateway](docs/glossary.md#trustless-gateway); your machine streams each object
 once to compute its piece commitment and stores none of the payload.
 
+To try the prepare step with nothing installed, use the
+[browser console](docs/browser-console.md) —
+[sgtpooki.github.io/ipfs2foc](https://sgtpooki.github.io/ipfs2foc/).
+
 ## Contents
 
 - [Install](#install)

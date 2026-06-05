@@ -25,6 +25,12 @@
  * Memory bound: `lookahead` in-flight blocks plus the dedup set (multihash
  * bytes only, ~40 B per unique block). No full-DAG buffering — emitted
  * blocks are released to the consumer immediately.
+ *
+ * Emitted chunks may alias the block bytes the traversal still needs (the
+ * CAR writer can yield a block's own `Uint8Array`): consumers must not
+ * mutate a chunk or transfer its underlying buffer to another thread — copy
+ * first. Detaching a chunk's buffer empties the not-yet-decoded block, and an
+ * empty dag-pb decodes to zero links, ending the walk at that block.
  */
 
 import { CarWriter } from '@ipld/car'
