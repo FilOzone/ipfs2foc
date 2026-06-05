@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
-import { computePiece, type PieceResult } from './commp.ts'
+import type { PieceResult } from './commp.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
+import { computePieceInWorker } from './piece-worker.ts'
 import { connectWallet, NETWORKS, networkOf, refreshWallet, switchToCalibration, type WalletState } from './wallet.ts'
 
 const DEFAULT_RELAY = 'https://ipfs2foc-relay.russell-3c4.workers.dev'
@@ -13,8 +14,9 @@ type RowState =
   | { phase: 'done'; result: PieceResult }
   | { phase: 'error'; message: string }
 
-// Process several CIDs at once; each is gateway-throughput-bound, so overlapping
-// their downloads is the main win when preparing more than one.
+// Process several CIDs at once. Each runs in its own worker (fetch + hash off
+// the main thread), so concurrent CIDs use separate cores instead of
+// time-slicing one thread.
 const CONCURRENCY = 4
 // Don't re-render on every stream chunk — that starves the thread doing the
 // hashing. Emit progress at most this often.
@@ -103,7 +105,7 @@ export default function App() {
       let lastEmit = 0
       patch(i, { phase: 'working', bytes: 0, rate: 0 })
       try {
-        const result = await computePiece(gateway, cids[i], relayBase, (bytes) => {
+        const result = await computePieceInWorker(gateway, cids[i], relayBase, (bytes) => {
           const now = performance.now()
           if (now - lastEmit < PROGRESS_THROTTLE_MS) return
           lastEmit = now

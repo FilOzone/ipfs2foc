@@ -2,14 +2,23 @@
 // streaming the bytes through the hasher — the CAR is never fully buffered, so
 // memory stays bounded regardless of object size. Chromium does not implement
 // async iteration on a fetch ReadableStream, so the body is consumed via
-// getReader(); the hasher and CID assembly match src/piece.ts.
+// getReader().
+//
+// The hasher is the Rust/WASM fr32 multihash (same multihash code 0x1011 as
+// @web3-storage/data-segment/multihash, which src/piece.ts uses) — roughly 4x
+// the throughput of the JS implementation, which matters because the stream is
+// backpressured by hashing: hash speed IS the displayed download speed.
+// verified: identical PieceCID v2 for identical input across both hashers
+// (probe: fr32 digestInto + Digest.decode vs data-segment digest(), same
+// Link.create(Raw.code, digest) string).
 import { CarBlockIterator } from '@ipld/car'
-import * as Hasher from '@web3-storage/data-segment/multihash'
+import { create as createHasher } from 'fr32-sha2-256-trunc254-padded-binary-tree-multihash'
 // Reuse the single source of truth (ipfs2foc-core) — never re-template these, or
 // the relay redirect would drift from the bytes commP is computed over.
 import { buildCarUrl, CAR_ACCEPT, relayPullUrl, toCanonicalCidV1 } from 'ipfs2foc-core'
 import { CID } from 'multiformats/cid'
 import * as Raw from 'multiformats/codecs/raw'
+import * as Digest from 'multiformats/hashes/digest'
 import * as Link from 'multiformats/link'
 
 export interface PieceResult {
@@ -50,7 +59,9 @@ export async function computePiece(
     throw new Error(`gateway did not serve a CAR (content-type ${contentType || 'none'})`)
   }
 
-  const hasher = Hasher.create()
+  // WASM hasher holds memory outside the JS heap; free() in the finally below
+  // covers both the success path and a throw mid-stream.
+  const hasher = createHasher()
   let rawSize = 0
 
   // Reader is created here (where `body` is narrowed non-null) so the generator
@@ -77,17 +88,25 @@ export async function computePiece(
     }
   }
 
-  const carReader = await CarBlockIterator.fromIterable(tap())
-  for await (const _block of carReader) {
-    // drain so the whole CAR flows through the hasher; blocks are not retained
-  }
-  const roots = await carReader.getRoots()
-  if (!roots.some((r) => r.equals(expected) || r.toString() === canonical)) {
-    throw new Error(`CAR root mismatch: expected ${canonical}, got [${roots.map((r) => r.toString()).join(', ')}]`)
-  }
+  let pieceCid: string
+  try {
+    const carReader = await CarBlockIterator.fromIterable(tap())
+    for await (const _block of carReader) {
+      // drain so the whole CAR flows through the hasher; blocks are not retained
+    }
+    const roots = await carReader.getRoots()
+    if (!roots.some((r) => r.equals(expected) || r.toString() === canonical)) {
+      throw new Error(`CAR root mismatch: expected ${canonical}, got [${roots.map((r) => r.toString()).join(', ')}]`)
+    }
 
-  const digest = hasher.digest()
-  const pieceCid = (Link.create(Raw.code, digest) as CID).toString()
+    // verified: fr32-sha2-256-trunc254-padded-binary-tree-multihash src/async.js
+    // digest — multihash bytes come out via digestInto(bytes, 0, true).
+    const out = new Uint8Array(hasher.multihashByteLength())
+    hasher.digestInto(out, 0, true)
+    pieceCid = (Link.create(Raw.code, Digest.decode(out)) as CID).toString()
+  } finally {
+    hasher.free()
+  }
   const gatewayHost = new URL(gateway).hostname
   const sourceUrl = relayPullUrl(relayBase, gatewayHost, canonical, pieceCid)
 

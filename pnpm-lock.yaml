@@ -105,6 +105,9 @@ importers:
       '@web3-storage/data-segment':
         specifier: ^5.3.0
         version: 5.3.0
+      fr32-sha2-256-trunc254-padded-binary-tree-multihash:
+        specifier: ^3.3.0
+        version: 3.3.0
       ipfs2foc-core:
         specifier: workspace:*
         version: link:../packages/core
@@ -1981,6 +1984,9 @@ packages:
   form-data@4.0.5:
     resolution: {integrity: sha512-8RipRLol37bNs2bhoV67fiTEvdTrbMUYcFTiy3+wuuOnUog2QBHCZWXDRijWQfAkhBj2Uf5UnVaiWwA5vdd82w==}
     engines: {node: '>= 6'}
+
+  fr32-sha2-256-trunc254-padded-binary-tree-multihash@3.3.0:
+    resolution: {integrity: sha512-O11VDxPmPvbQj5eac2BJXyieNacyd+RCMhwOzXQQM/NCI25x3c32YWB4/JwgOWPCpKnNXF6lpK/j0lj7GWOnYQ==}
 
   freeport-promise@2.0.0:
     resolution: {integrity: sha512-dwWpT1DdQcwrhmRwnDnPM/ZFny+FtzU+k50qF2eid3KxaQDsMiBrwo1i0G3qSugkN5db6Cb0zgfc68QeTOpEFg==}
@@ -6082,6 +6088,8 @@ snapshots:
       es-set-tostringtag: 2.1.0
       hasown: 2.0.4
       mime-types: 2.1.35
+
+  fr32-sha2-256-trunc254-padded-binary-tree-multihash@3.3.0: {}
 
   freeport-promise@2.0.0: {}
 
