@@ -9,9 +9,16 @@ const TARGET_NETWORK = 'calibration' as const
 
 type RowState =
   | { phase: 'queued' }
-  | { phase: 'working'; bytes: number }
+  | { phase: 'working'; bytes: number; rate: number }
   | { phase: 'done'; result: PieceResult }
   | { phase: 'error'; message: string }
+
+// Process several CIDs at once; each is gateway-throughput-bound, so overlapping
+// their downloads is the main win when preparing more than one.
+const CONCURRENCY = 4
+// Don't re-render on every stream chunk — that starves the thread doing the
+// hashing. Emit progress at most this often.
+const PROGRESS_THROTTLE_MS = 250
 
 interface Row {
   cid: string
@@ -87,20 +94,36 @@ export default function App() {
 
   const run = useCallback(async () => {
     setRunning(true)
-    const initial: Row[] = cids.map((cid) => ({ cid, state: { phase: 'queued' } }))
-    setRows(initial)
+    setRows(cids.map((cid) => ({ cid, state: { phase: 'queued' } })))
     const patch = (i: number, state: RowState) =>
       setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, state } : r)))
 
-    for (let i = 0; i < cids.length; i++) {
-      patch(i, { phase: 'working', bytes: 0 })
+    const processOne = async (i: number) => {
+      const startedAt = performance.now()
+      let lastEmit = 0
+      patch(i, { phase: 'working', bytes: 0, rate: 0 })
       try {
-        const result = await computePiece(gateway, cids[i], relayBase, (bytes) => patch(i, { phase: 'working', bytes }))
+        const result = await computePiece(gateway, cids[i], relayBase, (bytes) => {
+          const now = performance.now()
+          if (now - lastEmit < PROGRESS_THROTTLE_MS) return
+          lastEmit = now
+          const secs = (now - startedAt) / 1000
+          patch(i, { phase: 'working', bytes, rate: secs > 0 ? bytes / 1048576 / secs : 0 })
+        })
         patch(i, { phase: 'done', result })
       } catch (err) {
         patch(i, { phase: 'error', message: err instanceof Error ? err.message : String(err) })
       }
     }
+
+    // Worker pool over the CID indices.
+    let next = 0
+    const worker = async () => {
+      while (next < cids.length) {
+        await processOne(next++)
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, cids.length) }, worker))
     setRunning(false)
   }, [cids, gateway, relayBase])
 
@@ -239,7 +262,10 @@ export default function App() {
                       {short(r.state.message, 28, 0)}
                     </span>
                   ) : r.state.phase === 'working' ? (
-                    <span className="working">▍ {fmtBytes(r.state.bytes)}</span>
+                    <span className="working">
+                      ▍ {fmtBytes(r.state.bytes)}
+                      {r.state.rate > 0 ? ` · ${r.state.rate.toFixed(1)} MiB/s` : ''}
+                    </span>
                   ) : (
                     <span className="dim">queued</span>
                   )}
