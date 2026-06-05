@@ -1,5 +1,5 @@
 /**
- * Byte-identity guard for `car-export.ts`.
+ * Byte-identity guard for `ipfs2foc-core/car-export`.
  *
  * The reference serializer is `@helia/car`'s export configured exactly like
  * `@helia/verified-fetch`'s CAR handler for `dag-scope=all` —
@@ -27,7 +27,7 @@ import * as json from 'multiformats/codecs/json'
 import * as raw from 'multiformats/codecs/raw'
 import { identity } from 'multiformats/hashes/identity'
 import { sha256 } from 'multiformats/hashes/sha2'
-import { exportCanonicalCar } from '../src/car-export.ts'
+import { exportCanonicalCar } from 'ipfs2foc-core/car-export'
 
 const codecs: Record<number, { code: number; decode(b: Uint8Array): unknown }> = {
   [dagPb.code]: dagPb,

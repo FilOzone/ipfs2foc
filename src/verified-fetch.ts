@@ -9,10 +9,10 @@
  * walks the DAG over bitswap and trustless-gateway brokers to recover a CID no
  * gateway could serve as a CAR.
  *
- * The CAR itself is serialized by `car-export.ts` over a blockstore session on
+ * The CAR itself is serialized by `ipfs2foc-core/car-export` over a blockstore session on
  * this node — not by `@helia/verified-fetch`'s CAR handler, whose one-block-
  * per-round-trip walk and probabilistic dedup filter it replaces (see
- * `car-export.ts` for the verified citations).
+ * `ipfs2foc-core/car-export` for the verified citations).
  *
  * The node reuses `buildLibp2pConfig` from `helia-fallback.ts`: outbound-only,
  * TCP + WebSockets, no WebRTC. The native `node-datachannel` binding is built by

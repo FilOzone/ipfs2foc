@@ -4,8 +4,9 @@
  * The migrator's normal source is a configured trustless gateway, fetched
  * directly as a CAR (`gateway.ts`). When every gateway fails with a retriable
  * category, this module retrieves the same CID's blocks over a bitswap-enabled
- * Helia node and serializes the CAR locally (`car-export.ts`, canonical
- * framing, bounded-lookahead prefetch). Those bytes are migrator-controlled —
+ * Helia node and serializes the CAR locally (`ipfs2foc-core/car-export`,
+ * canonical framing, bounded-lookahead prefetch). Those bytes are
+ * migrator-controlled —
  * the provider cannot pull a bitswap walk — so they feed the same
  * piece-commitment path but are recorded as `source==='helia'`, which
  * `recordPieceOutcome` treats as unservable by the provider pull.
@@ -21,7 +22,7 @@
  */
 
 import { CID } from 'multiformats/cid'
-import { exportCanonicalCarStream } from './car-export.ts'
+import { exportCanonicalCarStream } from 'ipfs2foc-core/car-export'
 import { DEFAULT_GATEWAYS } from './gateway.ts'
 import { fallbackHelia, stopVerifiedFetch } from './verified-fetch.ts'
 
@@ -60,7 +61,7 @@ export const DEFAULT_FALLBACK_TIMEOUT_MS = 120_000
 /**
  * Retrieve a CID's full DAG over the bitswap-enabled Helia node and emit a
  * CAR stream rooted at that CID, in canonical trustless-gateway framing
- * (`car-export.ts`: DFS, dups=n, CARv1).
+ * (`ipfs2foc-core/car-export`: DFS, dups=n, CARv1).
  *
  * Returns a `ReadableStream<Uint8Array>` so the caller can pipe it through the
  * same piece-commitment hasher used for gateway responses. The full reachable
