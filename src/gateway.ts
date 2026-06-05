@@ -9,7 +9,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { buildCarUrl, CAR_ACCEPT, DEFAULT_GATEWAYS } from './car-url.ts'
+import { buildCarUrl, CAR_ACCEPT, DEFAULT_GATEWAYS } from 'ipfs2foc-core'
 import type { FailureCategory } from './db.ts'
 
 // Re-export the canonical CAR-URL surface so existing importers of `./gateway`

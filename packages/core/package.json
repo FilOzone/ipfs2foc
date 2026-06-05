@@ -1,0 +1,13 @@
+{
+  "name": "ipfs2foc-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared canonical CAR-URL helpers for ipfs2foc — the single source of truth for the gateway CAR URL the CLI commits over and the relay/app redirect to. Consumed (bundled) by the CLI, relay, and browser app.",
+  "exports": {
+    ".": "./src/car-url.ts"
+  },
+  "dependencies": {
+    "multiformats": "^13.4.1"
+  }
+}

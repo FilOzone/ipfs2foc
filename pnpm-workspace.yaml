@@ -3,3 +3,4 @@
 # versions the CLI commits over — no version drift between them.
 packages:
   - app
+  - packages/*

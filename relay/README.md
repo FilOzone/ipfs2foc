@@ -26,7 +26,7 @@ and the captured pieceCid to equal the on-chain value, over HTTPS to a public
 host. So the dApp prepends `/r/{gatewayHost}/{cid}`, and the relay recovers the
 gateway + CID from the prefix and 302s to
 `buildCarUrl(https://{gatewayHost}, {cid})` — rebuilt with the same
-`src/car-url.ts` the migrator committed over, so the provider reads
+`ipfs2foc-core` builder the migrator committed over, so the provider reads
 byte-identical bytes. `{pieceCidV2}` is only there to satisfy the suffix rule;
 the relay ignores it (the provider verifies it).
 
@@ -96,7 +96,7 @@ cd relay
 npx wrangler deploy            # provisions nothing — stateless
 ```
 
-The Worker imports the canonical CAR-URL builder from `../src/car-url.ts`;
+The Worker imports the canonical CAR-URL builder from `ipfs2foc-core`;
 `wrangler` bundles it. No build step, no KV namespace.
 
 ## Scope

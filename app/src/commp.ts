@@ -5,12 +5,12 @@
 // getReader(); the hasher and CID assembly match src/piece.ts.
 import { CarBlockIterator } from '@ipld/car'
 import * as Hasher from '@web3-storage/data-segment/multihash'
+// Reuse the single source of truth (ipfs2foc-core) — never re-template these, or
+// the relay redirect would drift from the bytes commP is computed over.
+import { buildCarUrl, CAR_ACCEPT, canonicalCid, relayPullUrl } from 'ipfs2foc-core'
 import { CID } from 'multiformats/cid'
 import * as Raw from 'multiformats/codecs/raw'
 import * as Link from 'multiformats/link'
-// Reuse the repo's single source of truth — never re-template these, or the
-// relay redirect would drift from the bytes commP is computed over.
-import { buildCarUrl, CAR_ACCEPT, canonicalCid, relayPullUrl } from '../../src/car-url.ts'
 
 export interface PieceResult {
   cid: string

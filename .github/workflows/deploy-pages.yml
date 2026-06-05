@@ -8,7 +8,7 @@ on:
     branches: [main]
     paths:
       - 'app/**'
-      - 'src/car-url.ts'
+      - 'packages/core/**'
       - 'pnpm-workspace.yaml'
       - 'pnpm-lock.yaml'
       - '.github/workflows/deploy-pages.yml'

@@ -35,5 +35,7 @@ export default defineConfig({
       if (fixed !== src) await writeFile(path, fixed)
     }
   },
-  // noExternal: ['ipfs2foc-core'],
+  // Inline the internal workspace package so the published CLI is self-contained
+  // (no `ipfs2foc-core` runtime dependency to resolve).
+  noExternal: ['ipfs2foc-core'],
 })

@@ -28,7 +28,7 @@
  * at the exact bytes the commitment was computed over.
  */
 
-import { buildCarUrl, canonicalCid, defaultGatewayHosts } from '../src/car-url.ts'
+import { buildCarUrl, canonicalCid, defaultGatewayHosts } from 'ipfs2foc-core'
 
 export interface RelayEnv {
   /**

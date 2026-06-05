@@ -18,10 +18,10 @@
 
 import { unlink } from 'node:fs/promises'
 import { calibration, mainnet, Synapse } from '@filoz/synapse-sdk'
+import { canonicalCid, relayPullUrl } from 'ipfs2foc-core'
 import { CID } from 'multiformats/cid'
 import { type Hex, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { canonicalCid, relayPullUrl } from './car-url.ts'
 import type { MigrationDB } from './db.ts'
 import { classifyBaseFee, getBaseFee, resolveRpcUrl } from './gas.ts'
 import { formatBytes, formatDuration, formatRate, Timer } from './metrics.ts'
