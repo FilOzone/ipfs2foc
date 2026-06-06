@@ -3,16 +3,25 @@ import { computePiece, type PieceResult } from './commp.ts'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
 import { fmtToken, type PaymentsStatus, readPaymentsStatus, readyToSign } from './payments.ts'
-import { clearRun, loadRun, saveRun } from './run-store.ts'
+import { clearRun, clearSubmit, loadRun, type SavedSubmit, saveRun } from './run-store.ts'
 import {
   DEFAULT_SESSION_DURATION_SECONDS,
+  extendSession,
   grantSession,
   resumeSession,
   revokeSession,
   SESSION_DURATIONS,
-  sessionCanPresign,
   type SessionState,
+  sessionCanPresign,
 } from './session.ts'
+import {
+  findResumableSubmit,
+  runSubmit,
+  SubmitBlockedError,
+  type SubmitContextStatus,
+  type SubmitState,
+  submitStateFromSaved,
+} from './submit.ts'
 import { connectWallet, NETWORKS, networkOf, refreshWallet, switchToCalibration, type WalletState } from './wallet.ts'
 
 const DEFAULT_RELAY = 'https://ipfs2foc-relay.russell-3c4.workers.dev'
@@ -67,6 +76,28 @@ function Led({ on, color }: { on: boolean; color: string }) {
   return <span className="led" style={{ background: on ? color : 'transparent', borderColor: color }} />
 }
 
+function describeSubmitPhase(c: SubmitContextStatus): string {
+  switch (c.phase) {
+    case 'queued':
+      return 'queued'
+    case 'presigning':
+      return 'signing authorization…'
+    case 'pulling': {
+      const statuses = c.pullStatus ? Object.values(c.pullStatus) : []
+      const done = statuses.filter((s) => s === 'complete').length
+      return `provider pulling ${done}/${statuses.length}…`
+    }
+    case 'committing':
+      return 'committing on-chain…'
+    case 'confirming':
+      return 'confirming…'
+    case 'done':
+      return 'committed ✓'
+    case 'failed':
+      return c.error ?? 'failed'
+  }
+}
+
 export default function App() {
   const [wallet, setWallet] = useState<WalletState | null>(null)
   const [walletError, setWalletError] = useState<string | null>(null)
@@ -83,6 +114,12 @@ export default function App() {
   const [rows, setRows] = useState<Row[]>([])
   const [running, setRunning] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
+  const [copies, setCopies] = useState(2)
+  const [submitState, setSubmitState] = useState<SubmitState | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitBlocked, setSubmitBlocked] = useState<SubmitBlockedError['reason'] | null>(null)
+  const [resumable, setResumable] = useState<SavedSubmit | null>(null)
   // Completed pieces by input CID — the write-through copy of what run-store
   // persists, and the source for skip-on-resume in run().
   const savedResults = useRef<Record<string, PieceResult>>({})
@@ -160,6 +197,8 @@ export default function App() {
   const errors = rows.filter((r) => r.state.phase === 'error').length
   const walletNetwork = wallet == null ? null : networkOf(wallet.chainId)
   const onCalibration = walletNetwork === TARGET_NETWORK
+  const allCommitted =
+    submitState != null && submitState.contexts.length > 0 && submitState.contexts.every((c) => c.phase === 'done')
 
   // Payment-readiness reads (#23 signing prerequisites). Public-RPC reads on
   // the connected address — nothing is signed; re-read whenever the wallet or
@@ -209,6 +248,75 @@ export default function App() {
       stale = true
     }
   }, [wallet])
+
+  // A previous submit run for exactly this wallet+network+piece set resumes
+  // instead of restarting — its presigns and any submitted commits are bound
+  // to all three. Shown read-only until the operator presses Submit again.
+  useEffect(() => {
+    setResumable(null)
+    if (wallet == null || results.length === 0 || !onCalibration) return
+    let stale = false
+    findResumableSubmit(wallet, TARGET_NETWORK, results).then((saved) => {
+      if (stale || saved == null) return
+      setResumable(saved)
+      setCopies(saved.copies)
+      setSubmitState((current) => current ?? submitStateFromSaved(saved))
+    })
+    return () => {
+      stale = true
+    }
+  }, [wallet, onCalibration, results])
+
+  const submit = useCallback(async () => {
+    if (wallet == null || session == null || results.length === 0) return
+    setSubmitError(null)
+    setSubmitBlocked(null)
+    setSubmitting(true)
+    try {
+      const prior = await findResumableSubmit(wallet, TARGET_NETWORK, results)
+      const finished = await runSubmit({
+        wallet,
+        network: TARGET_NETWORK,
+        session,
+        pieces: results,
+        copies: prior?.copies ?? copies,
+        prior,
+        onUpdate: setSubmitState,
+      })
+      setResumable(await findResumableSubmit(wallet, TARGET_NETWORK, results))
+      return finished
+    } catch (err) {
+      if (err instanceof SubmitBlockedError) setSubmitBlocked(err.reason)
+      setSubmitError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSubmitting(false)
+    }
+  }, [wallet, session, results, copies])
+
+  const discardSubmit = useCallback(() => {
+    void clearSubmit()
+    setResumable(null)
+    setSubmitState(null)
+    setSubmitError(null)
+    setSubmitBlocked(null)
+  }, [])
+
+  const extend = useCallback(async () => {
+    if (wallet == null || session == null) return
+    setSessionError(null)
+    setSessionBusy('extending…')
+    try {
+      const s = await extendSession(wallet, TARGET_NETWORK, session, DEFAULT_SESSION_DURATION_SECONDS, () =>
+        setSessionBusy('confirming…')
+      )
+      setSession(s)
+      setSubmitBlocked((b) => (b === 'session-margin' ? null : b))
+    } catch (err) {
+      setSessionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSessionBusy(null)
+    }
+  }, [wallet, session])
 
   const grant = useCallback(async () => {
     if (wallet == null) return
@@ -313,7 +421,12 @@ export default function App() {
     setRows([])
     setCidsText('')
     setRestored(false)
+    setSubmitState(null)
+    setResumable(null)
+    setSubmitError(null)
+    setSubmitBlocked(null)
     void clearRun()
+    void clearSubmit()
   }, [])
 
   const copy = useCallback((text: string, key: string) => {
@@ -388,90 +501,96 @@ export default function App() {
           <div className="pay-status">
             {paymentsLoading ? (
               <span className="dim">reading payment status…</span>
-            ) : paymentsError != null ? (
+            ) : paymentsError == null ? (
+              payments == null ? null : (
+                <>
+                  <span className="pay-label">wallet</span>
+                  <span className="pay-value">
+                    {fmtToken(payments.fil, walletNetwork === 'calibration' ? 'tFIL' : 'FIL')} ·{' '}
+                    {fmtToken(payments.walletUsdfc, 'USDFC')}
+                  </span>
+                  <span className="pay-label">deposited</span>
+                  <span className="pay-value">
+                    {fmtToken(payments.depositedUsdfc, 'USDFC')} ({fmtToken(payments.availableUsdfc, 'USDFC')}{' '}
+                    available)
+                  </span>
+                  <span className="pay-label">storage operator</span>
+                  <span className="pay-value">
+                    <Led color={payments.operatorApproved ? 'var(--ok)' : 'var(--warn)'} on />{' '}
+                    {payments.operatorApproved ? 'approved' : 'not approved'}
+                  </span>
+                  {!readyToSign(payments) && (
+                    <span className="pay-setup">
+                      signing needs a one-time payment setup: deposit USDFC into Filecoin Pay and approve the storage
+                      service as a payments operator —{' '}
+                      <a
+                        href="https://github.com/SgtPooki/ipfs2foc#network-gas-and-payments"
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        setup guide
+                      </a>
+                    </span>
+                  )}
+                  {readyToSign(payments) && onCalibration && (
+                    <>
+                      <span className="pay-label">signing session</span>
+                      {session == null ? (
+                        <span className="pay-value session-controls">
+                          <select
+                            disabled={sessionBusy != null}
+                            onChange={(e) => setSessionDuration(BigInt(e.target.value))}
+                            value={sessionDuration.toString()}
+                          >
+                            {SESSION_DURATIONS.map((d) => (
+                              <option key={d.label} value={d.seconds.toString()}>
+                                {d.label}
+                              </option>
+                            ))}
+                          </select>
+                          <button className="btn small" disabled={sessionBusy != null} onClick={grant} type="button">
+                            {sessionBusy ?? 'Enable signing'}
+                          </button>
+                        </span>
+                      ) : (
+                        <span className="pay-value session-controls">
+                          <Led color={sessionCanPresign(session) ? 'var(--ok)' : 'var(--warn)'} on />
+                          <span>
+                            until {fmtExpiry(session.expiresAt)} · <code>{short(session.sessionAddress, 6, 4)}</code>
+                          </span>
+                          <button className="btn small" disabled={sessionBusy != null} onClick={extend} type="button">
+                            Extend +24h
+                          </button>
+                          <button className="btn small" disabled={sessionBusy != null} onClick={revoke} type="button">
+                            Revoke
+                          </button>
+                          {sessionBusy != null && <span className="dim">{sessionBusy}</span>}
+                        </span>
+                      )}
+                      {session == null ? (
+                        <span className="pay-setup">
+                          one wallet approval authorizes a temporary key to sign migration steps for the chosen window.
+                          it can create data sets and add pieces — spending from the{' '}
+                          {fmtToken(payments.availableUsdfc, 'USDFC')} available — and nothing else: no removals, no
+                          deletions, no withdrawals. revoke it here when the run is done.
+                          {sessionDuration > 86_400n &&
+                            ' long windows leave the key authorized on this device for days — prefer shorter unless the run needs it.'}
+                        </span>
+                      ) : sessionCanPresign(session) ? null : (
+                        <span className="pay-setup">
+                          session expires soon — new submissions pause within an hour of expiry so providers can land
+                          in-flight pieces. extend it to continue.
+                        </span>
+                      )}
+                    </>
+                  )}
+                </>
+              )
+            ) : (
               <span className="err-text" title={paymentsError}>
                 payment status unavailable: {short(paymentsError, 48, 0)}
               </span>
-            ) : payments != null ? (
-              <>
-                <span className="pay-label">wallet</span>
-                <span className="pay-value">
-                  {fmtToken(payments.fil, walletNetwork === 'calibration' ? 'tFIL' : 'FIL')} ·{' '}
-                  {fmtToken(payments.walletUsdfc, 'USDFC')}
-                </span>
-                <span className="pay-label">deposited</span>
-                <span className="pay-value">
-                  {fmtToken(payments.depositedUsdfc, 'USDFC')} ({fmtToken(payments.availableUsdfc, 'USDFC')}{' '}
-                  available)
-                </span>
-                <span className="pay-label">storage operator</span>
-                <span className="pay-value">
-                  <Led color={payments.operatorApproved ? 'var(--ok)' : 'var(--warn)'} on />{' '}
-                  {payments.operatorApproved ? 'approved' : 'not approved'}
-                </span>
-                {!readyToSign(payments) && (
-                  <span className="pay-setup">
-                    signing needs a one-time payment setup: deposit USDFC into Filecoin Pay and approve the storage
-                    service as a payments operator —{' '}
-                    <a
-                      href="https://github.com/SgtPooki/ipfs2foc#network-gas-and-payments"
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      setup guide
-                    </a>
-                  </span>
-                )}
-                {readyToSign(payments) && onCalibration && (
-                  <>
-                    <span className="pay-label">signing session</span>
-                    {session == null ? (
-                      <span className="pay-value session-controls">
-                        <select
-                          disabled={sessionBusy != null}
-                          onChange={(e) => setSessionDuration(BigInt(e.target.value))}
-                          value={sessionDuration.toString()}
-                        >
-                          {SESSION_DURATIONS.map((d) => (
-                            <option key={d.label} value={d.seconds.toString()}>
-                              {d.label}
-                            </option>
-                          ))}
-                        </select>
-                        <button className="btn small" disabled={sessionBusy != null} onClick={grant} type="button">
-                          {sessionBusy ?? 'Enable signing'}
-                        </button>
-                      </span>
-                    ) : (
-                      <span className="pay-value session-controls">
-                        <Led color={sessionCanPresign(session) ? 'var(--ok)' : 'var(--warn)'} on />
-                        <span>
-                          until {fmtExpiry(session.expiresAt)} · <code>{short(session.sessionAddress, 6, 4)}</code>
-                        </span>
-                        <button className="btn small" disabled={sessionBusy != null} onClick={revoke} type="button">
-                          {sessionBusy ?? 'Revoke'}
-                        </button>
-                      </span>
-                    )}
-                    {session == null ? (
-                      <span className="pay-setup">
-                        one wallet approval authorizes a temporary key to sign migration steps for the chosen window.
-                        it can create data sets and add pieces — spending from the{' '}
-                        {fmtToken(payments.availableUsdfc, 'USDFC')} available — and nothing else: no removals, no
-                        deletions, no withdrawals. revoke it here when the run is done.
-                        {sessionDuration > 86_400n &&
-                          ' long windows leave the key authorized on this device for days — prefer shorter unless the run needs it.'}
-                      </span>
-                    ) : !sessionCanPresign(session) ? (
-                      <span className="pay-setup">
-                        session expires soon — new submissions pause within an hour of expiry so providers can land
-                        in-flight pieces. revoke and re-enable to continue.
-                      </span>
-                    ) : null}
-                  </>
-                )}
-              </>
-            ) : null}
+            )}
             {sessionError != null && (
               <span className="err-text" title={sessionError}>
                 session: {short(sessionError, 64, 0)}
@@ -586,6 +705,121 @@ export default function App() {
                 the portable record of this run — pull URLs and commitments for the submit step
               </span>
             </div>
+          )}
+        </section>
+      )}
+
+      {results.length > 0 && (
+        <section className="panel">
+          <div className="panel-head">
+            <span className="panel-no">04</span>
+            <h2>Submit</h2>
+            <span className="panel-note">one on-chain commit per copy · signed by the session key, no prompts</span>
+          </div>
+          {wallet == null || !onCalibration ? (
+            <p className="gate-note">connect the wallet on Calibration above to submit.</p>
+          ) : payments == null || !readyToSign(payments) ? (
+            <p className="gate-note">finish the one-time payment setup above to submit.</p>
+          ) : session == null ? (
+            <p className="gate-note">enable signing above to submit.</p>
+          ) : (
+            <>
+              <div className="actions">
+                <span className="session-controls">
+                  <span className="copies-label">copies</span>
+                  <select
+                    disabled={submitting || resumable != null}
+                    onChange={(e) => setCopies(Number(e.target.value))}
+                    value={copies}
+                  >
+                    <option value={1}>1 — single provider</option>
+                    <option value={2}>2 — primary + secondary</option>
+                    <option value={3}>3 — primary + two secondaries</option>
+                  </select>
+                </span>
+                <button
+                  className="btn primary"
+                  disabled={submitting || running || allCommitted}
+                  onClick={submit}
+                  type="button"
+                >
+                  {submitting
+                    ? 'Submitting…'
+                    : allCommitted
+                      ? 'Submitted ✓'
+                      : resumable == null
+                        ? `Submit ${results.length} piece${results.length === 1 ? '' : 's'}`
+                        : 'Resume submit'}
+                </button>
+                {resumable != null && !submitting && (
+                  <button className="btn small" onClick={discardSubmit} type="button">
+                    Discard previous submit
+                  </button>
+                )}
+              </div>
+              {resumable != null && !submitting && !allCommitted && (
+                <p className="gate-note">
+                  a previous submit for these pieces is saved — Resume continues it without re-signing or re-submitting
+                  anything. Discard only forgets local progress; commits already submitted stay on chain.
+                </p>
+              )}
+              {submitState != null && submitState.contexts.length > 0 && (
+                <div className="table">
+                  <div className="trow thead submit-row">
+                    <span>Copy</span>
+                    <span>Provider</span>
+                    <span>Status</span>
+                    <span>Data set</span>
+                  </div>
+                  {submitState.contexts.map((c) => (
+                    <div className="trow submit-row" key={c.providerId}>
+                      <span className="dim">{c.role}</span>
+                      <span className="mono dim" title={c.serviceURL}>
+                        {c.providerName || `#${c.providerId}`}
+                      </span>
+                      {c.phase === 'failed' ? (
+                        <span className="err-text" title={c.error}>
+                          {short(c.error ?? 'failed', 36, 0)}
+                        </span>
+                      ) : (
+                        <span className={c.phase === 'done' ? 'ok-text' : 'working'}>{describeSubmitPhase(c)}</span>
+                      )}
+                      <span className="mono dim">
+                        {c.dataSetId == null
+                          ? c.txHash == null
+                            ? '—'
+                            : short(c.txHash, 10, 4)
+                          : `#${c.dataSetId} · ${c.pieceIds?.length ?? 0} piece${c.pieceIds?.length === 1 ? '' : 's'}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {submitState != null && !submitState.persisted && (
+                <p className="pay-setup">
+                  this browser is blocking storage — progress cannot survive a reload. keep this tab open until every
+                  copy reads committed.
+                </p>
+              )}
+              {submitError != null && (
+                <p className="err-text" title={submitError}>
+                  {short(submitError, 120, 0)}
+                  {submitBlocked === 'session-margin' && (
+                    <>
+                      {' '}
+                      <button className="btn small" disabled={sessionBusy != null} onClick={extend} type="button">
+                        Extend session +24h
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
+              {allCommitted && !submitting && (
+                <p className="gate-note">
+                  every copy is committed — revoke the signing session above once you are done migrating.
+                </p>
+              )}
+            </>
           )}
         </section>
       )}

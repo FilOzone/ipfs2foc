@@ -379,6 +379,26 @@ body {
   color: var(--err);
   font-size: 12.5px;
 }
+.ok-text {
+  color: var(--ok);
+}
+/* submit table: status column carries the most text */
+.trow.submit-row {
+  grid-template-columns: 0.5fr 1.1fr 1.6fr 1fr;
+}
+.gate-note {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-dim);
+  max-width: 70ch;
+}
+.copies-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-dim);
+}
 .copy {
   font-family: var(--mono);
   font-size: 11px;
