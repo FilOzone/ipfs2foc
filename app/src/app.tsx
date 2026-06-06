@@ -4,6 +4,15 @@ import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
 import { fmtToken, type PaymentsStatus, readPaymentsStatus, readyToSign } from './payments.ts'
 import { clearRun, loadRun, saveRun } from './run-store.ts'
+import {
+  DEFAULT_SESSION_DURATION_SECONDS,
+  grantSession,
+  resumeSession,
+  revokeSession,
+  SESSION_DURATIONS,
+  sessionCanPresign,
+  type SessionState,
+} from './session.ts'
 import { connectWallet, NETWORKS, networkOf, refreshWallet, switchToCalibration, type WalletState } from './wallet.ts'
 
 const DEFAULT_RELAY = 'https://ipfs2foc-relay.russell-3c4.workers.dev'
@@ -45,6 +54,15 @@ function short(s: string, head = 10, tail = 6): string {
   return s.length <= head + tail + 1 ? s : `${s.slice(0, head)}…${s.slice(-tail)}`
 }
 
+function fmtExpiry(unixSeconds: bigint): string {
+  return new Date(Number(unixSeconds) * 1000).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 function Led({ on, color }: { on: boolean; color: string }) {
   return <span className="led" style={{ background: on ? color : 'transparent', borderColor: color }} />
 }
@@ -55,6 +73,10 @@ export default function App() {
   const [payments, setPayments] = useState<PaymentsStatus | null>(null)
   const [paymentsError, setPaymentsError] = useState<string | null>(null)
   const [paymentsLoading, setPaymentsLoading] = useState(false)
+  const [session, setSession] = useState<SessionState | null>(null)
+  const [sessionBusy, setSessionBusy] = useState<string | null>(null)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+  const [sessionDuration, setSessionDuration] = useState<bigint>(DEFAULT_SESSION_DURATION_SECONDS)
   const [cidsText, setCidsText] = useState('')
   const [relayBase, setRelayBase] = useState(DEFAULT_RELAY)
   const [gateway, setGateway] = useState(DEFAULT_GATEWAY)
@@ -165,6 +187,57 @@ export default function App() {
       stale = true
     }
   }, [wallet])
+
+  // Restore a stored signing session for this wallet+network (#23). Chain
+  // reads are authoritative: resumeSession validates both granted permissions
+  // and wipes a dead record itself.
+  useEffect(() => {
+    setSession(null)
+    setSessionError(null)
+    if (wallet == null) return
+    const network = networkOf(wallet.chainId)
+    if (network !== TARGET_NETWORK) return
+    let stale = false
+    resumeSession(wallet, network)
+      .then((s) => {
+        if (!stale && s != null) setSession(s)
+      })
+      .catch(() => {
+        // a failed resume is just "no session" — the grant flow stays offered
+      })
+    return () => {
+      stale = true
+    }
+  }, [wallet])
+
+  const grant = useCallback(async () => {
+    if (wallet == null) return
+    setSessionError(null)
+    setSessionBusy('authorizing…')
+    try {
+      const s = await grantSession(wallet, TARGET_NETWORK, sessionDuration, () => setSessionBusy('confirming…'))
+      setSession(s)
+    } catch (err) {
+      setSessionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSessionBusy(null)
+    }
+  }, [wallet, sessionDuration])
+
+  const revoke = useCallback(async () => {
+    if (wallet == null || session == null) return
+    setSessionError(null)
+    setSessionBusy('revoking…')
+    try {
+      await revokeSession(wallet, TARGET_NETWORK, session, () => setSessionBusy('confirming revoke…'))
+      setSession(null)
+    } catch (err) {
+      // Chain-first revoke failed — the key stays usable and revocable.
+      setSessionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSessionBusy(null)
+    }
+  }, [wallet, session])
 
   const connect = useCallback(async () => {
     setWalletError(null)
@@ -349,8 +422,61 @@ export default function App() {
                     </a>
                   </span>
                 )}
+                {readyToSign(payments) && onCalibration && (
+                  <>
+                    <span className="pay-label">signing session</span>
+                    {session == null ? (
+                      <span className="pay-value session-controls">
+                        <select
+                          disabled={sessionBusy != null}
+                          onChange={(e) => setSessionDuration(BigInt(e.target.value))}
+                          value={sessionDuration.toString()}
+                        >
+                          {SESSION_DURATIONS.map((d) => (
+                            <option key={d.label} value={d.seconds.toString()}>
+                              {d.label}
+                            </option>
+                          ))}
+                        </select>
+                        <button className="btn small" disabled={sessionBusy != null} onClick={grant} type="button">
+                          {sessionBusy ?? 'Enable signing'}
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="pay-value session-controls">
+                        <Led color={sessionCanPresign(session) ? 'var(--ok)' : 'var(--warn)'} on />
+                        <span>
+                          until {fmtExpiry(session.expiresAt)} · <code>{short(session.sessionAddress, 6, 4)}</code>
+                        </span>
+                        <button className="btn small" disabled={sessionBusy != null} onClick={revoke} type="button">
+                          {sessionBusy ?? 'Revoke'}
+                        </button>
+                      </span>
+                    )}
+                    {session == null ? (
+                      <span className="pay-setup">
+                        one wallet approval authorizes a temporary key to sign migration steps for the chosen window.
+                        it can create data sets and add pieces — spending from the{' '}
+                        {fmtToken(payments.availableUsdfc, 'USDFC')} available — and nothing else: no removals, no
+                        deletions, no withdrawals. revoke it here when the run is done.
+                        {sessionDuration > 86_400n &&
+                          ' long windows leave the key authorized on this device for days — prefer shorter unless the run needs it.'}
+                      </span>
+                    ) : !sessionCanPresign(session) ? (
+                      <span className="pay-setup">
+                        session expires soon — new submissions pause within an hour of expiry so providers can land
+                        in-flight pieces. revoke and re-enable to continue.
+                      </span>
+                    ) : null}
+                  </>
+                )}
               </>
             ) : null}
+            {sessionError != null && (
+              <span className="err-text" title={sessionError}>
+                session: {short(sessionError, 64, 0)}
+              </span>
+            )}
           </div>
         )}
       </section>

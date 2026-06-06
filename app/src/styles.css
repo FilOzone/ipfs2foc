@@ -259,6 +259,21 @@ body {
 .pay-setup a {
   color: inherit;
 }
+.session-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.session-controls select {
+  background: transparent;
+  color: inherit;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 3px 6px;
+}
 
 .cid-input {
   width: 100%;
