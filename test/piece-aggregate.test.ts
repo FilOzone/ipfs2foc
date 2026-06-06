@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import * as Piece from '@web3-storage/data-segment/piece'
-import { pieceAggregateCommP } from '../src/piece-aggregate.ts'
+import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 
 interface Fixture {
   members: Array<{ pieceCid: string; rawSize: number }>

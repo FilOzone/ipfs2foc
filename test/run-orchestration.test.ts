@@ -8,7 +8,7 @@ import { GatewayError } from '../src/gateway.ts'
 import { type PieceFetcher, runPlan } from '../src/migrate.ts'
 import type { ProofHealth } from '../src/pdp-verifier.ts'
 import type { PieceResult } from '../src/piece.ts'
-import { pieceAggregateCommP } from '../src/piece-aggregate.ts'
+import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { type ReportDeps, runReport } from '../src/report.ts'
 
 // runPlan and runReport orchestration, driven with injected fakes — no gateway,

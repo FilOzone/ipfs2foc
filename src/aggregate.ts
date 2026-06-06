@@ -5,13 +5,13 @@
  * An aggregate's on-chain padded size is the next power of two of the sum of its
  * sub-pieces' padded sizes, so packing fills greedily while that running sum
  * stays within `aggregateSizeBytes`. The aggregate root is the aggregate piece
- * commitment over the members (see piece-aggregate.ts), the value the provider
+ * commitment over the members (see `ipfs2foc-core/piece-aggregate`), the value the provider
  * re-derives on add.
  */
 
 import * as Piece from '@web3-storage/data-segment/piece'
 import type { PieceResult } from './piece.ts'
-import { pieceAggregateCommP } from './piece-aggregate.ts'
+import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 
 const NODE_SIZE = 32n
 

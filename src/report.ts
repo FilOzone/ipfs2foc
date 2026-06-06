@@ -34,7 +34,7 @@ import {
   maxBlockOfTxHashes,
   type ProofHealth,
 } from './pdp-verifier.ts'
-import { pieceAggregateCommP } from './piece-aggregate.ts'
+import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { log } from './util.ts'
 
 export interface ReportOptions {

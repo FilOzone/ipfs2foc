@@ -28,7 +28,7 @@ import { formatBytes, formatDuration, formatRate, Timer } from './metrics.ts'
 import { checkMinPieceSize } from './min-piece-guard.ts'
 import { type AddStatusResult, PdpClient, PullBackpressure, type PullResponse } from './pdp.ts'
 import { type AddPiecesEvent, activePieceCids, fetchAddPiecesEvent } from './pdp-verifier.ts'
-import { pieceAggregateCommP } from './piece-aggregate.ts'
+import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { log } from './util.ts'
 
 /**

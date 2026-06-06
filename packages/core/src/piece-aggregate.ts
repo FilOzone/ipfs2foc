@@ -9,9 +9,13 @@
  *
  * Node primitives (trunc-254 sha256 combine, zero commitments) match
  * `@web3-storage/data-segment` `proof.computeNode` / `zero-comm`.
+ *
+ * Pure module — no `node:` imports (sha256 comes from `@noble/hashes`, sync) —
+ * so the browser app's signing flow computes the same aggregate root the CLI
+ * submits and the provider checks.
  */
 
-import { createHash } from 'node:crypto'
+import { sha256 } from '@noble/hashes/sha256'
 import * as Piece from '@web3-storage/data-segment/piece'
 import { Unpadded } from '@web3-storage/data-segment/piece/size'
 
@@ -19,12 +23,9 @@ const NODE_SIZE = 32
 
 /** Trunc-254-padded sha256 of two child nodes (clears the top two bits). */
 function computeNode(left: Uint8Array, right: Uint8Array): Uint8Array {
-  const h = createHash('sha256')
-  h.update(left)
-  h.update(right)
-  const d = h.digest()
+  const d = sha256.create().update(left).update(right).digest()
   d[NODE_SIZE - 1] &= 0b0011_1111
-  return new Uint8Array(d)
+  return d
 }
 
 const zeroCache: Uint8Array[] = [new Uint8Array(NODE_SIZE)]

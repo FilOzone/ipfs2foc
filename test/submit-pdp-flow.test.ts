@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import { MigrationDB } from '../src/db.ts'
 import type { AddStatusResult, PullResponse } from '../src/pdp.ts'
 import type { AddPiecesEvent } from '../src/pdp-verifier.ts'
-import { pieceAggregateCommP } from '../src/piece-aggregate.ts'
+import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { runSubmitPdp, type SubmitDeps, type SubmitPdpOptions } from '../src/submit-pdp.ts'
 
 // Drives the real runSubmitPdp control flow with a fake provider + chain, to
