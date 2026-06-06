@@ -117,6 +117,12 @@ importers:
       '@filoz/synapse-sdk':
         specifier: ^0.41.0
         version: 0.41.0(typescript@5.9.3)(viem@2.52.0(typescript@5.9.3)(zod@4.4.3))
+      '@fontsource/hanken-grotesk':
+        specifier: ^5.2.8
+        version: 5.2.8
+      '@fontsource/jetbrains-mono':
+        specifier: ^5.2.8
+        version: 5.2.8
       '@helia/block-brokers':
         specifier: ^5.2.4
         version: 5.2.4
@@ -738,6 +744,12 @@ packages:
     resolution: {integrity: sha512-hbxV71Zjk1AExgghdP+LoYY1UqdnUMVB6Te1aJ5Af/e1lVDIOXIAHYm1WzSLCp6pU/a/+hLpGyl1CCu1IUPwYQ==}
     peerDependencies:
       viem: 2.x
+
+  '@fontsource/hanken-grotesk@5.2.8':
+    resolution: {integrity: sha512-J/e6hdfNCbyc4WK5hmZtk0zjaIsFx3pvCdPVxY25iYw2C9v1ZggGz4nfHnRjMhcz4WfaadUuwLNtvj8sQ70tkg==}
+
+  '@fontsource/jetbrains-mono@5.2.8':
+    resolution: {integrity: sha512-6w8/SG4kqvIMu7xd7wt6x3idn1Qux3p9N62s6G3rfldOUYHpWcc2FKrqf+Vo44jRvqWj2oAtTHrZXEP23oSKwQ==}
 
   '@helia/bitswap@3.2.3':
     resolution: {integrity: sha512-uquUTgYaU5Z08SVFn+Psg1xhkeAqCdLWav0zAaNJE1bQX7UeLItW82+Nh5I40RaH9gMFFqL3IQR0mIzi+bj5Gg==}
@@ -4155,6 +4167,10 @@ snapshots:
       viem: 2.52.0(typescript@6.0.3)(zod@4.4.3)
     transitivePeerDependencies:
       - typescript
+
+  '@fontsource/hanken-grotesk@5.2.8': {}
+
+  '@fontsource/jetbrains-mono@5.2.8': {}
 
   '@helia/bitswap@3.2.3':
     dependencies:
