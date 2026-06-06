@@ -3,10 +3,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { MigrationDB } from '../src/db.ts'
 import type { AddStatusResult, PullResponse } from '../src/pdp.ts'
 import type { AddPiecesEvent } from '../src/pdp-verifier.ts'
-import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { runSubmitPdp, type SubmitDeps, type SubmitPdpOptions } from '../src/submit-pdp.ts'
 
 // Drives the real runSubmitPdp control flow with a fake provider + chain, to

@@ -19,16 +19,16 @@
 import { unlink } from 'node:fs/promises'
 import { calibration, mainnet, Synapse } from '@filoz/synapse-sdk'
 import { canonicalCid, relayPullUrl } from 'ipfs2foc-core'
+import { checkMinPieceSize } from 'ipfs2foc-core/min-piece-guard'
+import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { CID } from 'multiformats/cid'
 import { type Hex, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import type { MigrationDB } from './db.ts'
 import { classifyBaseFee, getBaseFee, resolveRpcUrl } from './gas.ts'
 import { formatBytes, formatDuration, formatRate, Timer } from './metrics.ts'
-import { checkMinPieceSize } from 'ipfs2foc-core/min-piece-guard'
 import { type AddStatusResult, PdpClient, PullBackpressure, type PullResponse } from './pdp.ts'
 import { type AddPiecesEvent, activePieceCids, fetchAddPiecesEvent } from './pdp-verifier.ts'
-import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { log } from './util.ts'
 
 /**

@@ -10,8 +10,8 @@
  */
 
 import * as Piece from '@web3-storage/data-segment/piece'
-import type { PieceResult } from './piece.ts'
 import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
+import type { PieceResult } from './piece.ts'
 
 const NODE_SIZE = 32n
 

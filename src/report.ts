@@ -24,6 +24,7 @@
  *   not possession signal — Layer 2 is what proves possession.
  */
 
+import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import type { MigrationDB } from './db.ts'
 import { resolveRpcUrl } from './gas.ts'
 import {
@@ -34,7 +35,6 @@ import {
   maxBlockOfTxHashes,
   type ProofHealth,
 } from './pdp-verifier.ts'
-import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { log } from './util.ts'
 
 export interface ReportOptions {

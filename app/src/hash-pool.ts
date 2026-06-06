@@ -6,10 +6,7 @@
 // hashed the chunk, so the canonical export can never run ahead of hashing by
 // more than one chunk per piece.
 
-export type HashWorkerRequest =
-  | { type: 'begin' }
-  | { type: 'chunk'; buf: ArrayBuffer }
-  | { type: 'finish' }
+export type HashWorkerRequest = { type: 'begin' } | { type: 'chunk'; buf: ArrayBuffer } | { type: 'finish' }
 
 export type HashWorkerResponse =
   | { type: 'ready' }
@@ -90,8 +87,8 @@ function release(w: PooledWorker, broken: boolean): void {
     return
   }
   const next = waiters.shift()
-  if (next != null) next(w)
-  else idle.push(w)
+  if (next == null) idle.push(w)
+  else next(w)
 }
 
 /**

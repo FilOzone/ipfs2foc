@@ -3,12 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { MigrationDB } from '../src/db.ts'
 import { GatewayError } from '../src/gateway.ts'
 import { type PieceFetcher, runPlan } from '../src/migrate.ts'
 import type { ProofHealth } from '../src/pdp-verifier.ts'
 import type { PieceResult } from '../src/piece.ts'
-import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { type ReportDeps, runReport } from '../src/report.ts'
 
 // runPlan and runReport orchestration, driven with injected fakes — no gateway,

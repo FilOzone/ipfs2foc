@@ -21,8 +21,8 @@
  * WebRTC-free shape without standing up a node.
  */
 
-import { CID } from 'multiformats/cid'
 import { exportCanonicalCarStream } from 'ipfs2foc-core/car-export'
+import { CID } from 'multiformats/cid'
 import { DEFAULT_GATEWAYS } from './gateway.ts'
 import { fallbackHelia, stopVerifiedFetch } from './verified-fetch.ts'
 

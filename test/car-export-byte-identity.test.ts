@@ -22,12 +22,12 @@ import * as dagCbor from '@ipld/dag-cbor'
 import * as dagPb from '@ipld/dag-pb'
 import { MemoryBlockstore } from 'blockstore-core'
 import { importBytes, importer } from 'ipfs-unixfs-importer'
+import { exportCanonicalCar } from 'ipfs2foc-core/car-export'
 import { CID } from 'multiformats/cid'
 import * as json from 'multiformats/codecs/json'
 import * as raw from 'multiformats/codecs/raw'
 import { identity } from 'multiformats/hashes/identity'
 import { sha256 } from 'multiformats/hashes/sha2'
-import { exportCanonicalCar } from 'ipfs2foc-core/car-export'
 
 const codecs: Record<number, { code: number; decode(b: Uint8Array): unknown }> = {
   [dagPb.code]: dagPb,

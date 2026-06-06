@@ -42,7 +42,9 @@ export interface StoredSession {
 const recordKey = (chainId: number, root: string): string => `${chainId}:${root.toLowerCase()}`
 
 const aad = (chainId: number, root: string, sessionAddress: string): Uint8Array<ArrayBuffer> =>
-  new TextEncoder().encode(`${chainId}|${root.toLowerCase()}|${sessionAddress.toLowerCase()}`) as Uint8Array<ArrayBuffer>
+  new TextEncoder().encode(
+    `${chainId}|${root.toLowerCase()}|${sessionAddress.toLowerCase()}`
+  ) as Uint8Array<ArrayBuffer>
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {

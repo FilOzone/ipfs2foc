@@ -43,7 +43,7 @@ export interface PieceResult {
   sourceUrl: string
 }
 
-type HeliaNode = Awaited<ReturnType<(typeof import('@helia/http'))['createHeliaHTTP']>>
+type HeliaNode = Awaited<ReturnType<typeof import('@helia/http')['createHeliaHTTP']>>
 
 // One node per gateway URL, kept for the session. With no libp2p transports
 // the node is just the gateway block broker plus codec/hasher registries;
