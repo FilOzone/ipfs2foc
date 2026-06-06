@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/car-url.ts",
     "./car-export": "./src/car-export.ts",
+    "./min-piece-guard": "./src/min-piece-guard.ts",
     "./piece-aggregate": "./src/piece-aggregate.ts"
   },
   "dependencies": {

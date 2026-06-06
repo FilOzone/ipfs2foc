@@ -15,7 +15,7 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import * as Piece from '@web3-storage/data-segment/piece'
 import { Padded } from '@web3-storage/data-segment/piece/size'
-import { checkMinPieceSize } from '../src/min-piece-guard.ts'
+import { checkMinPieceSize } from 'ipfs2foc-core/min-piece-guard'
 
 interface Fixture {
   members: Array<{ pieceCid: string; rawSize: number }>
