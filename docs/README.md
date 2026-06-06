@@ -11,9 +11,9 @@ for how-to guides and reference once you are running real migrations.
 
 ## How-to guides — getting a specific job done
 
-- [Prepare migrations in the browser](browser-console.md) — the hosted
-  console: paste CIDs, get commitments and pull URLs, download the run
-  manifest. No install, no keys.
+- [Migrate in the browser](browser-console.md) — the hosted console: paste
+  CIDs, get commitments, and submit to providers with a scoped signing
+  session. No install, no key material on the page.
 - [Operator profiles](personas.md) — map disk, bandwidth, and time budgets to
   `--max-in-flight`, `--piece-size`, and ingress choices, with per-profile
   failure modes and recovery.

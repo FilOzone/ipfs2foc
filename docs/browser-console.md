@@ -1,22 +1,37 @@
-# Prepare migrations in the browser
+# Migrate in the browser
 
 The hosted console at
-[sgtpooki.github.io/ipfs2foc](https://sgtpooki.github.io/ipfs2foc/) runs the
-prepare step of a passthrough migration entirely in the tab: paste CIDs, get
-back each one's PieceCID v2, size, and the pull URL a storage provider
-follows. Nothing to install, no key material on the page — the wallet step is
-read-only and signs nothing.
+[sgtpooki.github.io/ipfs2foc](https://sgtpooki.github.io/ipfs2foc/) runs a
+passthrough migration entirely in the tab: paste CIDs, get back each one's
+PieceCID v2, then submit them to storage providers and watch each copy commit
+on chain. Nothing to install, and no wallet key material ever enters the
+page.
 
 ## What a run produces
 
 For each CID, the console computes the piece commitment and builds the pull
 URL through the stateless redirect relay. The "Download run manifest" button
 saves the whole run as JSON — the per-piece commitments and pull URLs, plus
-the gateway and relay they were computed against. Wallet-signed submission
-from the browser is the next slice of
-[#23](https://github.com/SgtPooki/ipfs2foc/issues/23); importing a manifest
-into the CLI for submission is
+the gateway and relay they were computed against. Importing a manifest into
+the CLI for submission is
 [#35](https://github.com/SgtPooki/ipfs2foc/issues/35).
+
+## Submitting from the browser
+
+Submission needs three one-time things, and the wallet panel reports all of
+them: USDFC deposited into Filecoin Pay, the storage service approved as a
+payments operator, and an enabled signing session. Enabling signing is one
+wallet approval that authorizes a temporary key — scoped to creating data
+sets and adding pieces, nothing else — for a window you pick. The key signs
+every submission step silently; extend it in place if a long run needs more
+time, and revoke it from the same row when you are done.
+
+Pick how many provider copies to store (two by default: a primary plus an
+independent secondary) and press Submit. The browser moves no payload bytes:
+the primary provider pulls the canonical CAR through the relay, secondaries
+copy provider-to-provider from the primary, and each copy lands as a single
+on-chain commit covering every piece in the run. The status table tracks each
+copy from pull to committed data set.
 
 ## How the commitment is computed
 
@@ -34,7 +49,10 @@ committed bytes and the pull URL always use one canonical form.
 
 Run state persists in the browser. Refreshing or reopening the tab restores
 the CID list and finished rows; rerunning Prepare recomputes only what is
-missing. Clear starts over.
+missing. A submit run resumes the same way: authorizations and submitted
+transactions are saved as they happen, so pressing Submit after a reload
+continues where the run stopped — it never signs or submits the same thing
+twice. Clear starts over.
 
 ## When to use the CLI instead
 
