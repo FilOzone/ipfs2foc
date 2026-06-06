@@ -111,21 +111,22 @@ export async function findResumableSubmit(
 }
 
 async function deps() {
-  const [sdk, sp, piece, guard, viem] = await Promise.all([
+  const [sdk, sp, piece, guard, viem, abis] = await Promise.all([
     import('@filoz/synapse-sdk'),
     import('@filoz/synapse-core/sp'),
     import('@filoz/synapse-core/piece'),
     import('ipfs2foc-core/min-piece-guard'),
     import('viem'),
+    import('@filoz/synapse-core/abis'),
   ])
-  return { sdk, sp, piece, guard, viem }
+  return { sdk, sp, piece, guard, viem, abis }
 }
 
 export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
   const { wallet, network, session, pieces, prior, onUpdate } = opts
   if (pieces.length === 0) throw new Error('no prepared pieces to submit')
 
-  const { sdk, sp, piece, guard, viem } = await deps()
+  const { sdk, sp, piece, guard, viem, abis } = await deps()
   const chains = { calibration: sdk.calibration, mainnet: sdk.mainnet }
 
   const parsed = pieces.map((p) => {
@@ -340,30 +341,64 @@ export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
     }
     c.phase = 'confirming'
     emit()
-    if (c.signedDataSetId == null) {
-      // Create-and-add status URL shape verified against @filoz/synapse-core
-      // src/sp/create-dataset-add-pieces.ts; the helper chains the data set
-      // leg into the AddPieces leg itself.
-      const confirmation = await waitPatiently(() =>
-        sp.waitForCreateDataSetAddPieces({
-          statusUrl: new URL(`/pdp/data-sets/created/${c.txHash}`, c.serviceURL).toString(),
-        })
-      )
-      c.dataSetId = confirmation.dataSetId.toString()
-      c.pieceIds = confirmation.piecesIds.map((id) => id.toString())
-    } else {
-      // AddPieces status URL shape verified against @filoz/synapse-core
-      // src/sp/add-pieces.ts addPiecesApiRequest (the Location header).
-      const confirmation = await waitPatiently(() =>
-        sp.waitForAddPieces({
-          statusUrl: new URL(`/pdp/data-sets/${c.signedDataSetId}/pieces/added/${c.txHash}`, c.serviceURL).toString(),
-        })
-      )
-      c.dataSetId = c.signedDataSetId
-      c.pieceIds = confirmation.confirmedPieceIds.map((id) => id.toString())
+    try {
+      if (c.signedDataSetId == null) {
+        // Create-and-add status URL shape verified against @filoz/synapse-core
+        // src/sp/create-dataset-add-pieces.ts; the helper chains the data set
+        // leg into the AddPieces leg itself.
+        const confirmation = await waitPatiently(() =>
+          sp.waitForCreateDataSetAddPieces({
+            statusUrl: new URL(`/pdp/data-sets/created/${c.txHash}`, c.serviceURL).toString(),
+          })
+        )
+        c.dataSetId = confirmation.dataSetId.toString()
+        c.pieceIds = confirmation.piecesIds.map((id) => id.toString())
+      } else {
+        // AddPieces status URL shape verified against @filoz/synapse-core
+        // src/sp/add-pieces.ts addPiecesApiRequest (the Location header).
+        const confirmation = await waitPatiently(() =>
+          sp.waitForAddPieces({
+            statusUrl: new URL(`/pdp/data-sets/${c.signedDataSetId}/pieces/added/${c.txHash}`, c.serviceURL).toString(),
+          })
+        )
+        c.dataSetId = c.signedDataSetId
+        c.pieceIds = confirmation.confirmedPieceIds.map((id) => id.toString())
+      }
+    } catch (err) {
+      if (isTerminalRejection(err)) throw err
+      // The provider's status endpoint is a side channel and can lag the
+      // chain indefinitely (observed live: a data set confirmed on chain
+      // while the endpoint timed out for twenty minutes). Chain state is
+      // canonical — confirm from the receipt instead. The PiecesAdded event
+      // is emitted only when the inner call succeeded, so its presence
+      // carries the same guarantee as the three add-status signals
+      // (verified: src/pdp-verifier.ts fetchAddPiecesEvent and the
+      // @filoz/synapse-core/abis pdp event shapes).
+      if (!(await confirmFromChain(c))) throw err
     }
     c.phase = 'done'
     await persist()
+  }
+
+  const confirmFromChain = async (c: SubmitContextStatus): Promise<boolean> => {
+    if (c.txHash == null) return false
+    const receipt = await synapse.client.getTransactionReceipt({ hash: c.txHash }).catch(() => null)
+    if (receipt == null) return false
+    if (receipt.status !== 'success') {
+      throw new Error('commit transaction reverted on chain')
+    }
+    const pdpAddress = synapse.chain.contracts.pdp.address.toLowerCase()
+    const event = viem
+      .parseEventLogs({ abi: abis.pdp, eventName: 'PiecesAdded', logs: receipt.logs })
+      .find(
+        (ev) =>
+          ev.address.toLowerCase() === pdpAddress &&
+          (c.signedDataSetId == null || ev.args.setId === BigInt(c.signedDataSetId))
+      )
+    if (event == null) return false
+    c.dataSetId = event.args.setId.toString()
+    c.pieceIds = event.args.pieceIds.map((id) => id.toString())
+    return true
   }
 
   try {
