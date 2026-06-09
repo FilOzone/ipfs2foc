@@ -35,9 +35,9 @@ type RowState =
   | { phase: 'done'; result: PieceResult }
   | { phase: 'error'; message: string; detail: string }
 
-// Process several CIDs at once. Retrieval and CAR assembly share one helia
-// node on this thread; the CPU-bound hashing runs in pooled workers, one core
-// per concurrent piece.
+// Process several CIDs at once. Retrieval (one streaming CAR request per root)
+// and CAR assembly run on this thread; the CPU-bound hashing runs in pooled
+// workers, one core per concurrent piece.
 const CONCURRENCY = HASH_POOL_SIZE
 // Don't re-render on every stream chunk — that starves the thread doing the
 // hashing. Emit progress at most this often.
@@ -673,9 +673,19 @@ export default function App() {
                     {short(shownCid)}
                   </code>
                   {r.state.phase === 'done' ? (
-                    <code className="mono" title={r.state.result.pieceCid}>
-                      {short(r.state.result.pieceCid)}
-                    </code>
+                    <span className="piece">
+                      <code className="mono" title={r.state.result.pieceCid}>
+                        {short(r.state.result.pieceCid)}
+                      </code>
+                      {r.state.result.gapFillCount > 0 && (
+                        <span
+                          className="warn"
+                          title={`Gateway served an incomplete CAR — ${r.state.result.gapFillCount} block(s) recovered per-block. The provider pulls the CAR URL, so re-verify this gateway before submitting; if its CAR is still incomplete at pull time the on-chain AddPieces will fail.`}
+                        >
+                          ⚠ incomplete CAR
+                        </span>
+                      )}
+                    </span>
                   ) : r.state.phase === 'error' ? (
                     <span className="err-text" title={r.state.detail}>
                       {short(r.state.message, 44, 0)}
