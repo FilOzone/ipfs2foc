@@ -27,6 +27,7 @@ import { CarStreamSource, defaultGetCodec } from 'ipfs2foc-core/car-stream-sourc
 import { CID } from 'multiformats/cid'
 import type { FailureCategory } from './db.ts'
 import { GatewayError } from './gateway.ts'
+import { log } from './util.ts'
 
 /**
  * Map a stream/block failure onto the gateway failure categories that drive
@@ -66,6 +67,18 @@ export async function fetchCanonicalCar(
   async function* translated(): AsyncIterable<Uint8Array> {
     try {
       yield* exportCanonicalCar(source, defaultGetCodec, root, { signal })
+      // The commitment is computed from the CAR stream the provider also pulls.
+      // Any block recovered by the per-block fallback means that CAR was
+      // incomplete or corrupt — the provider pulling the same URL may get the
+      // same broken bytes and reject AddPieces on chain. Surface it so the
+      // operator re-verifies the gateway rather than discovering it on-chain.
+      if (source.gapFillCount > 0) {
+        log(
+          `! gateway ${gateway} served an incomplete CAR for ${cid}: ${source.gapFillCount} block(s) ` +
+            `recovered per-block. The provider pulls the CAR URL, so re-verify this gateway before submitting — ` +
+            `if its CAR is still incomplete at pull time the on-chain AddPieces will fail.`
+        )
+      }
     } catch (err) {
       if (err instanceof GatewayError) throw err
       const message = err instanceof Error ? err.message : String(err)

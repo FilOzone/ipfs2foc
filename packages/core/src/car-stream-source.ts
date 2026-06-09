@@ -18,6 +18,18 @@
  * delivers (or delivers wrong) falls through to a single-block `?format=raw`
  * fetch, and if that also fails or mismatches the `get` rejects loudly.
  *
+ * Gap-fill is a recovery, not a free pass: the storage provider later pulls the
+ * CAR URL, not the per-block fallback. A block recovered by gap-fill means the
+ * gateway's CAR was incomplete for this root, so the provider's pull may not
+ * reproduce the locally computed commitment. The source counts gap-fills
+ * (`gapFillCount`) so the caller can warn the operator; a transient transport
+ * blip recovers and matches on retry, but a deterministically broken CAR will
+ * fail AddPieces on chain.
+ *
+ * The reorder buffer is a HARD cap (`maxBufferedBlocks`): a non-waited block
+ * past the cap is dropped, not retained, so a reordered or gap-laden stream
+ * that keeps a waiter outstanding cannot grow the buffer to the whole DAG tail.
+ *
  * Pure module — `fetch`, `@ipld/car`, and multiformats only — so the browser
  * console can use it as-is.
  */
@@ -193,6 +205,24 @@ export class CarStreamSource implements BlockSource {
   #streamError: unknown = null
   /** Set while the pump is paused on a full buffer; called to resume it. */
   #wakePump: (() => void) | null = null
+  #gapFillCount = 0
+  #peakBuffered = 0
+
+  /**
+   * Blocks served by the single-block `?format=raw` fallback rather than the
+   * CAR stream. A non-zero count means the gateway's CAR (the bytes the storage
+   * provider later pulls from the same URL) was incomplete or corrupt for this
+   * root — the locally computed commitment may not match the provider's pull,
+   * so the caller should re-verify the gateway before submitting.
+   */
+  get gapFillCount(): number {
+    return this.#gapFillCount
+  }
+
+  /** High-water mark of the reorder buffer, for tests asserting the hard cap. */
+  get peakBuffered(): number {
+    return this.#peakBuffered
+  }
 
   constructor(gateway: string, opts: CarStreamSourceOptions = {}) {
     this.#gateway = gateway
@@ -232,7 +262,7 @@ export class CarStreamSource implements BlockSource {
     if (this.#streamEnded || this.#streamError != null) {
       return this.#gapFill(cid, options?.signal)
     }
-    const delivered = await this.#awaitBlock(key)
+    const delivered = await this.#awaitBlock(key, options?.signal)
     if (delivered != null) return delivered
     return this.#gapFill(cid, options?.signal)
   }
@@ -243,13 +273,40 @@ export class CarStreamSource implements BlockSource {
     this.#resumePump()
   }
 
-  #awaitBlock(key: string): Promise<Uint8Array | null> {
+  #awaitBlock(key: string, signal?: AbortSignal): Promise<Uint8Array | null> {
     return new Promise((resolve, reject) => {
       if (this.#controller.signal.aborted) {
         reject(abortError(this.#controller.signal))
         return
       }
+      if (signal?.aborted === true) {
+        reject(abortError(signal))
+        return
+      }
+      // The per-call signal (distinct from the source lifecycle) must also
+      // release this specific parked get — without this a shared source would
+      // hang one walk's get until the whole source closes.
       const waiter = { resolve, reject }
+      if (signal != null) {
+        const onAbort = (): void => {
+          const list = this.#waiters.get(key)
+          const i = list?.indexOf(waiter) ?? -1
+          if (list != null && i !== -1) {
+            list.splice(i, 1)
+            if (list.length === 0) this.#waiters.delete(key)
+          }
+          reject(abortError(signal))
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        waiter.resolve = (b) => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(b)
+        }
+        waiter.reject = (e) => {
+          signal.removeEventListener('abort', onAbort)
+          reject(e)
+        }
+      }
       const arr = this.#waiters.get(key)
       if (arr == null) this.#waiters.set(key, [waiter])
       else arr.push(waiter)
@@ -276,22 +333,35 @@ export class CarStreamSource implements BlockSource {
   async #pump(root: CID): Promise<void> {
     try {
       for await (const { cid, bytes } of this.#openStream(root, this.#controller.signal)) {
-        // A block whose bytes do not hash to its CID is dropped, not indexed:
-        // whoever wants it falls through to the verified gap-fill, so one bad
-        // frame never silently corrupts the commitment and never poisons the
-        // index for a different block.
-        if (!(await digestMatches(cid, bytes))) continue
+        // A block whose bytes do not hash to its CID — or whose hash function we
+        // cannot verify — is dropped, not indexed: whoever actually needs it
+        // falls through to the verified gap-fill (which re-throws loudly for an
+        // unknown hash). This localizes one bad or exotic frame instead of
+        // tearing down the whole stream, and never poisons the index.
+        let valid = false
+        try {
+          valid = await digestMatches(cid, bytes)
+        } catch {
+          valid = false
+        }
+        if (!valid) continue
         const key = blockKey(cid)
         const arr = this.#waiters.get(key)
         if (arr != null && arr.length > 0) {
           this.#waiters.delete(key)
           for (const { resolve } of arr) resolve(bytes)
-        } else if (!this.#arrived.has(key)) {
+        } else if (!this.#arrived.has(key) && this.#arrived.size < this.#maxBuffered) {
           this.#arrived.set(key, bytes)
+          if (this.#arrived.size > this.#peakBuffered) this.#peakBuffered = this.#arrived.size
         }
+        // else: a non-waited block past the buffer cap is dropped, not retained.
+        // The exporter recovers it via verified gap-fill if it asks later. This
+        // makes the cap a HARD bound: a reordered or gap-laden stream that keeps
+        // a waiter outstanding can never balloon the buffer to the whole tail.
+        //
         // Pause only while the buffer is full AND nothing is waiting; an
         // outstanding waiter means the exporter needs a block still ahead in
-        // the stream, so we must keep reading to reach it.
+        // the stream, so keep reading (dropping overflow) to reach it.
         while (
           this.#arrived.size >= this.#maxBuffered &&
           this.#waiters.size === 0 &&
@@ -316,7 +386,11 @@ export class CarStreamSource implements BlockSource {
   }
 
   async #gapFill(cid: CID, signal?: AbortSignal): Promise<Uint8Array> {
-    const bytes = await this.#fetchRaw(cid, signal ?? this.#controller.signal)
+    this.#gapFillCount++
+    // Combine the per-call signal with the source lifecycle so `close()` always
+    // tears down an in-flight raw fetch, even one started under a caller signal.
+    const combined = signal == null ? this.#controller.signal : AbortSignal.any([this.#controller.signal, signal])
+    const bytes = await this.#fetchRaw(cid, combined)
     if (!(await digestMatches(cid, bytes))) {
       throw new Error(`block ${cid} from gateway ${this.#gateway} did not match multihash from CID`)
     }

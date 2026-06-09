@@ -200,22 +200,95 @@ test('a gap-fill that returns the wrong bytes rejects on the multihash check', a
   source.close()
 })
 
+test('a stream that errors mid-DAG gap-fills the remainder, byte-identical', async () => {
+  const { blockstore, root, blocks } = await sharded()
+  const cutoff = Math.floor(blocks.length / 2)
+  // Deliver the first half, then throw — as a dropped connection would.
+  const flaky = async function* (_root: CID, _signal?: AbortSignal): AsyncIterable<Block> {
+    for (let i = 0; i < cutoff; i++) yield blocks[i]
+    throw new Error('connection reset mid-stream')
+  }
+  let rawCalls = 0
+  const source = new CarStreamSource('https://gw.example', {
+    openCarStream: flaky,
+    fetchRawBlock: async (cid) => {
+      rawCalls++
+      return blocks.find((b) => b.cid.equals(cid))?.bytes ?? new Uint8Array()
+    },
+  })
+  const reference = await concat(exportCanonicalCar(blockstore, defaultGetCodec, root))
+  const streamed = await concat(exportCanonicalCar(source, defaultGetCodec, root))
+  source.close()
+
+  assert.equal(sha(streamed), sha(reference))
+  assert.ok(rawCalls > 0, 'the truncated tail was recovered per-block')
+  assert.equal(source.gapFillCount, rawCalls, 'every gap-fill is counted for the operator warning')
+})
+
+test('an early missing block keeps the buffer hard-capped (no whole-tail blowup)', async () => {
+  const { root, blocks } = await sharded()
+  // Omit an early block so the exporter parks a waiter while the whole tail
+  // streams past. Without a hard cap the buffer would grow to the tail length.
+  const omitted = blocks[1]
+  const CAP = 4
+  const source = new CarStreamSource('https://gw.example', {
+    maxBufferedBlocks: CAP,
+    openCarStream: replay(blocks, (b) => (b.cid.equals(omitted.cid) ? null : b)),
+    fetchRawBlock: async (cid) => blocks.find((b) => b.cid.equals(cid))?.bytes ?? new Uint8Array(),
+  })
+  const reference = await concat(exportCanonicalCar(source, defaultGetCodec, root))
+  source.close()
+
+  // Sanity: the DAG is big enough that an unbounded buffer would have exceeded
+  // the cap many times over.
+  assert.ok(blocks.length > CAP * 4, `DAG too small to be meaningful: ${blocks.length}`)
+  assert.ok(source.peakBuffered <= CAP, `buffer exceeded the hard cap: ${source.peakBuffered} > ${CAP}`)
+  assert.ok(source.gapFillCount >= 1, 'the omitted block was recovered')
+  assert.ok(reference.length > 0)
+})
+
+test('a per-call signal aborts a parked get without closing the source', async () => {
+  const { root, blocks } = await sharded()
+  const perCall = new AbortController()
+  const source = new CarStreamSource('https://gw.example', {
+    // Idle after the root so the next get parks.
+    openCarStream: async function* (_root, signal) {
+      yield blocks[0]
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('stream aborted')), { once: true })
+      })
+    },
+    fetchRawBlock: async () => {
+      throw new Error('should not gap-fill on a per-call abort')
+    },
+  })
+  await source.get(root)
+  const pending = source.get(blocks[1].cid, { signal: perCall.signal })
+  perCall.abort()
+  await assert.rejects(pending, /abort/i)
+  // The source lifecycle is untouched: a fresh get for a buffered block still works.
+  source.close()
+})
+
 test('a reversed (worst-case reordered) stream still completes — no deadlock', async () => {
   const { blockstore, root, blocks } = await sharded()
   const reference = await concat(exportCanonicalCar(blockstore, defaultGetCodec, root))
   // Deliver blocks in reverse: the exporter asks for the root (last to arrive)
-  // first, so the pump must read the whole stream past the small buffer cap to
-  // reach it. Liveness comes from never pausing while a get is outstanding.
+  // first, so the pump must read the whole stream to reach it. Liveness comes
+  // from never pausing while a get is outstanding. With the buffer sized to
+  // hold the reorder, every block is served from the buffer (no gap-fill), which
+  // isolates the no-deadlock property.
   const source = new CarStreamSource('https://gw.example', {
     openCarStream: replay([...blocks].reverse()),
-    maxBufferedBlocks: 2,
+    maxBufferedBlocks: blocks.length,
     fetchRawBlock: () => {
-      throw new Error('reordering must not trigger gap-fill')
+      throw new Error('a buffer sized for the reorder must not gap-fill')
     },
   })
   const streamed = await concat(exportCanonicalCar(source, defaultGetCodec, root))
   source.close()
   assert.equal(sha(streamed), sha(reference))
+  assert.equal(source.gapFillCount, 0, 'served entirely from the buffer')
 })
 
 test('one CAR request replaces one request per block (the throughput win)', async () => {
