@@ -64,7 +64,7 @@ export async function blockToBytes(value: BlockBytes): Promise<Uint8Array> {
   return out
 }
 
-const BLOCK_RETRY_DELAYS_MS = [1_000, 2_000, 4_000]
+export const BLOCK_RETRY_DELAYS_MS = [1_000, 2_000, 4_000]
 
 /**
  * A block source for the canonical exporter that reads through `session`

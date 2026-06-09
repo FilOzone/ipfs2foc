@@ -184,6 +184,12 @@ importers:
       '@ipld/car':
         specifier: ^5.4.0
         version: 5.4.6
+      '@ipld/dag-cbor':
+        specifier: ^9.2.7
+        version: 9.2.7
+      '@ipld/dag-pb':
+        specifier: ^4.1.7
+        version: 4.1.7
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0

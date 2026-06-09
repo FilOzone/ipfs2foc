@@ -26,6 +26,18 @@ export const DEFAULT_GATEWAYS = ['https://trustless-gateway.link']
 
 export const CAR_ACCEPT = 'application/vnd.ipld.car'
 
+export const RAW_ACCEPT = 'application/vnd.ipld.raw'
+
+/**
+ * Build the trustless-gateway raw-block URL for a CID — the per-block
+ * counterpart of {@link buildCarUrl}, used when a single block is fetched
+ * outside a CAR stream (gap fill, retries).
+ */
+export function buildRawBlockUrl(gateway: string, cid: string): string {
+  const base = gateway.replace(/\/+$/, '')
+  return `${base}/ipfs/${cid}?format=raw`
+}
+
 /**
  * Build the canonical trustless-CAR URL for a CID. The query string pins every
  * variable the trustless-gateway spec exposes so byte output is reproducible
