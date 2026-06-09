@@ -3,9 +3,10 @@
  * stream, while verifying the CAR is rooted at the expected CID.
  *
  * The CAR bytes come from the block-verified canonical path
- * (`gateway-blocks.ts`): blocks retrieved individually from the configured
- * gateway, hash-checked, and serialized locally — never a raw gateway
- * response, which can end early at a block boundary and still parse cleanly.
+ * (`gateway-blocks.ts`): the DAG is pulled over one streaming CAR request,
+ * every block hash-checked, and the canonical CAR serialized locally — never a
+ * raw gateway response, which can end early at a block boundary and still
+ * parse cleanly.
  *
  * The hash is computed in a single streaming pass — the CAR bytes are never
  * fully buffered — so this scales to large pieces with bounded memory. This is
