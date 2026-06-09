@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.2.0](https://github.com/SgtPooki/ipfs2foc/compare/ipfs2foc-v0.1.0...ipfs2foc-v0.2.0) (2026-06-09)
+
+
+### Features
+
+* import a browser run manifest into the DB ([12485be](https://github.com/SgtPooki/ipfs2foc/commit/12485be33659f6b82566f9e890bea85a18659bc9)), closes [#35](https://github.com/SgtPooki/ipfs2foc/issues/35)
+* `--source-relay` to drive the shared redirect relay ([ea3c850](https://github.com/SgtPooki/ipfs2foc/commit/ea3c85011b2db8460fc97e1a3001877a3b8dfee5))
+* default to trustless-gateway.link only ([ea7cbc5](https://github.com/SgtPooki/ipfs2foc/commit/ea7cbc58382c39983e96d167ba590e28eade6477))
+* verified-fetch on the IPFS fallback path ([a43b08f](https://github.com/SgtPooki/ipfs2foc/commit/a43b08f7787ed3b400803dbc465c6ba728a18c54))
+* serve dashboard: next-steps panel for the on-chain commit ([55a40bb](https://github.com/SgtPooki/ipfs2foc/commit/55a40bb584288669e58e12c6be34a4c7885c12d2))
+* serve dashboard: state-aware controls and gas-off label ([6316faf](https://github.com/SgtPooki/ipfs2foc/commit/6316faf77c4dc776506a37edc054c0a19f1350e7))
+* redesign the serve dashboard as an instrument panel ([dba6bf1](https://github.com/SgtPooki/ipfs2foc/commit/dba6bf1b78b2dff52750d35897ac75fe743a8232))
+
+
+### Bug Fixes
+
+* enable the dashboard Start button only when work is pending ([563a1ad](https://github.com/SgtPooki/ipfs2foc/commit/563a1ad0b6758b88680d1d916a6631acb8cd4a99))
+
+
+### Performance Improvements
+
+* prepare streams one CAR per root instead of one request per block ([61d7809](https://github.com/SgtPooki/ipfs2foc/commit/61d7809219ec2d597aed5f24b015a8f7f1b8f09d))
+* lookahead CAR export for the IPFS fallback ([2fc9146](https://github.com/SgtPooki/ipfs2foc/commit/2fc9146c457b462d7b50977d56818d9a6d14ef30))
+
+
 ## [0.1.0](https://github.com/SgtPooki/ipfs2foc/compare/ipfs2foc-v0.0.1...ipfs2foc-v0.1.0) (2026-06-04)
 
 
