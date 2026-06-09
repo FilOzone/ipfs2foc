@@ -8,6 +8,7 @@
     ".": "./src/car-url.ts",
     "./block-source": "./src/block-source.ts",
     "./car-export": "./src/car-export.ts",
+    "./capabilities": "./src/capabilities.ts",
     "./car-stream-source": "./src/car-stream-source.ts",
     "./manifest": "./src/manifest.ts",
     "./min-piece-guard": "./src/min-piece-guard.ts",
