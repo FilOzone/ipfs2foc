@@ -5,6 +5,7 @@
 
 ### Features
 
+* run manifest export, unified in core ([422760e](https://github.com/SgtPooki/ipfs2foc/commit/422760eb3e5452caf987e28059f678a49c40813a))
 * import a browser run manifest into the DB ([12485be](https://github.com/SgtPooki/ipfs2foc/commit/12485be33659f6b82566f9e890bea85a18659bc9)), closes [#35](https://github.com/SgtPooki/ipfs2foc/issues/35)
 * `--source-relay` to drive the shared redirect relay ([ea3c850](https://github.com/SgtPooki/ipfs2foc/commit/ea3c85011b2db8460fc97e1a3001877a3b8dfee5))
 * default to trustless-gateway.link only ([ea7cbc5](https://github.com/SgtPooki/ipfs2foc/commit/ea7cbc58382c39983e96d167ba590e28eade6477))
