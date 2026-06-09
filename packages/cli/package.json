@@ -25,12 +25,14 @@
   },
   "files": [
     "dist",
+    "app-dist",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "start": "node src/index.ts",
-    "build": "tsc --noEmit && tsup",
+    "build": "tsc --noEmit && tsup && pnpm run build:app",
+    "build:app": "VITE_BASE=/ pnpm -C ../../app exec vite build --outDir ../packages/cli/app-dist --emptyOutDir",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "prepack": "pnpm run build"

@@ -195,9 +195,10 @@ ipfs2foc analyze [--cids cids.txt] [--db migrate.db] [--car-store <dir>] [--gate
   [--sample 100|--all] [--probe-concurrency 8] [--bw-target URL] \
   [--network mainnet|calibration] [--json]
 
-# Background daemon + browser dashboard (start/pause/resume, add CIDs, add gateways)
+# Background daemon + browser console (start/pause/resume, add CIDs, add gateways)
 ipfs2foc serve [--db migrate.db] [--cids cids.txt] [--gateway URL]... \
-  [--port 4321] [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
+  [--port 4321] [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N] \
+  [--app-dir <dir>]
 
 # Current network base fee and whether to pause submission
 ipfs2foc gas [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee 1000000]
@@ -242,13 +243,22 @@ same way: `import-manifest` the saved manifest, then `pdp-submit
 --source-relay` — the provider pulls each piece through the relay, so no
 redirect server of your own is needed.
 
-### Dashboard
+### Console
 
 `serve` starts an HTTP server (default `http://localhost:4321`) that runs the commP pass
-in the background and shows live progress: piece counts, the aggregate plan with each
-aggregate's status and parent CID, parked-but-uncommitted count, and failures. Controls:
-start, pause, resume, retry failed, add CIDs (`POST /api/cids`), set gateways
-(`POST /api/gateways`). All state lives in the DB, so the process can stop and resume.
+in the background and serves the bundled [browser console](docs/browser-console.md) as
+its control plane: live piece counts, the aggregate plan with each aggregate's status
+and parent CID, parked-but-uncommitted count, and failures. Controls: start, pause,
+resume, retry failed, add CIDs (`POST /api/cids`), set gateways (`POST /api/gateways`).
+All state lives in the DB, so the process can stop and resume.
+
+The console asks `GET /api/capabilities` on load to discover what the backend can do;
+the hosted copy of the same app gets a 404 there and falls back to its in-browser
+prepare + signing flow. The server binds loopback only and rejects cross-origin
+mutations. During development, point `serve` at a freshly built console with
+`--app-dir ../../app/dist` or the `IPFS2FOC_APP_DIR` environment variable (build it
+with base `/`, the way `pnpm -C packages/cli build` does — a GitHub Pages build uses
+a different base path and will not load).
 
 ## Recovery commands
 

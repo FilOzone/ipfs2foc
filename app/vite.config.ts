@@ -20,7 +20,9 @@ const CSP = [
   // data: — Vite inlines small font subsets (assetsInlineLimit) as data: URIs.
   "font-src 'self' data:",
   "img-src 'self' data:",
-  'connect-src https: wss:',
+  // 'self' — the CLI `serve` command hosts this same build over plain-http
+  // localhost; its /api control plane would otherwise be unreachable.
+  "connect-src 'self' https: wss:",
   "worker-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
@@ -41,8 +43,10 @@ function injectCsp(): PluginOption {
 }
 
 // Project Pages serves under /<repo>/ — keep this in sync with the repo name.
+// The CLI bundles a second build served at / (VITE_BASE=/, see the CLI build
+// script); the default stays the Pages path so the deploy workflow needs no env.
 export default defineConfig({
-  base: '/ipfs2foc/',
+  base: process.env.VITE_BASE ?? '/ipfs2foc/',
   plugins: [react(), injectCsp()],
   build: { target: 'es2022', outDir: 'dist', sourcemap: false },
   // The commP worker imports the WASM fr32 hasher, which uses top-level await —

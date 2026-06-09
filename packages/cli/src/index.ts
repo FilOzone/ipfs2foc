@@ -9,7 +9,7 @@
  *   import-manifest FILE [--db FILE] [opts] Load a browser-console run manifest as done pieces (recomputes nothing).
  *   export  [--db FILE] [--out FILE] [opts] Write the DB's prepared pieces as a run manifest (round-trips to the browser).
  *   status  [--db FILE]                     Report progress and the aggregate plan.
- *   serve   [--db FILE] [opts]              Background commP runner + dashboard.
+ *   serve   [--db FILE] [opts]              Background commP runner + browser console.
  *   gas     [--network N] [opts]            Current network base fee and whether to pause.
  *   redirect-serve [--db FILE] [--port N] [--ingress funnel|cloudflared]   GET /piece/{pcidv2} -> 302 gateway CAR.
  *   create-data-set --provider-id ID [opts] Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env).
@@ -62,6 +62,7 @@ Usage:
   ipfs2foc status [--db <file>] [--json]
   ipfs2foc serve  [--db <file>] [--cids <file>] [--gateway URL]... [--piece-size 32GiB]
                      [--concurrency 8] [--port 4321] [--network mainnet|calibration] [--max-base-fee N]
+                     [--app-dir <dir>]  (or IPFS2FOC_APP_DIR; defaults to the bundled console)
   ipfs2foc gas    [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
   ipfs2foc redirect-serve [--db <file>] [--port 4322] [--ingress funnel|cloudflared]
   ipfs2foc create-data-set --provider-id <id> [--network mainnet|calibration] [--cdn]
@@ -785,6 +786,7 @@ async function cmdServe(argv: string[]): Promise<void> {
       concurrency: { type: 'string', default: '8' },
       port: { type: 'string', default: '4321' },
       network: { type: 'string' },
+      'app-dir': { type: 'string' },
       'rpc-url': { type: 'string' },
       'max-base-fee': { type: 'string' },
       'ipfs-fallback': { type: 'boolean', default: false },
@@ -793,8 +795,17 @@ async function cmdServe(argv: string[]): Promise<void> {
     },
   })
 
+  // Network feeds /api/capabilities (and the console's command hints). The gas
+  // monitor below keys off the RAW flag on purpose: it stays opt-in, so the
+  // mainnet default here must not switch on RPC polling.
+  const network = (values.network as string | undefined) ?? 'mainnet'
+  if (network !== 'mainnet' && network !== 'calibration') {
+    throw new Error(`unknown --network ${network} (expected mainnet|calibration)`)
+  }
+  log(`network: ${network}`)
+
   const db = new MigrationDB(values.db as string)
-  // Seed CIDs if a list was provided; otherwise add them later via the dashboard.
+  // Seed CIDs if a list was provided; otherwise add them later via the console.
   if (values.cids != null) {
     db.addCids(parseCidList(await readFile(values.cids, 'utf8')))
   }
@@ -808,7 +819,7 @@ async function cmdServe(argv: string[]): Promise<void> {
     fallbackTimeoutMs: fallback.fallbackTimeoutMs,
   })
 
-  // Enable base-fee monitoring on the dashboard when a network or RPC is given.
+  // Enable base-fee monitoring on the console when a network or RPC is given.
   const gas =
     values.network != null || values['rpc-url'] != null
       ? {
@@ -816,9 +827,16 @@ async function cmdServe(argv: string[]): Promise<void> {
           maxBaseFee: values['max-base-fee'] == null ? DEFAULT_MAX_BASE_FEE : BigInt(values['max-base-fee']),
         }
       : undefined
-  startServer(db, runner, parsePositiveInt(values.port as string, '--port'), gas)
-  // Server keeps the process alive; the runner starts via the dashboard/API.
-  log(`Loaded ${db.counts().pending} pending CID(s). Press Start in the dashboard (or POST /api/start).`)
+  await startServer({
+    db,
+    runner,
+    port: parsePositiveInt(values.port as string, '--port'),
+    network,
+    appDir: (values['app-dir'] as string | undefined) ?? process.env.IPFS2FOC_APP_DIR,
+    gas,
+  })
+  // Server keeps the process alive; the runner starts via the console/API.
+  log(`Loaded ${db.counts().pending} pending CID(s). Press Start in the console (or POST /api/start).`)
 }
 
 async function main(): Promise<void> {

@@ -21,6 +21,7 @@ out/
 
 # build output
 dist/
+packages/cli/app-dist/
 
 # wrangler local dev state (relay/)
 .wrangler/
