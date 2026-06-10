@@ -14,7 +14,10 @@ once to compute its piece commitment and stores none of the payload.
 
 To run a passthrough migration with nothing installed — prepare and submit —
 use the [browser console](docs/browser-console.md) —
-[sgtpooki.github.io/ipfs2foc](https://sgtpooki.github.io/ipfs2foc/).
+[sgtpooki.github.io/ipfs2foc](https://sgtpooki.github.io/ipfs2foc/). When a
+run outgrows the tab, `ipfs2foc serve` runs the same console against a
+[local daemon](docs/local-console.md); headless automation uses the
+[CLI commands](#commands) directly.
 
 ## Contents
 
@@ -27,7 +30,7 @@ use the [browser console](docs/browser-console.md) —
 - [Troubleshooting](#troubleshooting)
 - [How it works](#how-it-works)
 - [Aggregate lifecycle and park/commit safety](#aggregate-lifecycle-and-parkcommit-safety)
-- [Public ingress for the redirect server](#public-ingress-for-the-redirect-server)
+- [Public ingress for provider pulls](#public-ingress-for-provider-pulls)
 - [Network gas and payments](#network-gas-and-payments)
 - [State](#state)
 - [Scope and limits](#scope-and-limits)
@@ -375,7 +378,7 @@ download far more than is then committed, and it pauses when the network base fe
 Repacking touches only `planned` aggregates. Once an aggregate is `submitted` or beyond,
 its index and members are frozen, and its CIDs are excluded from future packing.
 
-## Public ingress for the redirect server
+## Public ingress for provider pulls
 
 `redirect-serve` needs a public HTTPS URL resolving to a public IP. Two
 built-in paths:
@@ -463,9 +466,10 @@ The [`docs/`](docs/README.md) folder is organized by [Diátaxis](https://diataxi
 
 - **Tutorial** — [your first migration on calibration](docs/tutorial-first-migration.md),
   one CID end-to-end with a checkpoint at every step.
-- **How-to** — [operator profiles](docs/personas.md) (disk/bandwidth/time budgets →
-  knob settings, failure modes, recovery), [choosing a gateway](docs/sources.md),
-  [public ingress](docs/ingress.md).
+- **How-to** — [the hosted console](docs/browser-console.md),
+  [the local console](docs/local-console.md), [operator profiles](docs/personas.md)
+  (disk/bandwidth/time budgets → knob settings, failure modes, recovery),
+  [choosing a gateway](docs/sources.md), [public ingress](docs/ingress.md).
 - **Reference** — [command reference](#commands) and [glossary](docs/glossary.md).
 - **Explanation** — [how it works](#how-it-works),
   [gas and payments](#network-gas-and-payments), [scope and limits](#scope-and-limits).

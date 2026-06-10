@@ -14,14 +14,18 @@ for how-to guides and reference once you are running real migrations.
 - [Migrate in the browser](browser-console.md) — the hosted console: paste
   CIDs, get commitments, and submit to providers with a scoped signing
   session. No install, no key material on the page.
+- [Migrate with the local console](local-console.md) — the same console served
+  by `ipfs2foc serve`: server-side commP, assembled pieces, and wallet-signed
+  submission that survives a closed tab. When to move here from the hosted
+  console, and how a run carries over.
 - [Operator profiles](personas.md) — map disk, bandwidth, and time budgets to
   `--max-in-flight`, `--piece-size`, and ingress choices, with per-profile
   failure modes and recovery.
 - [Choosing a source gateway](sources.md) — per-provider notes and the `probe`
   check for deterministic trustless CARs.
-- [Public ingress for `redirect-serve`](ingress.md) — Cloudflare quick tunnel,
-  Tailscale Funnel, or a VPS reverse proxy, and the public-HTTPS shape the
-  provider validates.
+- [Public ingress for provider pulls](ingress.md) — Cloudflare quick tunnel,
+  Tailscale Funnel, or a VPS reverse proxy, for `serve` or `redirect-serve`,
+  and the public-HTTPS shape the provider validates.
 - [Recover a stuck run](../README.md#recovery-commands) — re-arm failed or
   unconfirmed aggregates.
 

@@ -1,4 +1,4 @@
-# Public ingress for the redirect server
+# Public ingress for provider pulls
 
 `redirect-serve` needs a public HTTPS URL that resolves to a public, routable
 IP. The provider's PDP pull fetches `<source-base>/piece/{pcidv2}`, follows

@@ -89,9 +89,16 @@ does not sleep mid-run, and closing the tab asks for confirmation first.
 Closing is still safe: providers finish in-flight pulls and submitted
 commits on their own, and only new submissions wait for the tab to return.
 
-## When to use the CLI instead
+## When a run outgrows the tab
 
-Bulk runs, assembled (multi-asset) pieces, and submission with a headless key
-stay with the [CLI](../README.md). The browser console covers the
-one-CID-one-piece passthrough case. The two compose: prepare in the console,
-then `import-manifest` the saved run and submit from the CLI.
+The hosted console covers the one-CID-one-piece passthrough case. Two steps
+up from it:
+
+- The [local console](local-console.md) — the same app served by
+  `ipfs2foc serve` — moves commP and submission onto your machine: it uses
+  local cores and disk, serves assembled (multi-asset) pieces, and keeps
+  submitting after the tab closes, still signing with a wallet-granted
+  session instead of a raw key. A saved manifest (`import-manifest`) carries
+  a hosted run over.
+- The [headless CLI](../README.md) signs with `PRIVATE_KEY` for automation
+  and bulk runs that should not involve a browser at all.

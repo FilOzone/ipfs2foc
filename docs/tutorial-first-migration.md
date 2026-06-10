@@ -8,7 +8,9 @@ something you can check before moving on.
 For the production flow and the knob settings behind it, see the
 [README quickstart](../README.md#quickstart) and
 [operator profiles](personas.md). This tutorial trades those choices for a fixed,
-known-good path.
+known-good path. If you would rather click than type — or sign with a wallet
+instead of exporting a key — the [local console](local-console.md) covers the
+same flow.
 
 ## Before you start
 

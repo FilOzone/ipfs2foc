@@ -46,12 +46,41 @@ behalf:
   possession; the migrator's signature authorizes them. See
   [Network gas and payments](README.md#network-gas-and-payments).
 
+## Session keys
+
+The browser consoles (hosted and local) never see `PRIVATE_KEY`. They sign
+with a session key instead: a fresh secp256k1 key the wallet authorizes on
+chain with one transaction, scoped to exactly two operations — creating data
+sets and adding pieces — and an explicit expiry the operator picks (24 hours
+to 7 days, extendable in place). It cannot move funds, remove pieces, or
+delete data sets; spending limits still come from the wallet's USDFC deposit
+and operator approval. Revoking it (one transaction, from the console) ends
+the authorization for anything a provider has not already landed.
+
+Where the key material lives:
+
+- **Hosted console** — encrypted at rest in the browser's IndexedDB, keyed to
+  the wallet and network. Browser storage is not a defense against someone
+  with access to the OS profile; the on-chain scope, expiry, and revocation
+  are the real controls.
+- **Local console** (`serve`) — the browser hands the key to the daemon over
+  the loopback connection, and the daemon stores it in the migration database
+  so an interrupted submit resumes after a restart. The daemon verifies the
+  grant on chain before accepting, never logs the key, and never returns it
+  from any API. Treat a `migrate.db` with an unexpired session like the
+  scoped credential it contains: `DELETE /api/session` (or the console's
+  Revoke) removes it.
+
+The `serve` API binds 127.0.0.1 and rejects requests whose Host or Origin is
+not local, so neither a public tunnel in front of `/piece` nor a foreign web
+page reaches the session endpoints.
+
 ## Data handling
 
 ipfs2foc streams each object once to compute its piece commitment and stores no
 payload bytes. The SQLite database holds CIDs, piece commitments, the aggregate
-plan, and per-aggregate lifecycle (data set id, transaction hash). The
+plan, per-aggregate lifecycle (data set id, transaction hash), and — for the
+local console only — the scoped session key described above. The
 `redirect-serve` HTTP server answers 302 redirects to gateway CARs (passthrough
 sub-pieces) or byte-serves assembled CAR files (multi-asset sub-pieces) from
 `--car-store`; it carries no key material.
-</content>
