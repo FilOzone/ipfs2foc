@@ -124,6 +124,9 @@ export default function App({ caps }: { caps: Capabilities }) {
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitBlocked, setSubmitBlocked] = useState<SubmitBlockedError['reason'] | null>(null)
+  // PieceCIDs the provider refused as too small — drives the recovery offers
+  // (submit the rest now, download a manifest of just the remainder).
+  const [tooSmallCids, setTooSmallCids] = useState<string[] | null>(null)
   const [resumable, setResumable] = useState<SavedSubmit | null>(null)
   // Completed pieces by input CID — the write-through copy of what run-store
   // persists, and the source for skip-on-resume in run().
@@ -276,31 +279,44 @@ export default function App({ caps }: { caps: Capabilities }) {
     }
   }, [wallet, onCalibration, results])
 
-  const submit = useCallback(async () => {
-    if (wallet == null || session == null || results.length === 0) return
-    setSubmitError(null)
-    setSubmitBlocked(null)
-    setSubmitting(true)
-    try {
-      const prior = await findResumableSubmit(wallet, TARGET_NETWORK, results)
-      const finished = await runSubmit({
-        wallet,
-        network: TARGET_NETWORK,
-        session,
-        pieces: results,
-        copies: prior?.copies ?? copies,
-        prior,
-        onUpdate: setSubmitState,
-      })
-      setResumable(await findResumableSubmit(wallet, TARGET_NETWORK, results))
-      return finished
-    } catch (err) {
-      if (err instanceof SubmitBlockedError) setSubmitBlocked(err.reason)
-      setSubmitError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSubmitting(false)
-    }
-  }, [wallet, session, results, copies])
+  const submitWith = useCallback(
+    async (excludePieceCids: string[] | null) => {
+      if (wallet == null || session == null || results.length === 0) return
+      const pieces = excludePieceCids == null ? results : results.filter((r) => !excludePieceCids.includes(r.pieceCid))
+      if (pieces.length === 0) return
+      setSubmitError(null)
+      setSubmitBlocked(null)
+      setSubmitting(true)
+      try {
+        const prior = await findResumableSubmit(wallet, TARGET_NETWORK, pieces)
+        const finished = await runSubmit({
+          wallet,
+          network: TARGET_NETWORK,
+          session,
+          pieces,
+          copies: prior?.copies ?? copies,
+          prior,
+          onUpdate: setSubmitState,
+        })
+        setResumable(await findResumableSubmit(wallet, TARGET_NETWORK, pieces))
+        return finished
+      } catch (err) {
+        if (err instanceof SubmitBlockedError) {
+          setSubmitBlocked(err.reason)
+          if (err.reason === 'piece-too-small') setTooSmallCids(err.pieceCids ?? null)
+        }
+        setSubmitError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setSubmitting(false)
+      }
+    },
+    [wallet, session, results, copies]
+  )
+
+  const submit = useCallback(() => void submitWith(null), [submitWith])
+  // The recovery offer after a too-small block: submit only the items the
+  // provider accepts; the remainder continues through the local path.
+  const submitEligible = useCallback(() => void submitWith(tooSmallCids), [submitWith, tooSmallCids])
 
   const discardSubmit = useCallback(() => {
     void clearSubmit()
@@ -308,6 +324,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     setSubmitState(null)
     setSubmitError(null)
     setSubmitBlocked(null)
+    setTooSmallCids(null)
   }, [])
 
   const extend = useCallback(async () => {
@@ -461,6 +478,26 @@ export default function App({ caps }: { caps: Capabilities }) {
       })
     )
   }, [results, relayBase, gateway])
+
+  // Manifest of only the items a provider refused as too small — the exact
+  // input the local packing path needs, without re-submitting what already
+  // committed here.
+  const saveRemainderManifest = useCallback(() => {
+    if (tooSmallCids == null) return
+    const small = results.filter((r) => tooSmallCids.includes(r.pieceCid))
+    downloadManifest(
+      buildManifest(small, {
+        tool: 'ipfs2foc-app',
+        network: TARGET_NETWORK,
+        relayBase,
+        gateway,
+        now: new Date().toISOString(),
+      })
+    )
+  }, [tooSmallCids, results, relayBase, gateway])
+
+  const eligibleCount = tooSmallCids == null ? 0 : results.filter((r) => !tooSmallCids.includes(r.pieceCid)).length
+  const queuedCount = rows.filter((r) => r.state.phase === 'queued').length
 
   return (
     <div className="shell">
@@ -693,7 +730,15 @@ export default function App({ caps }: { caps: Capabilities }) {
                     </span>
                   ) : r.state.phase === 'error' ? (
                     <span className="err-text" title={r.state.detail}>
-                      {short(r.state.message, 44, 0)}
+                      {short(r.state.message, 44, 0)}{' '}
+                      <a
+                        href={`https://check.ipfs.network/?cid=${r.cid}`}
+                        rel="noreferrer"
+                        target="_blank"
+                        title="probe this CID's providers and retrievability on the public network"
+                      >
+                        check availability
+                      </a>
                     </span>
                   ) : r.state.phase === 'working' ? (
                     <span className="working">
@@ -728,7 +773,19 @@ export default function App({ caps }: { caps: Capabilities }) {
           {errors > 0 && (
             <p className="gate-note">
               finished rows are kept — Prepare and per-row retry recompute only what failed. hover a failure for the
-              full error.
+              full error; "check availability" shows whether the network can serve that CID at all.
+            </p>
+          )}
+          {!running && queuedCount > 0 && rows.length > 0 && (
+            <p className="gate-note">
+              {queuedCount} item{queuedCount === 1 ? '' : 's'} not prepared yet — press Prepare to continue; it picks up
+              exactly where the run stopped and never recomputes a finished row.
+            </p>
+          )}
+          {running && (
+            <p className="gate-note">
+              reloading is safe at any point: finished rows are restored from this browser and Prepare resumes the rest.
+              items stuck at a few KiB usually mean the source network is struggling to serve that CID.
             </p>
           )}
           {results.length > 0 && (
@@ -854,6 +911,56 @@ export default function App({ caps }: { caps: Capabilities }) {
                     </>
                   )}
                 </p>
+              )}
+              {submitBlocked === 'piece-too-small' && !submitting && tooSmallCids != null && (
+                <div className="gate-note">
+                  <p>
+                    Items below the minimum ship through the local migration path, which packs them into pieces the
+                    provider accepts — still signed by your wallet, no exported key. Two-part plan:
+                  </p>
+                  <div className="actions">
+                    {eligibleCount > 0 && (
+                      <button className="btn small" onClick={submitEligible} type="button">
+                        Submit the {eligibleCount} item{eligibleCount === 1 ? '' : 's'} above the minimum now
+                      </button>
+                    )}
+                    <button className="btn small" onClick={saveRemainderManifest} type="button">
+                      Download manifest of the {tooSmallCids.length} small item{tooSmallCids.length === 1 ? '' : 's'}
+                    </button>
+                  </div>
+                  <p>
+                    Then, with that manifest and{' '}
+                    <a href="https://nodejs.org" rel="noreferrer" target="_blank">
+                      Node 26+
+                    </a>
+                    :
+                  </p>
+                  <ol className="steps">
+                    <li>
+                      <code>
+                        npx ipfs2foc import-manifest manifest.json --db migrate.db --network {TARGET_NETWORK}{' '}
+                        --no-auto-pack
+                      </code>
+                    </li>
+                    <li>
+                      <code>npx ipfs2foc pack-cars --db migrate.db --car-store ./cars</code>
+                    </li>
+                    <li>
+                      <code>npx ipfs2foc serve --db migrate.db --ingress cloudflared --network {TARGET_NETWORK}</code> —
+                      open the printed console, grant a signing session, press Submit
+                    </li>
+                  </ol>
+                  <p>
+                    <a
+                      href="https://github.com/SgtPooki/ipfs2foc/blob/main/docs/local-console.md"
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      Local console guide
+                    </a>{' '}
+                    — nothing is lost: anything committed here stays committed, and the manifest carries the rest over.
+                  </p>
+                </div>
               )}
               {allCommitted && !submitting && (
                 <p className="gate-note">

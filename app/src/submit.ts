@@ -59,10 +59,13 @@ export interface SubmitState {
  */
 export class SubmitBlockedError extends Error {
   readonly reason: 'session-margin' | 'piece-too-small'
-  constructor(message: string, reason: SubmitBlockedError['reason']) {
+  /** For 'piece-too-small': the offending PieceCIDs, so the UI can offer to submit the rest. */
+  readonly pieceCids?: string[]
+  constructor(message: string, reason: SubmitBlockedError['reason'], pieceCids?: string[]) {
     super(message)
     this.name = 'SubmitBlockedError'
     this.reason = reason
+    this.pieceCids = pieceCids
   }
 }
 
@@ -241,10 +244,18 @@ export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
     if (!check.ok) {
       state.running = false
       emit()
-      const names = check.tooSmall.map((t) => t.pieceCid).join(', ')
+      // Operator-facing: name the problem in sizes, not a wall of piece CIDs —
+      // the UI pairs this with the packing walkthrough (the actual next step).
+      const sample = check.tooSmall
+        .slice(0, 3)
+        .map((t) => t.pieceCid)
+        .join(', ')
+      const more = check.tooSmall.length > 3 ? ` … and ${check.tooSmall.length - 3} more` : ''
+      const minMiB = Number(check.minPieceSize) / 1048576
       throw new SubmitBlockedError(
-        `${check.tooSmall.length} piece(s) below provider ${c.providerId} minimum of ${check.minPieceSize} bytes (padded): ${names}`,
-        'piece-too-small'
+        `${check.tooSmall.length} of ${parsed.length} items are smaller than this provider's ${minMiB % 1 === 0 ? minMiB : minMiB.toFixed(1)} MiB minimum piece size: ${sample}${more}`,
+        'piece-too-small',
+        check.tooSmall.map((t) => t.pieceCid)
       )
     }
   }

@@ -24,6 +24,10 @@ provider pulls through the shared relay.
 
 Move to the local console when a run outgrows the tab:
 
+- **Small items** — providers enforce a minimum piece size (typically 1 MiB
+  padded), and the hosted passthrough flow commits one piece per CID.
+  `pack-cars` groups small items into multi-root CARs above the minimum, and
+  the local daemon byte-serves them to the provider.
 - **Scale** — server-side commP uses the machine's cores and disk, not a
   browser tab that must stay open. State lives in a SQLite file, so the run
   survives reboots and resumes from where it stopped.

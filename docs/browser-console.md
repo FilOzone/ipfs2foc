@@ -91,8 +91,12 @@ commits on their own, and only new submissions wait for the tab to return.
 
 ## When a run outgrows the tab
 
-The hosted console covers the one-CID-one-piece passthrough case. Two steps
-up from it:
+The hosted console covers the one-CID-one-piece passthrough case. The most
+common reason to leave it: **items smaller than the provider's minimum piece
+size** (typically 1 MiB padded). Passthrough commits one piece per CID, so
+small items are refused at submit — the console then offers to submit the
+large ones and hands you a manifest of the remainder plus the exact commands
+for the local packing path. Two steps up from the tab:
 
 - The [local console](local-console.md) — the same app served by
   `ipfs2foc serve` — moves commP and submission onto your machine: it uses
