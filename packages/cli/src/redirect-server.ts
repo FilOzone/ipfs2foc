@@ -11,6 +11,9 @@
  * Run it behind any public HTTPS ingress (Tailscale Funnel, Cloudflared, a
  * VPS). The public base URL is passed to `submit` as the pull source base;
  * this server only needs to be reachable by the provider.
+ *
+ * The piece handler itself is shared with the `serve` daemon, which mounts the
+ * same `/piece/{pcidv2}` route next to its console and control-plane API.
  */
 
 import { createReadStream } from 'node:fs'
@@ -20,11 +23,11 @@ import type { MigrationDB } from './db.ts'
 import { CAR_ACCEPT } from './gateway.ts'
 import { log } from './util.ts'
 
-const PIECE_PATH = /^\/piece\/([^/]+)$/
+export const PIECE_PATH = /^\/piece\/([^/]+)$/
 
 /**
- * Shared request handler. Used by the plain Funnel/VPS path here and by any
- * other ingress that exposes its own HTTPS surface (e.g. cloudflared).
+ * Answer one `/piece/{pcidv2}` request (GET or HEAD — providers and monitors
+ * probe pull URLs with HEAD, and a 302 carries no body anyway).
  *
  * Two dispatch paths:
  *   - The piece commitment matches a packed multi-asset sub-piece: stream the
@@ -35,56 +38,79 @@ const PIECE_PATH = /^\/piece\/([^/]+)$/
  *     CAR (the path the migrator has always taken). The provider's pull
  *     follows the cross-origin redirect and downloads from the gateway
  *     directly.
+ *
+ * Never rejects: errors are answered (or logged once headers are out) here,
+ * so a caller's catch-all cannot double-write headers.
+ */
+export async function handlePieceRequest(
+  db: MigrationDB,
+  pieceCid: string,
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
+  // One lookup. Every piece commitment in the schema is a sub-piece —
+  // passthrough sub-pieces carry the gateway URL, assembled sub-pieces
+  // carry the CAR file path. The branch picks the response shape.
+  const subPiece = db.subPieceByCid(pieceCid)
+  if (subPiece == null || subPiece.status !== 'built') {
+    res.writeHead(404, { 'content-type': 'text/plain' })
+    res.end(subPiece == null ? 'unknown piece' : 'sub-piece not built')
+    return
+  }
+
+  if (subPiece.carPath != null) {
+    try {
+      await serveAssembledCar(res, subPiece.carPath, subPiece.assembledCarLength, req.method === 'HEAD')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      log(`serve ${pieceCid}: ${message}`)
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'text/plain' })
+        res.end('assembled car read failed')
+      } else if (!res.writableEnded) {
+        res.destroy()
+      }
+    }
+    return
+  }
+
+  if (subPiece.url != null) {
+    // 302 to the upstream gateway CAR. no-store keeps intermediaries from
+    // pinning the redirect, so each provider pull resolves freshly.
+    res.writeHead(302, { location: subPiece.url, 'cache-control': 'no-store' })
+    res.end()
+    return
+  }
+
+  // Should be unreachable given the CHECK ((car_path IS NULL) != (url IS NULL)).
+  res.writeHead(500, { 'content-type': 'text/plain' })
+  res.end('sub-piece has neither car_path nor url')
+}
+
+/**
+ * Shared request handler. Used by the plain Funnel/VPS path here and by any
+ * other ingress that exposes its own HTTPS surface (e.g. cloudflared).
  */
 export function makeRedirectHandler(db: MigrationDB): (req: IncomingMessage, res: ServerResponse) => void {
   return (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
+    const isRead = req.method === 'GET' || req.method === 'HEAD'
 
     // Health check for ingress probes.
-    if (url.pathname === '/healthz') {
+    if (url.pathname === '/healthz' && isRead) {
       res.writeHead(200, { 'content-type': 'text/plain' })
-      res.end('ok')
+      res.end(req.method === 'HEAD' ? undefined : 'ok')
       return
     }
 
     const match = PIECE_PATH.exec(url.pathname)
-    if (req.method !== 'GET' || match == null) {
+    if (!isRead || match == null) {
       res.writeHead(404, { 'content-type': 'text/plain' })
       res.end('not found')
       return
     }
 
-    const pieceCid = match[1]
-
-    // One lookup. Every piece commitment in the schema is a sub-piece —
-    // passthrough sub-pieces carry the gateway URL, assembled sub-pieces
-    // carry the CAR file path. The branch picks the response shape.
-    const subPiece = db.subPieceByCid(pieceCid)
-    if (subPiece == null || subPiece.status !== 'built') {
-      res.writeHead(404, { 'content-type': 'text/plain' })
-      res.end(subPiece == null ? 'unknown piece' : 'sub-piece not built')
-      return
-    }
-
-    if (subPiece.carPath != null) {
-      serveAssembledCar(res, subPiece.carPath, subPiece.assembledCarLength).catch((err) => {
-        const message = err instanceof Error ? err.message : String(err)
-        log(`serve ${pieceCid}: ${message}`)
-      })
-      return
-    }
-
-    if (subPiece.url != null) {
-      // 302 to the upstream gateway CAR. no-store keeps intermediaries from
-      // pinning the redirect, so each provider pull resolves freshly.
-      res.writeHead(302, { location: subPiece.url, 'cache-control': 'no-store' })
-      res.end()
-      return
-    }
-
-    // Should be unreachable given the CHECK ((car_path IS NULL) != (url IS NULL)).
-    res.writeHead(500, { 'content-type': 'text/plain' })
-    res.end('sub-piece has neither car_path nor url')
+    void handlePieceRequest(db, match[1], req, res)
   }
 }
 
@@ -95,7 +121,12 @@ export function makeRedirectHandler(db: MigrationDB): (req: IncomingMessage, res
  * `stat` is used to confirm the on-disk length matches the planned length —
  * otherwise the pull would proceed against a truncated file.
  */
-async function serveAssembledCar(res: ServerResponse, filePath: string, expectedLength: number): Promise<void> {
+async function serveAssembledCar(
+  res: ServerResponse,
+  filePath: string,
+  expectedLength: number,
+  head: boolean
+): Promise<void> {
   const stats = await stat(filePath).catch(() => null)
   if (stats == null) {
     res.writeHead(404, { 'content-type': 'text/plain' })
@@ -112,6 +143,10 @@ async function serveAssembledCar(res: ServerResponse, filePath: string, expected
     'content-length': String(expectedLength),
     'cache-control': 'no-store',
   })
+  if (head) {
+    res.end()
+    return
+  }
   const body = createReadStream(filePath)
   body.on('error', () => {
     if (!res.writableEnded) res.end()

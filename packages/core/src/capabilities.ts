@@ -17,11 +17,11 @@
  *   "backend": "local" | "hosted",          // who is answering
  *   "network": "mainnet" | "calibration",   // network the backend operates on
  *   "apiBase": "/api" | null,               // control-plane API root; null = no API
- *   "pieceBase": "https://…" | null,        // base URL providers pull pieces from; null = not served here
- *   "supportsAssembledPieces": false,        // can byte-serve assembled multi-root CARs
+ *   "pieceBase": "https://…" | null,        // providers pull from {pieceBase}/piece/{pieceCid}; null = no public ingress yet
+ *   "supportsAssembledPieces": true,         // can byte-serve assembled multi-root CARs
  *   "supportsServerCommp": true,             // computes commitments server-side (vs in the browser)
  *   "supportsBrowserSigning": false,         // accepts browser-wallet session authorizations
- *   "requiresPublicIngress": false           // provider pulls need this host publicly reachable
+ *   "requiresPublicIngress": true            // provider pulls need this host publicly reachable
  * }
  * ```
  *
@@ -41,7 +41,13 @@ export interface Capabilities {
   network: 'mainnet' | 'calibration'
   /** Control-plane API root (same-origin path), or null when there is no API. */
   apiBase: string | null
-  /** Base URL storage providers pull pieces from, or null when not served here. */
+  /**
+   * Base URL storage providers pull pieces from — the pull URL is
+   * `{pieceBase}/piece/{pieceCid}` (the CLI's `--source-base` shape). Null
+   * when pieces are not publicly reachable (yet); a local backend with
+   * `requiresPublicIngress: true` and a null pieceBase needs its tunnel or
+   * reverse proxy brought up before a provider can pull.
+   */
   pieceBase: string | null
   /** Can byte-serve assembled multi-root CARs (the `pack-cars` path). */
   supportsAssembledPieces: boolean

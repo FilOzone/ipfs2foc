@@ -110,13 +110,72 @@ test('assembled sub-piece with a length drift fails with 500 (no truncated pull)
   }
 })
 
-test('unknown piece is 404; non-GET is 404', async () => {
+test('unknown piece is 404; non-read methods are 404', async () => {
   const h = await harness()
   try {
     const unknown = await fetch(`${h.base}/piece/pcNope`)
     assert.equal(unknown.status, 404)
     const post = await fetch(`${h.base}/piece/pcNope`, { method: 'POST' })
     assert.equal(post.status, 404)
+  } finally {
+    await h.close()
+  }
+})
+
+// Providers and monitors probe pull URLs with HEAD before pulling; the relay
+// has always allowed it, and the local server must answer the same headers.
+
+test('HEAD on a passthrough sub-piece returns the 302 headers', async () => {
+  const h = await harness()
+  try {
+    h.db.addCids(['bafH'])
+    h.db.recordPieceSuccess('bafH', 'pcHead', 100, 'g', 'https://gw.example/ipfs/bafH?format=car', 'sha')
+    h.db.recordPassthroughSubPiece({
+      subPieceCid: 'pcHead',
+      sourceCid: 'bafH',
+      url: 'https://gw.example/ipfs/bafH?format=car',
+      rawSize: 100,
+      memberSha256: null,
+    })
+    const res = await fetch(`${h.base}/piece/pcHead`, { method: 'HEAD', redirect: 'manual' })
+    assert.equal(res.status, 302)
+    assert.equal(res.headers.get('location'), 'https://gw.example/ipfs/bafH?format=car')
+  } finally {
+    await h.close()
+  }
+})
+
+test('HEAD on an assembled sub-piece returns Content-Length without the body', async () => {
+  const h = await harness()
+  try {
+    const carPath = join(h.dir, 'head.car')
+    const bytes = Buffer.from('CARv1-ish bytes for the HEAD probe')
+    await writeFile(carPath, bytes)
+    h.db.addCids(['bafHA'])
+    h.db.recordPieceSuccess('bafHA', 'pcHA', bytes.length, 'g', 'u', 'shaHA')
+    h.db.recordBuiltSubPiece({
+      subPieceCid: 'pcAsmHead',
+      assembledCarLength: bytes.length,
+      targetSizeBytes: 256,
+      carPath,
+      assembledSha256: 'sha-h',
+      members: [{ cid: 'bafHA', rawSize: bytes.length, sha256: 'shaHA' }],
+    })
+    const res = await fetch(`${h.base}/piece/pcAsmHead`, { method: 'HEAD' })
+    assert.equal(res.status, 200)
+    assert.equal(res.headers.get('content-type'), 'application/vnd.ipld.car')
+    assert.equal(res.headers.get('content-length'), String(bytes.length))
+    assert.equal((await res.arrayBuffer()).byteLength, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('HEAD on healthz returns 200', async () => {
+  const h = await harness()
+  try {
+    const res = await fetch(`${h.base}/healthz`, { method: 'HEAD' })
+    assert.equal(res.status, 200)
   } finally {
     await h.close()
   }

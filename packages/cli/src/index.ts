@@ -9,7 +9,7 @@
  *   import-manifest FILE [--db FILE] [opts] Load a browser-console run manifest as done pieces (recomputes nothing).
  *   export  [--db FILE] [--out FILE] [opts] Write the DB's prepared pieces as a run manifest (round-trips to the browser).
  *   status  [--db FILE]                     Report progress and the aggregate plan.
- *   serve   [--db FILE] [opts]              Background commP runner + browser console.
+ *   serve   [--db FILE] [opts]              Background commP runner + browser console + /piece origin.
  *   gas     [--network N] [opts]            Current network base fee and whether to pause.
  *   redirect-serve [--db FILE] [--port N] [--ingress funnel|cloudflared]   GET /piece/{pcidv2} -> 302 gateway CAR.
  *   create-data-set --provider-id ID [opts] Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env).
@@ -43,7 +43,7 @@ import { startRedirectServer } from './redirect-server.ts'
 import { startCloudflaredTunnel } from './redirect-server-cloudflared.ts'
 import { bigintJsonReplacer, runReport } from './report.ts'
 import { Runner } from './runner.ts'
-import { startServer } from './server.ts'
+import { type IngressState, startServer } from './server.ts'
 import { runSubmitPdp } from './submit-pdp.ts'
 import { log, parseCidList, parsePositiveInt, parseSize } from './util.ts'
 
@@ -63,6 +63,8 @@ Usage:
   ipfs2foc serve  [--db <file>] [--cids <file>] [--gateway URL]... [--piece-size 32GiB]
                      [--concurrency 8] [--port 4321] [--network mainnet|calibration] [--max-base-fee N]
                      [--app-dir <dir>]  (or IPFS2FOC_APP_DIR; defaults to the bundled console)
+                     [--ingress cloudflared | --public-base <https-url>]
+                     (serve also answers GET/HEAD /piece/{pcidv2}; with ingress it is the pull source)
   ipfs2foc gas    [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
   ipfs2foc redirect-serve [--db <file>] [--port 4322] [--ingress funnel|cloudflared]
   ipfs2foc create-data-set --provider-id <id> [--network mainnet|calibration] [--cdn]
@@ -97,6 +99,10 @@ Examples:
   # Serve sub-pieces (terminal A) and submit them (terminal B)
   ipfs2foc redirect-serve --ingress cloudflared --port 4322
   ipfs2foc pdp-submit --data-set-id 42 --source-base https://<public-host>
+
+  # Or one process: serve carries /piece behind its own tunnel
+  ipfs2foc serve --ingress cloudflared
+  ipfs2foc pdp-submit --data-set-id 42 --source-base https://<tunnel-host>
 
   # Confirm everything landed on chain
   ipfs2foc report --data-set-id 42
@@ -787,6 +793,8 @@ async function cmdServe(argv: string[]): Promise<void> {
       port: { type: 'string', default: '4321' },
       network: { type: 'string' },
       'app-dir': { type: 'string' },
+      ingress: { type: 'string' },
+      'public-base': { type: 'string' },
       'rpc-url': { type: 'string' },
       'max-base-fee': { type: 'string' },
       'ipfs-fallback': { type: 'boolean', default: false },
@@ -803,6 +811,16 @@ async function cmdServe(argv: string[]): Promise<void> {
     throw new Error(`unknown --network ${network} (expected mainnet|calibration)`)
   }
   log(`network: ${network}`)
+
+  if (values.ingress != null && values['public-base'] != null) {
+    throw new Error('--ingress and --public-base are mutually exclusive (the tunnel discovers its own URL)')
+  }
+  if (values.ingress != null && values.ingress !== 'cloudflared') {
+    throw new Error(
+      `unknown --ingress ${values.ingress} (expected cloudflared; for tailscale funnel or a VPS, front the serve port yourself and pass --public-base)`
+    )
+  }
+  const publicBase = values['public-base'] == null ? null : parsePublicBase(values['public-base'] as string)
 
   const db = new MigrationDB(values.db as string)
   // Seed CIDs if a list was provided; otherwise add them later via the console.
@@ -827,16 +845,95 @@ async function cmdServe(argv: string[]): Promise<void> {
           maxBaseFee: values['max-base-fee'] == null ? DEFAULT_MAX_BASE_FEE : BigInt(values['max-base-fee']),
         }
       : undefined
-  await startServer({
+  const ingress: IngressState = { publicBase, reachable: null }
+  const server = await startServer({
     db,
     runner,
     port: parsePositiveInt(values.port as string, '--port'),
     network,
     appDir: (values['app-dir'] as string | undefined) ?? process.env.IPFS2FOC_APP_DIR,
+    ingress,
     gas,
   })
   // Server keeps the process alive; the runner starts via the console/API.
   log(`Loaded ${db.counts().pending} pending CID(s). Press Start in the console (or POST /api/start).`)
+
+  if (values.ingress === 'cloudflared') {
+    // The bound port, not the flag — --port 0 picks an ephemeral one.
+    const boundPort = (server.address() as { port: number }).port
+    const { child } = await startCloudflaredTunnel({ port: boundPort }).then((tunnel) => {
+      ingress.publicBase = tunnel.baseUrl
+      return tunnel
+    })
+    // The tunnel module installs its own `once` signal handlers, which would
+    // swallow the first Ctrl-C (kill the child, leave serve running). Own the
+    // shutdown: stop the tunnel, close the server, exit.
+    const shutdown = (): void => {
+      if (!child.killed) child.kill('SIGTERM')
+      server.close(() => process.exit(0))
+      setTimeout(() => process.exit(0), 2_000).unref()
+    }
+    process.once('SIGINT', shutdown)
+    process.once('SIGTERM', shutdown)
+  }
+
+  if (ingress.publicBase != null) {
+    const report = (reachable: boolean): void => {
+      if (reachable) {
+        log(`piece endpoint reachable: providers pull from ${ingress.publicBase}/piece/{pieceCidV2}`)
+      } else {
+        log(
+          `WARNING: ${ingress.publicBase}/healthz is not answering from here. Provider pulls will fail until it does — check the tunnel/ingress and that it forwards to this serve port. (A fresh tunnel hostname can also sit in this machine's negative DNS cache for a while; the console re-checks every minute.)`
+        )
+      }
+    }
+    ingress.reachable = await probePublicBase(ingress.publicBase)
+    report(ingress.reachable)
+    // Keep watching: a fresh tunnel may become resolvable late (negative DNS
+    // caching) and a live one can drop mid-run. Log only on state changes.
+    setInterval(() => {
+      void (async () => {
+        if (ingress.publicBase == null) return
+        const now = await probePublicBase(ingress.publicBase, 1)
+        if (now !== ingress.reachable) {
+          ingress.reachable = now
+          report(now)
+        }
+      })()
+    }, 60_000).unref()
+  }
+}
+
+/** Validate and normalize --public-base: https origin, no trailing slash. */
+function parsePublicBase(raw: string): string {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new Error(`--public-base ${raw} is not a URL`)
+  }
+  if (url.protocol !== 'https:') {
+    throw new Error(`--public-base must be https (providers reject plain http pull sources)`)
+  }
+  return raw.replace(/\/+$/, '')
+}
+
+/**
+ * Self-probe the public ingress: GET {base}/healthz and require the body to
+ * be this server's own "ok" (a tunnel edge error page can answer 200 to a
+ * bare status check). Retries cover a cold tunnel.
+ */
+async function probePublicBase(base: string, attempts = 3): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(10_000), redirect: 'manual' })
+      if (res.ok && (await res.text()) === 'ok') return true
+    } catch {
+      // retry below
+    }
+    if (i < attempts - 1) await new Promise((resolve) => setTimeout(resolve, 2_000 * (i + 1)))
+  }
+  return false
 }
 
 async function main(): Promise<void> {

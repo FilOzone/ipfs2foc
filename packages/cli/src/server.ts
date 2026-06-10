@@ -12,6 +12,12 @@
  * (a DNS-rebound hostname must not read run state) and the Origin header on
  * mutating routes (a foreign page must not drive the runner). Requests
  * without an Origin — curl, scripts — pass.
+ *
+ * /piece/{pcidv2} and /healthz are deliberately NOT Host-checked: a public
+ * ingress (cloudflared, funnel) fronts this port for provider pulls, and
+ * those requests carry the public hostname. Through the tunnel that exposes
+ * only read-only piece bytes, the health check, and the static console —
+ * the /api control plane stays Host-gated.
  */
 
 import { createReadStream, existsSync } from 'node:fs'
@@ -22,12 +28,25 @@ import { fileURLToPath } from 'node:url'
 import { CAPABILITIES_SCHEMA_VERSION, type Capabilities } from 'ipfs2foc-core/capabilities'
 import type { MigrationDB } from './db.ts'
 import { type BaseFeeReading, classifyBaseFee, getBaseFee } from './gas.ts'
+import { handlePieceRequest, PIECE_PATH } from './redirect-server.ts'
 import type { Runner } from './runner.ts'
 import { log, parseCidList } from './util.ts'
 
 export interface GasConfig {
   rpcUrl: string
   maxBaseFee: bigint
+}
+
+/**
+ * Public ingress for the /piece endpoint, as a mutable cell: the caller sets
+ * `publicBase` once the tunnel is up (and `reachable` after the self-probe),
+ * and capabilities/status read it live on every request.
+ */
+export interface IngressState {
+  /** Public https base providers pull from ({publicBase}/piece/{pcid}), or null when none. */
+  publicBase: string | null
+  /** Self-probe result for {publicBase}/healthz; null = not checked yet. */
+  reachable: boolean | null
 }
 
 export interface ServeOptions {
@@ -38,6 +57,7 @@ export interface ServeOptions {
   network: 'mainnet' | 'calibration'
   /** Directory holding the built browser console; defaults to the bundled copy. */
   appDir?: string
+  ingress?: IngressState
   gas?: GasConfig
 }
 
@@ -93,6 +113,7 @@ function isLocalOrigin(origin: string): boolean {
 export async function startServer(opts: ServeOptions): Promise<Server> {
   const { db, runner, port, network, gas } = opts
   const appDir = resolve(opts.appDir ?? defaultAppDir())
+  const ingress: IngressState = opts.ingress ?? { publicBase: null, reachable: null }
 
   // Poll the network base fee in the background so the console can show it and
   // flag when submission should pause. Read-only; never blocks the commP loop.
@@ -119,26 +140,34 @@ export async function startServer(opts: ServeOptions): Promise<Server> {
           maxBaseFee: gas?.maxBaseFee.toString() ?? null,
         }
 
-  const capabilities: Capabilities = {
+  // Computed per request: pieceBase appears once the caller's tunnel is up.
+  const capabilities = (): Capabilities => ({
     schemaVersion: CAPABILITIES_SCHEMA_VERSION,
     backend: 'local',
     network,
     apiBase: '/api',
-    // Piece serving, assembled CARs, and browser signing arrive with the
-    // inbound /piece endpoint and the local BYOW flow; until then the console
-    // is a control plane over the commP/packing stage.
-    pieceBase: null,
-    supportsAssembledPieces: false,
+    pieceBase: ingress.publicBase,
+    supportsAssembledPieces: true,
     supportsServerCommp: true,
+    // Browser signing arrives with the local BYOW flow; until then the console
+    // is a control plane over the commP/packing/serving stages.
     supportsBrowserSigning: false,
-    requiresPublicIngress: false,
-  }
+    // Provider pulls hit {pieceBase}/piece/{pcid}; a null pieceBase means the
+    // ingress requirement is not satisfied yet.
+    requiresPublicIngress: true,
+  })
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const route = `${req.method} ${url.pathname}`
 
     const json = (status: number, body: unknown): void => {
+      // A handler that failed mid-stream already sent headers; a second
+      // writeHead would throw inside the catch-all. Drop the connection.
+      if (res.headersSent) {
+        if (!res.writableEnded) res.destroy()
+        return
+      }
       res.writeHead(status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(body))
     }
@@ -166,11 +195,15 @@ export async function startServer(opts: ServeOptions): Promise<Server> {
 
         switch (route) {
           case 'GET /api/capabilities':
-            json(200, capabilities)
+            json(200, capabilities())
             return
 
           case 'GET /api/status':
-            json(200, { ...(status(db, runner) as object), gas: gasStatus() })
+            json(200, {
+              ...(status(db, runner) as object),
+              gas: gasStatus(),
+              ingress: { publicBase: ingress.publicBase, reachable: ingress.reachable },
+            })
             return
 
           case 'POST /api/start':
@@ -214,7 +247,7 @@ export async function startServer(opts: ServeOptions): Promise<Server> {
             return
           }
 
-          default:
+          default: {
             if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
               json(404, { error: `no route ${route}` })
               return
@@ -223,7 +256,21 @@ export async function startServer(opts: ServeOptions): Promise<Server> {
               json(404, { error: `no route ${route}` })
               return
             }
+            // Provider-facing routes come before the static console: the SPA
+            // fallback would otherwise answer /piece/{pcid} with index.html
+            // and a pull would download HTML as the "CAR".
+            if (url.pathname === '/healthz') {
+              res.writeHead(200, { 'content-type': 'text/plain' })
+              res.end(req.method === 'HEAD' ? undefined : 'ok')
+              return
+            }
+            const piece = PIECE_PATH.exec(url.pathname)
+            if (piece != null) {
+              await handlePieceRequest(db, piece[1], req, res)
+              return
+            }
             await serveApp(appDir, url.pathname, req, res)
+          }
         }
       } catch (err) {
         json(500, { error: err instanceof Error ? err.message : String(err) })

@@ -34,8 +34,10 @@ export async function startCloudflaredTunnel(opts: Options): Promise<{ baseUrl: 
   const binary = opts.binary ?? 'cloudflared'
   const startupTimeoutMs = opts.startupTimeoutMs ?? 60_000
 
-  log(`cloudflared ingress: spawning '${binary} tunnel --url http://localhost:${opts.port}'`)
-  const child = spawn(binary, ['tunnel', '--url', `http://localhost:${opts.port}`, '--no-autoupdate'], {
+  // 127.0.0.1 explicitly: the serve daemon binds IPv4 loopback only, and a
+  // dual-stack resolver would try ::1 first for `localhost`.
+  log(`cloudflared ingress: spawning '${binary} tunnel --url http://127.0.0.1:${opts.port}'`)
+  const child = spawn(binary, ['tunnel', '--url', `http://127.0.0.1:${opts.port}`, '--no-autoupdate'], {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
