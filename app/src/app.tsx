@@ -314,11 +314,11 @@ export default function App({ caps }: { caps: Capabilities }) {
     [wallet, session, results, copies]
   )
 
-  const submit = useCallback(() => void submitWith(null), [submitWith])
-  // The recovery offers after a too-small block: submit only the items the
-  // advertised floor accepts, or submit everything anyway — no enforcement of
-  // the floor has been found in the provider's pull path, so the provider is
-  // the judge and a real rejection shows in the per-piece pull status.
+  // The advertised min-piece floor is not enforced by default: no enforcement
+  // has been found in the provider's pull path, so the provider is the judge
+  // and a real refusal shows in the per-piece pull status. The pre-check
+  // remains available for callers that want the strict behavior.
+  const submit = useCallback(() => void submitWith(null, true), [submitWith])
   const submitEligible = useCallback(() => void submitWith(tooSmallCids), [submitWith, tooSmallCids])
   const submitAllAnyway = useCallback(() => void submitWith(null, true), [submitWith])
 
@@ -502,6 +502,9 @@ export default function App({ caps }: { caps: Capabilities }) {
 
   const eligibleCount = tooSmallCids == null ? 0 : results.filter((r) => !tooSmallCids.includes(r.pieceCid)).length
   const queuedCount = rows.filter((r) => r.state.phase === 'queued').length
+  // Raw CARs at or under 127/128 × 512 KiB pad below the 1 MiB floor most
+  // providers advertise. Informational only — submission proceeds regardless.
+  const underTypicalFloor = results.filter((r) => r.rawSize <= 520_192).length
 
   return (
     <div className="shell">
@@ -851,6 +854,21 @@ export default function App({ caps }: { caps: Capabilities }) {
                   <button className="btn small" onClick={discardSubmit} type="button">
                     Discard previous submit
                   </button>
+                )}
+                {underTypicalFloor > 0 && !submitting && (
+                  <span className="hint">
+                    {underTypicalFloor} item{underTypicalFloor === 1 ? '' : 's'} sit below the 1 MiB minimum most
+                    providers advertise — submission proceeds anyway; a refusal would show per piece in the pull status,
+                    and the{' '}
+                    <a
+                      href="https://github.com/SgtPooki/ipfs2foc/blob/main/docs/local-console.md"
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      local packing path
+                    </a>{' '}
+                    covers that case
+                  </span>
                 )}
               </div>
               {resumable != null && !submitting && !allCommitted && (
