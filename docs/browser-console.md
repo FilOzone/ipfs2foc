@@ -10,7 +10,8 @@ page.
 ## What a run produces
 
 For each CID, the console computes the piece commitment and builds the pull
-URL through the stateless redirect relay. The "Download run manifest" button
+URL through the stateless relay, which streams the canonical CAR to the
+provider and rebuilds any blocks the gateway's CAR endpoint fails to deliver. The "Download run manifest" button
 saves the whole run as JSON — the per-piece commitments and pull URLs, plus
 the gateway and relay they were computed against.
 

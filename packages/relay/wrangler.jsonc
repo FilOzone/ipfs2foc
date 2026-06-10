@@ -1,10 +1,15 @@
 {
-  // Cloudflare Worker config for the ipfs2foc redirect relay (#23).
+  // Cloudflare Worker config for the ipfs2foc CAR relay (#23, #45).
   //   deploy: cd packages/relay && npx wrangler deploy
   //   dev:    cd packages/relay && npx wrangler dev --local
   //
   // The relay is STATELESS — no KV, no database, no bindings to provision. The
   // only config is the optional ALLOWED_GATEWAY_HOSTS var below.
+  //
+  // REQUIRES WORKERS PAID: the relay streams and hash-verifies whole CAR bodies
+  // (tens of MB per pull), well past the free plan's 10ms CPU budget; the paid
+  // plan's 30s default leaves ~100x headroom, and worst-case full per-block
+  // rebuild stays in the hundreds of subrequests vs the 10k paid limit.
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "ipfs2foc-relay",
   "main": "worker.ts",

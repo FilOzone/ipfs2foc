@@ -193,7 +193,16 @@ importers:
       ipfs2foc-core:
         specifier: workspace:*
         version: link:../core
+      multiformats:
+        specifier: ^13.4.1
+        version: 13.4.2
     devDependencies:
+      '@ipld/car':
+        specifier: ^5.4.0
+        version: 5.4.6
+      '@ipld/dag-pb':
+        specifier: ^4.1.7
+        version: 4.1.7
       '@types/node':
         specifier: ^25.9.1
         version: 25.9.1

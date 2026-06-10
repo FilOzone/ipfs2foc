@@ -2,8 +2,8 @@
  * Cloudflare Worker entry for the ipfs2foc redirect relay.
  *
  * A Worker entry module may export only handlers (workerd rejects plain value
- * exports), so the routing logic lives in `./handler.ts` (a pure, sync,
- * unit-tested function) and this file wires it in as `fetch`. The entry adds the
+ * exports), so the routing and CAR-streaming logic lives in `./handler.ts` (a
+ * unit-tested async function) and this file wires it in as `fetch`. The entry adds the
  * one Cloudflare-specific concern — a per-IP rate limit on the pull path — that
  * cannot run outside the Workers runtime.
  */

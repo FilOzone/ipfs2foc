@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Stateless Cloudflare Worker that 302-redirects storage-provider pulls to the trustless-gateway CAR a piece was committed over (ipfs2foc browser dApp, #23).",
+  "description": "Stateless Cloudflare Worker that streams the canonical CAR for storage-provider pulls — passthrough of the trustless-gateway stream with per-block raw rebuild of anything the gateway truncates (ipfs2foc browser dApp, #23, #45).",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test",
@@ -11,9 +11,12 @@
     "dev": "wrangler dev --local"
   },
   "dependencies": {
-    "ipfs2foc-core": "workspace:*"
+    "ipfs2foc-core": "workspace:*",
+    "multiformats": "^13.4.1"
   },
   "devDependencies": {
+    "@ipld/car": "^5.4.0",
+    "@ipld/dag-pb": "^4.1.7",
     "@types/node": "^25.9.1",
     "wrangler": "^4.98.0"
   }
