@@ -127,6 +127,7 @@ ipfs2foc plan --cids cids.txt --db migrate.db
 
 # 3. (Terminal A — leave running) Serve sub-pieces over public HTTPS.
 #    `--ingress cloudflared` spawns a no-signup Cloudflare tunnel and logs the URL.
+#    (`ipfs2foc serve --ingress cloudflared` does the same from the console daemon.)
 ipfs2foc redirect-serve --db migrate.db --port 4322 --ingress cloudflared
 
 # 4. (Terminal B) Pull, park, and add each aggregate onto the provider's data set.
@@ -198,7 +199,7 @@ ipfs2foc analyze [--cids cids.txt] [--db migrate.db] [--car-store <dir>] [--gate
 # Background daemon + browser console (start/pause/resume, add CIDs, add gateways)
 ipfs2foc serve [--db migrate.db] [--cids cids.txt] [--gateway URL]... \
   [--port 4321] [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N] \
-  [--app-dir <dir>]
+  [--app-dir <dir>] [--ingress cloudflared | --public-base https://<host>]
 
 # Current network base fee and whether to pause submission
 ipfs2foc gas [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee 1000000]
@@ -379,6 +380,12 @@ built-in paths:
 Setup details, prerequisites, and the public-HTTPS shape the provider
 validates live in [`docs/ingress.md`](docs/ingress.md). Pass the **HTTPS
 origin only** (scheme + host, no path) as `--source-base`.
+
+The `serve` daemon answers the same `/piece/{pcidv2}` route, so one process
+can carry the console and the pull source: `ipfs2foc serve --ingress
+cloudflared` spawns the tunnel and self-checks reachability, or front the
+serve port yourself and pass `--public-base https://<host>`. The console
+shows the public piece endpoint and whether it answers.
 
 ## Network gas and payments
 

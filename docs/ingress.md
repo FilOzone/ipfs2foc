@@ -9,6 +9,13 @@ Pass the **HTTPS origin only** (scheme + host, no path) as `--source-base`;
 the tool appends `/piece/{pcidv2}` itself. The server answers only 302
 redirects, so its bandwidth is negligible.
 
+The `serve` daemon answers the same `/piece/{pcidv2}` route (GET and HEAD),
+so a single process can carry the console, the commP runner, and the pull
+source. `ipfs2foc serve --ingress cloudflared` spawns the tunnel itself and
+checks reachability; for Funnel or a VPS, front the serve port (default
+4321) and pass the public origin as `--public-base`. The standalone
+`redirect-serve` below remains for the two-terminal workflow.
+
 ## Options at a glance
 
 | Ingress | `--ingress` | Signup | CGNAT-friendly | Inbound port required | Cold start |
