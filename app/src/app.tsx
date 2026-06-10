@@ -1,11 +1,12 @@
 import type { Capabilities } from 'ipfs2foc-core/capabilities'
+import { explorerDataSetUrl, explorerPieceUrl } from 'ipfs2foc-core/pdp-verifier'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { computePiece, describePrepareFailure, type PieceResult } from './commp.ts'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
-import { fmtToken, type PaymentsStatus, readPaymentsStatus, readyToSign } from './payments.ts'
-import { clearRun, clearSubmit, loadRun, type SavedSubmit, saveRun } from './run-store.ts'
+import { fmtToken, type PaymentsStatus, RPC_URLS, readPaymentsStatus, readyToSign } from './payments.ts'
+import { clearRun, clearSubmit, loadRun, loadSubmit, type SavedSubmit, saveRun, saveSubmit } from './run-store.ts'
 import {
   DEFAULT_SESSION_DURATION_SECONDS,
   extendSession,
@@ -26,6 +27,7 @@ import {
   submitStateFromSaved,
 } from './submit.ts'
 import { useTabLifetime } from './tab-guard.ts'
+import { type VerifyResult, verifyDataSet } from './verify.ts'
 import { connectWallet, NETWORKS, networkOf, refreshWallet, switchToCalibration, type WalletState } from './wallet.ts'
 
 const DEFAULT_GATEWAY = 'https://trustless-gateway.link'
@@ -260,6 +262,20 @@ export default function App({ caps }: { caps: Capabilities }) {
       .catch(() => {
         // a failed resume is just "no session" — the grant flow stays offered
       })
+    return () => {
+      stale = true
+    }
+  }, [wallet])
+
+  // Without a wallet the saved submit still renders read-only so verify-on-chain
+  // (an account-less RPC read) can answer "is everything on FOC?" — the resume
+  // path stays wallet-bound; this only surfaces the record.
+  useEffect(() => {
+    if (wallet != null) return
+    let stale = false
+    loadSubmit().then((saved) => {
+      if (!stale && saved != null) setSubmitState((current) => current ?? submitStateFromSaved(saved))
+    })
     return () => {
       stale = true
     }
@@ -530,6 +546,59 @@ export default function App({ caps }: { caps: Capabilities }) {
     // are small ones by definition, so the strict pre-check would just block.
     void submitWith(null, true)
   }, [wallet, results, submitWith])
+
+  // Verify-on-chain (#47): account-less reads of the data set's active pieces
+  // and proving status, keyed per provider context. The chain is the only
+  // signal that may flip a piece's state here — never a gateway probe.
+  const [verifying, setVerifying] = useState<string | null>(null)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
+  const [verifyReports, setVerifyReports] = useState<
+    Record<string, { result: VerifyResult; network: 'mainnet' | 'calibration'; dataSetId: string; cleared: number }>
+  >({})
+
+  const verifyContext = useCallback(async (providerId: string) => {
+    setVerifyError(null)
+    setVerifying(providerId)
+    try {
+      // The saved record (not React state) is the source of truth: it carries
+      // the chain id, every chunk's pieces, and the deferred set.
+      const saved = await loadSubmit()
+      const c = saved?.contexts.find((x) => x.providerId === providerId)
+      if (saved == null || c?.dataSetId == null) throw new Error('no saved run with a data set for this provider')
+      const network = networkOf(saved.chainId)
+      if (network == null) throw new Error(`saved run is on an unknown chain (id ${saved.chainId})`)
+      const prepared = [...new Set([...c.chunks.flatMap((ch) => ch.pieceCids), ...(c.deferredPieceCids ?? [])])]
+      const txHashes = c.chunks.flatMap((ch) => (ch.txHash == null ? [] : [ch.txHash]))
+      const result = await verifyDataSet({
+        rpcUrl: RPC_URLS[network],
+        network,
+        dataSetId: Number(c.dataSetId),
+        preparedPieceCids: prepared,
+        txHashes,
+      })
+      // A deferred piece the chain holds was committed on another surface
+      // (or a forgotten retry landed) — record it as a committed chunk so the
+      // skipped banner clears and resume never re-queues it.
+      const settled = (c.deferredPieceCids ?? []).filter((p) => result.found.has(p))
+      if (settled.length > 0) {
+        const remaining = (c.deferredPieceCids ?? []).filter((p) => !result.found.has(p))
+        c.deferredPieceCids = remaining.length > 0 ? remaining : undefined
+        c.chunks.push({ pieceCids: settled, pullComplete: true, committed: true })
+        saved.updatedAt = new Date().toISOString()
+        await saveSubmit(saved)
+        setSubmitState(submitStateFromSaved(saved))
+        setResumable((prev) => (prev == null ? prev : saved))
+      }
+      setVerifyReports((prev) => ({
+        ...prev,
+        [providerId]: { result, network, dataSetId: c.dataSetId as string, cleared: settled.length },
+      }))
+    } catch (err) {
+      setVerifyError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setVerifying(null)
+    }
+  }, [])
 
   const eligibleCount = tooSmallCids == null ? 0 : results.filter((r) => !tooSmallCids.includes(r.pieceCid)).length
   const queuedCount = rows.filter((r) => r.state.phase === 'queued').length
@@ -839,14 +908,19 @@ export default function App({ caps }: { caps: Capabilities }) {
         </section>
       )}
 
-      {results.length > 0 && (
+      {(results.length > 0 || submitState != null) && (
         <section className="panel">
           <div className="panel-head">
             <span className="panel-no">04</span>
             <h2>Submit</h2>
             <span className="panel-note">one on-chain commit per copy · signed by the session key, no prompts</span>
           </div>
-          {wallet == null || !onCalibration ? (
+          {results.length === 0 ? (
+            <p className="gate-note">
+              a previous run's submit state is shown below — verify it against the chain anytime, or paste the run's
+              CIDs above to resume submitting.
+            </p>
+          ) : wallet == null || !onCalibration ? (
             <p className="gate-note">connect the wallet on Calibration above to submit.</p>
           ) : payments == null || !readyToSign(payments) ? (
             <p className="gate-note">finish the one-time payment setup above to submit.</p>
@@ -907,67 +981,6 @@ export default function App({ caps }: { caps: Capabilities }) {
                   a previous submit for these pieces is saved — Resume continues it without re-signing or re-submitting
                   anything. Discard only forgets local progress; commits already submitted stay on chain.
                 </p>
-              )}
-              {submitState != null && submitState.contexts.length > 0 && (
-                <div className="table">
-                  <div className="trow thead submit-row">
-                    <span>Copy</span>
-                    <span>Provider</span>
-                    <span>Status</span>
-                    <span>Data set</span>
-                  </div>
-                  {submitState.contexts.map((c) => (
-                    <div className="trow submit-row" key={c.providerId}>
-                      <span className="dim">{c.role}</span>
-                      <span className="mono dim" title={c.serviceURL}>
-                        {c.providerName || `#${c.providerId}`}
-                      </span>
-                      {c.phase === 'failed' ? (
-                        <span className="err-text" title={c.error}>
-                          {short(c.error ?? 'failed', 36, 0)}
-                        </span>
-                      ) : (
-                        <span className={c.phase === 'done' ? 'ok-text' : 'working'}>{describeSubmitPhase(c)}</span>
-                      )}
-                      <span className="mono dim">
-                        {(() => {
-                          const txHash = [...c.chunks].reverse().find((ch) => ch.txHash != null)?.txHash
-                          return c.dataSetId == null
-                            ? txHash == null
-                              ? '—'
-                              : short(txHash, 10, 4)
-                            : `#${c.dataSetId} · ${c.pieceIds?.length ?? 0} piece${c.pieceIds?.length === 1 ? '' : 's'}`
-                        })()}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {deferredCids.length > 0 && !submitting && (
-                <div className="gate-note">
-                  <p>
-                    {deferredCids.length} piece{deferredCids.length === 1 ? ' was' : 's were'} skipped: the provider
-                    could not fetch them from their source after retries (the "check availability" links above show
-                    why). Everything else committed. If the source recovers — or you host the bytes another way — retry
-                    here; otherwise the remainder manifest carries them to the{' '}
-                    <a
-                      href="https://github.com/SgtPooki/ipfs2foc/blob/main/docs/local-console.md"
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      local path
-                    </a>
-                    .
-                  </p>
-                  <div className="actions">
-                    <button className="btn small" onClick={() => void retryDeferred()} type="button">
-                      Retry the skipped piece{deferredCids.length === 1 ? '' : 's'}
-                    </button>
-                    <button className="btn small" onClick={saveDeferredManifest} type="button">
-                      Download manifest of the skipped piece{deferredCids.length === 1 ? '' : 's'}
-                    </button>
-                  </div>
-                </div>
               )}
               {submitState != null && !submitState.persisted && (
                 <p className="pay-setup">
@@ -1058,13 +1071,153 @@ export default function App({ caps }: { caps: Capabilities }) {
               )}
             </>
           )}
+          {submitState != null && submitState.contexts.length > 0 && (
+            <div className="table">
+              <div className="trow thead submit-row">
+                <span>Copy</span>
+                <span>Provider</span>
+                <span>Status</span>
+                <span>Data set</span>
+              </div>
+              {submitState.contexts.map((c) => (
+                <div className="trow submit-row" key={c.providerId}>
+                  <span className="dim">{c.role}</span>
+                  <span className="mono dim" title={c.serviceURL}>
+                    {c.providerName || `#${c.providerId}`}
+                  </span>
+                  {c.phase === 'failed' ? (
+                    <span className="err-text" title={c.error}>
+                      {short(c.error ?? 'failed', 36, 0)}
+                    </span>
+                  ) : (
+                    <span className={c.phase === 'done' ? 'ok-text' : 'working'}>{describeSubmitPhase(c)}</span>
+                  )}
+                  <span className="mono dim">
+                    {(() => {
+                      const txHash = [...c.chunks].reverse().find((ch) => ch.txHash != null)?.txHash
+                      return c.dataSetId == null
+                        ? txHash == null
+                          ? '—'
+                          : short(txHash, 10, 4)
+                        : `#${c.dataSetId} · ${c.pieceIds?.length ?? 0} piece${c.pieceIds?.length === 1 ? '' : 's'}`
+                    })()}
+                    {c.dataSetId != null && (
+                      <>
+                        {' '}
+                        <button
+                          className="btn small"
+                          disabled={submitting || verifying != null}
+                          onClick={() => void verifyContext(c.providerId)}
+                          type="button"
+                        >
+                          {verifying === c.providerId ? 'Verifying…' : 'Verify on chain'}
+                        </button>
+                      </>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {verifyError != null && <p className="err-text">{verifyError}</p>}
+          {submitState?.contexts.map((c) => {
+            const report = verifyReports[c.providerId]
+            if (report == null) return null
+            const { result, network, dataSetId, cleared } = report
+            const h = result.health
+            return (
+              <div className="gate-note" key={`verify-${c.providerId}`}>
+                <p>
+                  <a href={explorerDataSetUrl(network, dataSetId)} rel="noreferrer" target="_blank">
+                    Data set #{dataSetId}
+                  </a>{' '}
+                  on {network}, read from the chain just now: {h.live ? 'live' : 'DELETED'},{' '}
+                  {h.activePieceCount.toString()} active piece{h.activePieceCount === 1n ? '' : 's'} ·{' '}
+                  {result.found.size} of {result.found.size + result.missing.length} pieces from this run are on it.
+                  {cleared > 0 && (
+                    <>
+                      {' '}
+                      {cleared} previously-skipped piece{cleared === 1 ? ' is' : 's are'} actually committed — their
+                      skipped state is cleared.
+                    </>
+                  )}
+                </p>
+                <p>
+                  {h.lastProvenEpoch == null
+                    ? 'The provider has not yet submitted a proof of possession for this data set.'
+                    : h.provenSinceAdd
+                      ? `Possession proven: the provider's last accepted proof (epoch ${h.lastProvenEpoch}) covers everything this run added.`
+                      : `The provider has proven possession (epoch ${h.lastProvenEpoch}), but not yet since this run's last add — the next proof will cover it.`}{' '}
+                  {h.inGoodStanding ? 'Proving deadline not missed.' : 'The next proving deadline has passed.'}
+                </p>
+                {result.missing.length > 0 && (
+                  <>
+                    <p>
+                      {result.missing.length} piece{result.missing.length === 1 ? '' : 's'} from this run{' '}
+                      {result.missing.length === 1 ? 'is' : 'are'} not on the data set under{' '}
+                      {result.missing.length === 1 ? 'its' : 'their'} own PieceCID. A piece migrated through the local
+                      packing path lives on chain under the packed piece's CID instead, which this page cannot match up
+                      — <code>ipfs2foc report</code> on the local database reconciles those.
+                    </p>
+                    <ul className="mono">
+                      {result.missing.slice(0, 8).map((p) => (
+                        <li key={p}>
+                          <a href={explorerPieceUrl(network, p)} rel="noreferrer" target="_blank">
+                            {short(p, 16, 8)}
+                          </a>
+                        </li>
+                      ))}
+                      {result.missing.length > 8 && <li>… and {result.missing.length - 8} more</li>}
+                    </ul>
+                  </>
+                )}
+                {result.unrecognized.length > 0 && (
+                  <p>
+                    The data set also holds {result.unrecognized.length} piece
+                    {result.unrecognized.length === 1 ? '' : 's'} this run did not prepare — typically packed pieces
+                    committed from the local console against the same data set.
+                  </p>
+                )}
+              </div>
+            )
+          })}
+          {deferredCids.length > 0 && !submitting && (
+            <div className="gate-note">
+              <p>
+                {deferredCids.length} piece{deferredCids.length === 1 ? ' was' : 's were'} skipped: the provider could
+                not fetch them from their source after retries (the "check availability" links above show why).
+                Everything else committed. If the source recovers — or you host the bytes another way — retry here;
+                otherwise the remainder manifest carries them to the{' '}
+                <a
+                  href="https://github.com/SgtPooki/ipfs2foc/blob/main/docs/local-console.md"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  local path
+                </a>
+                . Already migrated them elsewhere? Verify on chain above clears the ones the chain has.
+              </p>
+              <div className="actions">
+                {session != null && (
+                  <button className="btn small" onClick={() => void retryDeferred()} type="button">
+                    Retry the skipped piece{deferredCids.length === 1 ? '' : 's'}
+                  </button>
+                )}
+                {results.length > 0 && (
+                  <button className="btn small" onClick={saveDeferredManifest} type="button">
+                    Download manifest of the skipped piece{deferredCids.length === 1 ? '' : 's'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </section>
       )}
 
       <footer className="foot">
         <span>
-          piece commitment computed locally over hash-verified blocks in canonical CAR form; redirect relay 302s the
-          provider pull to the same bytes at the gateway
+          piece commitment computed locally over hash-verified blocks in canonical CAR form; the relay streams the same
+          canonical bytes to the provider, rebuilding anything the gateway truncates
         </span>
         <a href="https://github.com/SgtPooki/ipfs2foc" rel="noreferrer" target="_blank">
           SgtPooki/ipfs2foc

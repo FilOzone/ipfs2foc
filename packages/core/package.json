@@ -3,26 +3,29 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Shared canonical CAR helpers for ipfs2foc — the single source of truth for the gateway CAR URL the CLI commits over and the relay/app redirect to, and for the canonical CAR export those commitments are computed from. Consumed (bundled) by the CLI, relay, and browser app.",
+  "description": "Shared canonical CAR helpers for ipfs2foc \u2014 the single source of truth for the gateway CAR URL the CLI commits over and the relay/app redirect to, and for the canonical CAR export those commitments are computed from. Consumed (bundled) by the CLI, relay, and browser app.",
   "exports": {
     ".": "./src/car-url.ts",
     "./block-source": "./src/block-source.ts",
-    "./car-export": "./src/car-export.ts",
     "./capabilities": "./src/capabilities.ts",
+    "./car-export": "./src/car-export.ts",
     "./car-stream-source": "./src/car-stream-source.ts",
     "./manifest": "./src/manifest.ts",
     "./min-piece-guard": "./src/min-piece-guard.ts",
+    "./pdp-verifier": "./src/pdp-verifier.ts",
     "./piece-aggregate": "./src/piece-aggregate.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@filoz/synapse-core": "^0.5.2",
     "@ipld/car": "^5.4.0",
     "@ipld/dag-cbor": "^9.2.7",
     "@ipld/dag-pb": "^4.1.7",
     "@noble/hashes": "^1.8.0",
     "@web3-storage/data-segment": "^5.3.0",
-    "multiformats": "^13.4.1"
+    "multiformats": "^13.4.1",
+    "viem": "^2.21.0"
   }
 }

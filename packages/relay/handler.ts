@@ -34,11 +34,7 @@
 
 import { canonicalCid, defaultGatewayHosts } from 'ipfs2foc-core'
 import { exportCanonicalCar } from 'ipfs2foc-core/car-export'
-import {
-  CarStreamSource,
-  type CarStreamSourceOptions,
-  defaultGetCodec,
-} from 'ipfs2foc-core/car-stream-source'
+import { CarStreamSource, type CarStreamSourceOptions, defaultGetCodec } from 'ipfs2foc-core/car-stream-source'
 import { CID } from 'multiformats/cid'
 
 export interface RelayEnv {
@@ -211,8 +207,7 @@ async function handlePull(
     }
   }
 
-  const from = (ReadableStream as unknown as { from(it: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> })
-    .from
+  const from = (ReadableStream as unknown as { from(it: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> }).from
   return new Response(from(stream()), {
     status: 200,
     headers: { 'content-type': CAR_CONTENT_TYPE, 'cache-control': 'no-store' },

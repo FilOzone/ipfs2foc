@@ -3,11 +3,11 @@ import { test } from 'node:test'
 import { CarWriter } from '@ipld/car'
 import * as dagPb from '@ipld/dag-pb'
 import { relayPullUrl } from 'ipfs2foc-core'
-import type { HandleOptions, RelayEnv } from '../handler.ts'
-import { handle } from '../handler.ts'
 import { CID } from 'multiformats/cid'
 import * as raw from 'multiformats/codecs/raw'
 import { sha256 } from 'multiformats/hashes/sha2'
+import type { HandleOptions, RelayEnv } from '../handler.ts'
+import { handle } from '../handler.ts'
 
 // Known-good values: a canonical CIDv1 source and the PieceCID v2 computed over
 // its CAR, matching test/commp-piece-cid-regression.test.ts. CID_V0 is a
@@ -156,6 +156,7 @@ test('unfetchable root returns 502, not a truncated 200', async () => {
   const { root } = await makeDag()
   const res = await get(pullPath(HOST, root.cid.toString()), {}, 'GET', {
     carStreamSourceOptions: {
+      // biome-ignore lint/correctness/useYield: the stream fails before producing a block
       openCarStream: async function* () {
         throw new Error('gateway request received 404 Not Found')
       },
@@ -251,13 +252,17 @@ test('submit-built relay URL parses back to the exact committed canonical CAR (b
   const expected = await canonicalCarBytes(root.cid, blocks)
   const built = relayPullUrl('https://relay.example', HOST, root.cid.toString(), PIECE_CID)
   const path = new URL(built).pathname
-  const res = await handle(new Request(`https://relay.example${path}`), {}, {
-    carStreamSourceOptions: {
-      openCarStream: async function* () {
-        yield* blocks
+  const res = await handle(
+    new Request(`https://relay.example${path}`),
+    {},
+    {
+      carStreamSourceOptions: {
+        openCarStream: async function* () {
+          yield* blocks
+        },
       },
-    },
-  })
+    }
+  )
   assert.equal(res.status, 200)
   assert.deepEqual(await bodyBytes(res), expected)
 })

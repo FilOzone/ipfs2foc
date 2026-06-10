@@ -12,7 +12,7 @@
 import type { NetworkKey } from './wallet.ts'
 
 /** Public RPC per network — same defaults the CLI resolves (src/gas.ts). */
-const RPC_URLS: Record<NetworkKey, string> = {
+export const RPC_URLS: Record<NetworkKey, string> = {
   mainnet: 'https://api.node.glif.io/rpc/v1',
   calibration: 'https://api.calibration.node.glif.io/rpc/v1',
 }

@@ -76,6 +76,25 @@ loud per-row error instead of a wrong commitment.
 CIDv0 (`Qm…`) input is normalized to CIDv1 before anything is fetched, so the
 committed bytes and the pull URL always use one canonical form.
 
+## Verifying against the chain
+
+The status table freezes each piece's state at the moment it committed. The
+chain does not: a skipped piece may have been migrated later through the local
+console, and a provider keeps proving possession long after the run ends.
+"Verify on chain" next to a copy's data set reads the answer directly over a
+public RPC — which pieces the data set actually holds and whether the
+provider's latest accepted proof covers everything the run added. It needs no
+wallet, payment setup, or signing session, and a previous run's submit state
+stays visible (and verifiable) even before a wallet is connected.
+
+Pieces the chain holds are marked found, and any of them still carrying a
+skipped marker are cleared — a resume will not re-submit them. One case stays
+out of reach: a piece migrated through the local packing path lives on chain
+under the packed piece's commitment, not its own, so this page lists it as
+not found and the packed piece as one it did not prepare. `ipfs2foc report`
+on the local database reconciles those — see the
+[local console guide](./local-console.md).
+
 ## Interruptions
 
 Run state persists in the browser. Refreshing or reopening the tab restores
