@@ -391,7 +391,19 @@ export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
     })
     if (result.status !== 'complete') {
       const failed = result.pieces.filter((p) => p.status !== 'complete').map((p) => p.pieceCid.toString())
-      throw new Error(`provider could not pull ${failed.length} piece(s): ${failed.join(', ')}`)
+      // A pull is idempotent keyed on its presign: re-pulling with the same
+      // blob returns this same terminal status forever. Nothing has been
+      // committed under it, so discard the presign — the next attempt mints
+      // a fresh one and the provider retries the failed pieces for real.
+      chunk.extraData = undefined
+      chunk.signedDataSetId = undefined
+      await persist()
+      throw new Error(
+        `the provider could not fetch ${failed.length} of this chunk's pieces from their source — Resume retries them with a fresh pull (${failed
+          .slice(0, 3)
+          .map((cid) => cid.slice(0, 16))
+          .join('…, ')}…${failed.length > 3 ? ` and ${failed.length - 3} more` : ''})`
+      )
     }
     chunk.pullComplete = true
     await persist()
@@ -534,9 +546,21 @@ export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
         await commitChunk(c, chunk, undefined)
         continue
       }
-      const ctx = await bindCtx(c)
-      await ensurePresigned(c, chunk, ctx)
-      await pullChunk(c, chunk, ctx, from)
+      // A failed pull discards its presign (the pull is terminal under that
+      // blob); one in-place retry covers a source that has recovered — e.g.
+      // the gateway finished rebuilding a cold CAR — without another click.
+      let ctx = await bindCtx(c)
+      for (let attempt = 0; ; attempt++) {
+        await ensurePresigned(c, chunk, ctx)
+        try {
+          await pullChunk(c, chunk, ctx, from)
+          break
+        } catch (err) {
+          const retryable = chunk.extraData == null && chunk.txHash == null
+          if (!retryable || attempt >= 1) throw err
+          ctx = await bindCtx(c)
+        }
+      }
       await commitChunk(c, chunk, ctx)
     }
     c.chunkIndex = undefined
