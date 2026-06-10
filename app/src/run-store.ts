@@ -65,6 +65,12 @@ export interface SavedSubmitContext {
   /** Aggregate of the committed chunks' piece ids (display convenience). */
   pieceIds?: string[]
   chunks: SavedChunk[]
+  /**
+   * Pieces this provider could not fetch from their source after retries.
+   * They are carved out of their chunk so the rest commits; the UI offers a
+   * remainder manifest and a requeue.
+   */
+  deferredPieceCids?: string[]
   error?: string
 }
 

@@ -18,6 +18,7 @@ import {
 } from './session.ts'
 import {
   findResumableSubmit,
+  requeueDeferred,
   runSubmit,
   SubmitBlockedError,
   type SubmitContextStatus,
@@ -503,6 +504,31 @@ export default function App({ caps }: { caps: Capabilities }) {
     )
   }, [tooSmallCids, results, relayBase, gateway])
 
+  // Pieces no provider could fetch this run (deduped across copies) — the
+  // committable rest already landed; these get a retry and a remainder.
+  const deferredCids = useMemo(
+    () => [...new Set((submitState?.contexts ?? []).flatMap((c) => c.deferredPieceCids ?? []))],
+    [submitState]
+  )
+
+  const saveDeferredManifest = useCallback(() => {
+    const set = new Set(deferredCids)
+    downloadManifest(
+      buildManifest(
+        results.filter((r) => set.has(r.pieceCid)),
+        { tool: 'ipfs2foc-app', network: TARGET_NETWORK, relayBase, gateway, now: new Date().toISOString() }
+      )
+    )
+  }, [deferredCids, results, relayBase, gateway])
+
+  const retryDeferred = useCallback(async () => {
+    if (wallet == null) return
+    const saved = await findResumableSubmit(wallet, TARGET_NETWORK, results)
+    if (saved == null) return
+    setResumable(await requeueDeferred(saved))
+    void submitWith(null)
+  }, [wallet, results, submitWith])
+
   const eligibleCount = tooSmallCids == null ? 0 : results.filter((r) => !tooSmallCids.includes(r.pieceCid)).length
   const queuedCount = rows.filter((r) => r.state.phase === 'queued').length
   // Raw CARs at or under 127/128 × 512 KiB pad below the 1 MiB floor most
@@ -913,6 +939,32 @@ export default function App({ caps }: { caps: Capabilities }) {
                       </span>
                     </div>
                   ))}
+                </div>
+              )}
+              {deferredCids.length > 0 && !submitting && (
+                <div className="gate-note">
+                  <p>
+                    {deferredCids.length} piece{deferredCids.length === 1 ? ' was' : 's were'} skipped: the provider
+                    could not fetch them from their source after retries (the "check availability" links above show
+                    why). Everything else committed. If the source recovers — or you host the bytes another way — retry
+                    here; otherwise the remainder manifest carries them to the{' '}
+                    <a
+                      href="https://github.com/SgtPooki/ipfs2foc/blob/main/docs/local-console.md"
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      local path
+                    </a>
+                    .
+                  </p>
+                  <div className="actions">
+                    <button className="btn small" onClick={() => void retryDeferred()} type="button">
+                      Retry the skipped piece{deferredCids.length === 1 ? '' : 's'}
+                    </button>
+                    <button className="btn small" onClick={saveDeferredManifest} type="button">
+                      Download manifest of the skipped piece{deferredCids.length === 1 ? '' : 's'}
+                    </button>
+                  </div>
                 </div>
               )}
               {submitState != null && !submitState.persisted && (

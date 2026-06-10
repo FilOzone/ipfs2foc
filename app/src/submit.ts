@@ -122,6 +122,25 @@ export function submitStateFromSaved(saved: SavedSubmit): SubmitState {
 }
 
 /**
+ * Move every context's deferred (provider-unfetchable) pieces back into
+ * fresh chunks, so the next Resume pulls them again — the operator fixed the
+ * source, or decided to let the provider try once more.
+ */
+export async function requeueDeferred(saved: SavedSubmit): Promise<SavedSubmit> {
+  for (const c of saved.contexts) {
+    const deferred = c.deferredPieceCids ?? []
+    if (deferred.length === 0) continue
+    for (let i = 0; i < deferred.length; i += PULL_CHUNK_SIZE) {
+      c.chunks.push({ pieceCids: deferred.slice(i, i + PULL_CHUNK_SIZE) })
+    }
+    c.deferredPieceCids = undefined
+  }
+  saved.updatedAt = new Date().toISOString()
+  await saveSubmit(saved)
+  return saved
+}
+
+/**
  * The stored submit run, but only when it belongs to exactly this wallet,
  * network, and piece set — a presign is bound to all three, so anything else
  * must start fresh (or be discarded explicitly via clearSubmit).
@@ -365,13 +384,20 @@ export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
     }
   }
 
+  /**
+   * Pull one chunk. Returns the PieceCIDs the provider could NOT fetch from
+   * their source ([] = all parked). A partial pull discards the chunk's
+   * presign first: pulls are idempotent keyed on the blob, so re-pulling
+   * under it would return the same terminal status forever — and nothing was
+   * committed under it, so discarding is free.
+   */
   const pullChunk = async (
     c: SubmitContextStatus,
     chunk: SavedChunk,
     ctx: Ctx,
     from: string | ((pieceCid: PieceCID) => string)
-  ) => {
-    if (chunk.pullComplete === true) return
+  ): Promise<string[]> => {
+    if (chunk.pullComplete === true) return []
     c.phase = 'pulling'
     seedPullStatus(c)
     emit()
@@ -391,22 +417,14 @@ export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
     })
     if (result.status !== 'complete') {
       const failed = result.pieces.filter((p) => p.status !== 'complete').map((p) => p.pieceCid.toString())
-      // A pull is idempotent keyed on its presign: re-pulling with the same
-      // blob returns this same terminal status forever. Nothing has been
-      // committed under it, so discard the presign — the next attempt mints
-      // a fresh one and the provider retries the failed pieces for real.
       chunk.extraData = undefined
       chunk.signedDataSetId = undefined
       await persist()
-      throw new Error(
-        `the provider could not fetch ${failed.length} of this chunk's pieces from their source — Resume retries them with a fresh pull (${failed
-          .slice(0, 3)
-          .map((cid) => cid.slice(0, 16))
-          .join('…, ')}…${failed.length > 3 ? ` and ${failed.length - 3} more` : ''})`
-      )
+      return failed
     }
     chunk.pullComplete = true
     await persist()
+    return []
   }
 
   const isTerminalRejection = (err: unknown): boolean =>
@@ -546,20 +564,37 @@ export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
         await commitChunk(c, chunk, undefined)
         continue
       }
-      // A failed pull discards its presign (the pull is terminal under that
-      // blob); one in-place retry covers a source that has recovered — e.g.
-      // the gateway finished rebuilding a cold CAR — without another click.
+      // Pull with one in-place retry under a fresh presign — a source that
+      // has recovered (e.g. a gateway finished rebuilding a cold CAR) often
+      // succeeds the second time. Pieces that still fail are carved out of
+      // the chunk and deferred, so everything the provider COULD fetch
+      // commits; the UI hands the deferred set back as a remainder.
       let ctx = await bindCtx(c)
-      for (let attempt = 0; ; attempt++) {
+      let failed: string[] = []
+      for (let attempt = 0; attempt < 2; attempt++) {
         await ensurePresigned(c, chunk, ctx)
-        try {
-          await pullChunk(c, chunk, ctx, from)
-          break
-        } catch (err) {
-          const retryable = chunk.extraData == null && chunk.txHash == null
-          if (!retryable || attempt >= 1) throw err
-          ctx = await bindCtx(c)
+        failed = await pullChunk(c, chunk, ctx, from)
+        if (failed.length === 0) break
+        ctx = await bindCtx(c)
+      }
+      if (failed.length > 0) {
+        c.deferredPieceCids = [...new Set([...(c.deferredPieceCids ?? []), ...failed])]
+        const parked = chunk.pieceCids.filter((cid) => !failed.includes(cid))
+        if (parked.length === 0) {
+          // Nothing in this chunk is committable; close it out empty so a
+          // resume doesn't grind on it — the pieces live in the deferred set.
+          chunk.pieceCids = []
+          chunk.committed = true
+          await persist()
+          continue
         }
+        // The parked pieces survive the failed pull (parking is by piece, the
+        // add authorization is a separate presign — the CLI flow relies on
+        // the same split). Reshape the chunk to them and commit directly.
+        chunk.pieceCids = parked
+        chunk.pullComplete = true
+        await persist()
+        await ensurePresigned(c, chunk, ctx)
       }
       await commitChunk(c, chunk, ctx)
     }
