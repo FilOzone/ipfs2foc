@@ -526,7 +526,9 @@ export default function App({ caps }: { caps: Capabilities }) {
     const saved = await findResumableSubmit(wallet, TARGET_NETWORK, results)
     if (saved == null) return
     setResumable(await requeueDeferred(saved))
-    void submitWith(null)
+    // Same advisory-floor stance as the regular Submit — the deferred pieces
+    // are small ones by definition, so the strict pre-check would just block.
+    void submitWith(null, true)
   }, [wallet, results, submitWith])
 
   const eligibleCount = tooSmallCids == null ? 0 : results.filter((r) => !tooSmallCids.includes(r.pieceCid)).length
