@@ -141,6 +141,11 @@ export default function App({ caps }: { caps: Capabilities }) {
   // Writes are blocked until the restore attempt settles, so an early debounced
   // persist of the empty textarea cannot clobber a saved run.
   const hydrated = useRef(false)
+  // True once any prepare run has started this page-load. The async restore
+  // below races a run started before it resolves: replacing rows and
+  // savedResults with the saved (older) snapshot re-marked finished rows as
+  // queued and made the pool look like it died mid-run (#42).
+  const ranRef = useRef(false)
 
   // Restore the previous run once on load (#26). Done rows come back as done;
   // anything else shows queued and recomputes on the next prepare.
@@ -148,7 +153,14 @@ export default function App({ caps }: { caps: Capabilities }) {
     loadRun().then((saved) => {
       hydrated.current = true
       if (saved == null) return
-      savedResults.current = saved.results
+      // Merge, never replace: a run that started before this restore resolved
+      // has fresher results than the snapshot read from storage (#42).
+      for (const [cid, result] of Object.entries(saved.results)) {
+        savedResults.current[cid] ??= result
+      }
+      // A live (or finished) run owns the input and the rows — restoring the
+      // saved snapshot over them would clobber its progress (#42).
+      if (ranRef.current) return
       setCidsText(saved.cidsText)
       setRelayBase(saved.relayBase)
       setGateway(saved.gateway)
@@ -160,11 +172,11 @@ export default function App({ caps }: { caps: Capabilities }) {
             .filter((s) => s.length > 0)
         )
       )
-      const doneCount = savedCids.filter((cid) => saved.results[cid] != null).length
+      const doneCount = savedCids.filter((cid) => savedResults.current[cid] != null).length
       if (doneCount > 0) {
         setRows(
           savedCids.map((cid) => {
-            const result = saved.results[cid]
+            const result = savedResults.current[cid]
             return { cid, state: result ? { phase: 'done', result } : { phase: 'queued' } }
           })
         )
@@ -444,6 +456,7 @@ export default function App({ caps }: { caps: Capabilities }) {
   )
 
   const run = useCallback(async () => {
+    ranRef.current = true
     setRunning(true)
     // Prune saved results for CIDs no longer in the input, then seed done rows
     // from the saved run — pieces are deterministic, so a saved result is final
@@ -467,8 +480,14 @@ export default function App({ caps }: { caps: Capabilities }) {
         await prepareOne(pending[next++])
       }
     }
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker))
-    setRunning(false)
+    // prepareOne resolves on every path (its catch maps failures to row state),
+    // but `running` must never stick at true: the finally keeps the button
+    // honest even if a future edit lets a worker reject.
+    try {
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker))
+    } finally {
+      setRunning(false)
+    }
   }, [cids, cidsText, persist, prepareOne])
 
   const reset = useCallback(() => {
