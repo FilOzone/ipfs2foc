@@ -21,9 +21,28 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
       - run: pnpm run typecheck
+      # Hermetic suite only — the live-gateway canaries run in their own
+      # non-blocking job below, so a third-party gateway outage cannot block
+      # merges or releases.
+      - run: pnpm test
+      - run: pnpm run build
+
+  # Live-gateway canaries: the trustless CAR determinism pins, against the real
+  # gateway. A failure here means the gateway is serving different (or no)
+  # bytes for the pinned CIDs — worth investigating, and worth reporting
+  # upstream, but not a defect in this repo. The job is advisory: red shows in
+  # the run list without failing the workflow.
+  live-canary:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '26'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: pnpm test
         env:
-          # Live-gateway canaries (trustless CAR determinism pins) run here,
-          # where DNS is unfiltered; the default local suite stays hermetic.
           LIVE_TESTS: '1'
-      - run: pnpm run build
