@@ -71,6 +71,8 @@ Usage:
                      (uses PRIVATE_KEY env)
   ipfs2foc pdp-submit --data-set-id <id> (--source-base <https-url> | --source-relay <https-url>) [--db <file>]
                      [--network mainnet|calibration] [--max-in-flight 4] [--max-base-fee N] [--pull-batch 32]
+                     [--strict-piece-size]  (refuse pieces below the provider's advertised minimum;
+                     default warns and proceeds — the floor is advisory in practice)
                      (--source-base: your own redirect-serve; --source-relay: a shared stateless relay, passthrough only)
                      (uses PRIVATE_KEY env)
   ipfs2foc report --data-set-id <id> [--db <file>] [--network mainnet|calibration] [--json]
@@ -541,6 +543,7 @@ async function cmdPdpSubmit(argv: string[]): Promise<void> {
       'max-base-fee': { type: 'string' },
       'poll-seconds': { type: 'string', default: '15' },
       'pull-batch': { type: 'string', default: '32' },
+      'strict-piece-size': { type: 'boolean', default: false },
     },
   })
   if (values['data-set-id'] == null) {
@@ -571,6 +574,7 @@ async function cmdPdpSubmit(argv: string[]): Promise<void> {
       maxBaseFee: values['max-base-fee'] == null ? DEFAULT_MAX_BASE_FEE : BigInt(values['max-base-fee']),
       pollMs: parsePositiveInt(values['poll-seconds'] as string, '--poll-seconds') * 1000,
       pullBatch: parsePositiveInt(values['pull-batch'] as string, '--pull-batch'),
+      strictPieceSize: values['strict-piece-size'] as boolean,
     })
     const committed = db.aggregates().filter((a) => a.status === 'committed')
     log(

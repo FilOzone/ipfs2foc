@@ -76,6 +76,14 @@ export interface SubmitPdpOptions {
   /** Max sub-pieces per pull request, bounded by the 8192-byte FVM event cap on
    *  the admission eth_call's simulated AddPieces. */
   pullBatch: number
+  /**
+   * Refuse (instead of warn) when a sub-piece falls below the provider's
+   * advertised `minPieceSizeInBytes`. The advertised floor is advisory in
+   * practice — pull admission accepted and the chain committed ~60 sub-floor
+   * pieces during live testing (#44) — so the default is warn-and-proceed; a
+   * real refusal still surfaces per piece in the pull status.
+   */
+  strictPieceSize?: boolean
   /** Override the AddPieces-confirm deadline (default `ADD_CONFIRM_TIMEOUT_MS`). */
   addConfirmTimeoutMs?: number
   /** Override the pull no-progress stall window (default `PULL_STALL_TIMEOUT_MS`). */
@@ -246,21 +254,32 @@ export async function runSubmitPdp(
     const members = db.aggregateManifest(agg.idx)
     const aggBytesPlanned = members.reduce((sum, m) => sum + m.rawSize, 0)
 
-    // Refuse to pull an aggregate whose sub-pieces fall below the provider's
-    // padded min piece size. Without the guard the provider rejects mid-pull
-    // and the operator burns a tunnel cycle (issue #17). Skip only aggregates
-    // that have not yet been submitted; a resume row (txHash set, status
-    // submitted/parked) has already cleared this check on a prior run.
+    // The provider's advertised min piece size is advisory in practice: pull
+    // admission accepted and the chain committed sub-floor pieces in live
+    // testing (#44), so a violation warns and proceeds by default — a real
+    // refusal surfaces per piece in the pull status. `--strict-piece-size`
+    // restores refuse-up-front (issue #17's failure mode: a provider version
+    // that does enforce would reject mid-pull and burn a tunnel cycle).
+    // Checked only for aggregates not yet submitted; a resume row (txHash set,
+    // status submitted/parked) already cleared this on a prior run.
     if (agg.txHash == null && agg.status === 'planned') {
       const check = checkMinPieceSize(members, minPieceSize)
       if (!check.ok) {
         const names = check.tooSmall.map((s) => `${s.pieceCid} (padded ${s.paddedSize})`).join(', ')
-        const reason =
-          `sub-piece(s) below provider min piece size ${minPieceSize}: ${names}. ` +
-          `Re-pack with \`pack-cars --pack-target-size\` at or above the provider minimum.`
-        db.markAggregateFailed(agg.idx, reason)
-        log(`aggregate ${agg.idx}: ${reason}`)
-        continue
+        if (opts.strictPieceSize === true) {
+          const reason =
+            `sub-piece(s) below provider min piece size ${minPieceSize}: ${names}. ` +
+            `Re-pack with \`pack-cars --pack-target-size\` at or above the provider minimum.`
+          db.markAggregateFailed(agg.idx, reason)
+          log(`aggregate ${agg.idx}: ${reason}`)
+          continue
+        }
+        log(
+          `aggregate ${agg.idx}: ${check.tooSmall.length} sub-piece(s) below the provider's advertised ` +
+            `min piece size ${minPieceSize} (${names}) — proceeding; the advertised floor is not enforced ` +
+            `in practice. A refusal would show per piece in the pull status; \`pack-cars ` +
+            `--pack-target-size\` packs above the floor, and --strict-piece-size refuses up front.`
+        )
       }
     }
 

@@ -44,6 +44,8 @@ interface FakeBehavior {
   addStatus?: () => AddStatusResult
   activeRoots?: () => Set<string>
   event?: AddPiecesEvent | null
+  /** Provider-advertised floor; 0n (default) never trips the guard. */
+  minPieceSize?: bigint
 }
 
 function fakeDeps(b: FakeBehavior) {
@@ -71,7 +73,7 @@ function fakeDeps(b: FakeBehavior) {
             return b.addStatus ? b.addStatus() : { done: true, ok: true, confirmedPieceIds: [1] }
           },
         },
-        minPieceSize: 0n,
+        minPieceSize: b.minPieceSize ?? 0n,
         serviceURL: 'fake://provider',
       }
     },
@@ -120,6 +122,34 @@ test('happy path: pull -> add -> confirm -> committed', async () => {
     const agg = db.aggregates()[0]!
     assert.equal(agg.status, 'committed')
     assert.equal(calls.addAggregate, 1)
+  })
+})
+
+test('#44 default: sub-floor pieces warn and proceed to committed', async () => {
+  await withDb('flow-floor-warn', async (db) => {
+    seedPlanned(db, 0, 'bafSrc', M1)
+    const root = rootOf(M1.pcid, M1.raw)
+    const { deps, calls } = fakeDeps({
+      // Floor far above M1's padded size — advisory, must not block.
+      minPieceSize: 1n << 40n,
+      event: { blockNumber: 100n, pieceIds: [7n], pieceCids: [root] },
+    })
+    await runSubmitPdp(db, baseOpts, deps)
+    const agg = db.aggregates()[0]!
+    assert.equal(agg.status, 'committed')
+    assert.equal(calls.pull, 1)
+  })
+})
+
+test('#44 --strict-piece-size: sub-floor pieces are refused before any pull', async () => {
+  await withDb('flow-floor-strict', async (db) => {
+    seedPlanned(db, 0, 'bafSrc', M1)
+    const { deps, calls } = fakeDeps({ minPieceSize: 1n << 40n })
+    await runSubmitPdp(db, { ...baseOpts, strictPieceSize: true }, deps)
+    const agg = db.aggregates()[0]!
+    assert.equal(agg.status, 'failed')
+    assert.match(agg.error ?? '', /below provider min piece size/)
+    assert.equal(calls.pull, 0)
   })
 })
 
