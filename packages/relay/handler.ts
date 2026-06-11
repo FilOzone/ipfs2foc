@@ -13,6 +13,13 @@
  * whose one-shot gateway CAR fetch was unpullable for DAGs the gateway can
  * serve block-wise but not as one CAR.
  *
+ * `RELAY_MODE=redirect` (#52) restores that 302 behavior as an opt-in for
+ * self-hosters: no payload traverses the Worker, so the deployment fits the
+ * free plan's CPU budget — at the price of no recovery when the gateway
+ * truncates a CAR. Path parsing, the allowlist, and canonical-CID validation
+ * are identical in both modes; only the final answer differs (302 to
+ * `buildCarUrl` vs the streamed canonical CAR).
+ *
  * The routing is encoded entirely in the request path:
  *
  *     GET /r/{gatewayHost}/{cid}/piece/{pieceCidV2}
@@ -32,7 +39,7 @@
  * exact bytes the commitment was computed over.
  */
 
-import { canonicalCid, defaultGatewayHosts } from 'ipfs2foc-core'
+import { buildCarUrl, canonicalCid, defaultGatewayHosts } from 'ipfs2foc-core'
 import { exportCanonicalCar } from 'ipfs2foc-core/car-export'
 import { CarStreamSource, type CarStreamSourceOptions, defaultGetCodec } from 'ipfs2foc-core/car-stream-source'
 import { CID } from 'multiformats/cid'
@@ -44,6 +51,14 @@ export interface RelayEnv {
    * by config rather than code. Host only — no scheme, port, or path.
    */
   ALLOWED_GATEWAY_HOSTS?: string
+  /**
+   * `stream` (default) streams the hash-verified canonical CAR and rebuilds
+   * gateway-truncated blocks — always pullable, needs Workers Paid. `redirect`
+   * answers the pre-#45 302 to the gateway CAR — free tier, but a DAG the
+   * gateway cannot serve as one CAR stays unpullable. Anything other than the
+   * exact string `redirect` streams.
+   */
+  RELAY_MODE?: string
 }
 
 /**
@@ -137,6 +152,15 @@ async function handlePull(
   // round-trip.
   const cid = canonicalCid(cidRaw)
   if (cid == null) return text('not a canonical CIDv1', 404)
+
+  // Redirect mode: the original 302 at the gateway CAR, built from the
+  // allowlisted host string and the canonical CID — never from raw request
+  // bytes. Curio follows it (≤3 cross-origin hops, re-validated); HEAD gets
+  // the same 302, which carries no body anyway.
+  if (env.RELAY_MODE === 'redirect') {
+    const location = buildCarUrl(`https://${host}`, cid)
+    return new Response(null, { status: 302, headers: { location, 'cache-control': 'no-store' } })
+  }
 
   // HEAD: monitors and some clients probe the pull URL. Answer the shape of the
   // GET without opening an upstream stream.

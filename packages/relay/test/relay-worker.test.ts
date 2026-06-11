@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { CarWriter } from '@ipld/car'
 import * as dagPb from '@ipld/dag-pb'
-import { relayPullUrl } from 'ipfs2foc-core'
+import { buildCarUrl, relayPullUrl } from 'ipfs2foc-core'
 import { CID } from 'multiformats/cid'
 import * as raw from 'multiformats/codecs/raw'
 import { sha256 } from 'multiformats/hashes/sha2'
@@ -305,4 +305,50 @@ test('method and routing guards', async () => {
   assert.equal((await get('/healthz', {}, 'POST')).status, 405)
   assert.equal((await get('/')).status, 404)
   assert.equal((await get('/nope')).status, 404)
+})
+
+// RELAY_MODE=redirect (#52): the pre-stream 302 behavior, opt-in for free-tier
+// self-hosters. Shared parsing/allowlist/CID validation must hold either way.
+
+test('redirect mode answers 302 at the gateway CAR with no upstream fetch', async () => {
+  const env: RelayEnv = { RELAY_MODE: 'redirect' }
+  const opts: HandleOptions = {
+    carStreamSourceOptions: {
+      openCarStream: () => {
+        throw new Error('redirect mode must not open an upstream stream')
+      },
+      fetchRawBlock: async () => {
+        throw new Error('redirect mode must not fetch blocks')
+      },
+    },
+  }
+  for (const method of ['GET', 'HEAD'] as const) {
+    const res = await get(pullPath(HOST, SOURCE_CID), env, method, opts)
+    assert.equal(res.status, 302)
+    assert.equal(res.headers.get('location'), buildCarUrl(`https://${HOST}`, SOURCE_CID))
+    assert.equal(res.headers.get('cache-control'), 'no-store')
+  }
+})
+
+test('redirect mode keeps the allowlist and canonical-CID gates', async () => {
+  const env: RelayEnv = { RELAY_MODE: 'redirect' }
+  assert.equal((await get(pullPath('evil.example', SOURCE_CID), env)).status, 403)
+  assert.equal((await get(pullPath(HOST, CID_V0), env)).status, 404)
+})
+
+test('any RELAY_MODE other than the exact string "redirect" streams', async () => {
+  const { root, blocks } = await makeDag()
+  const expected = await canonicalCarBytes(root.cid, blocks)
+  const res = await get(pullPath(HOST, root.cid.toString()), { RELAY_MODE: 'Redirect' }, 'GET', {
+    carStreamSourceOptions: {
+      openCarStream: async function* () {
+        yield* blocks
+      },
+      fetchRawBlock: async () => {
+        throw new Error('healthy stream needs no raw fetch')
+      },
+    },
+  })
+  assert.equal(res.status, 200)
+  assert.deepEqual(await bodyBytes(res), expected)
 })

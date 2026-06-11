@@ -71,10 +71,18 @@ Built-in allowlist: the hosts in `DEFAULT_GATEWAYS`
 
 ### Operational notes
 
-- **Workers Paid required.** Streaming and hash-verifying tens of MB per pull
-  is well past the free plan's 10ms CPU budget (paid: 30s default, ~100×
-  headroom; worst-case full per-block rebuild is hundreds of subrequests vs the
-  10k paid limit).
+- **Workers Paid required** (in the default stream mode). Streaming and
+  hash-verifying tens of MB per pull is well past the free plan's 10ms CPU
+  budget (paid: 30s default, ~100× headroom; worst-case full per-block rebuild
+  is hundreds of subrequests vs the 10k paid limit).
+- **`RELAY_MODE=redirect` runs on the free tier.** Set the var in
+  `wrangler.jsonc` and the relay answers the pull with a 302 to the gateway
+  CAR instead of streaming it — no payload traverses the Worker, so there is
+  no CPU cost. The trade: a DAG the gateway truncates or cannot serve as one
+  CAR is unpullable in this mode (the stream mode's per-block rebuild is the
+  fix for exactly that). Path parsing, the allowlist, and canonical-CID
+  validation are identical in both modes. The hosted relay stays in stream
+  mode.
 - **Memory.** The reorder buffer and exporter lookahead are deliberately small
   (`handler.ts` `RELAY_MAX_BUFFERED_BLOCKS`/`RELAY_LOOKAHEAD`): a fast gateway
   feeding a slow provider must not buffer the DAG tail inside the 128MB

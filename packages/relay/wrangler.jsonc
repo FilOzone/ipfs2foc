@@ -25,5 +25,11 @@
     // (trustless-gateway.link). Comma-separated, host only — no scheme, port,
     // or path.
     // "ALLOWED_GATEWAY_HOSTS": "ipfs.example.org"
+    //
+    // Optional. "redirect" answers pulls with a 302 to the gateway CAR instead
+    // of streaming it — fits the free plan (no payload traverses the Worker),
+    // but gateway-truncated DAGs become unpullable (no per-block rebuild).
+    // Default ("stream", or unset) requires Workers Paid; see README.
+    // "RELAY_MODE": "redirect"
   }
 }
