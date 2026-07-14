@@ -360,7 +360,7 @@ export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
     }
     if (!sessionCanPresign(session)) {
       throw new SubmitBlockedError(
-        'session expires within the safety margin — extend it before submitting',
+        'session expires within the safety margin. Extend it before submitting.',
         'session-margin'
       )
     }

@@ -12,11 +12,18 @@ import { CAPABILITIES_SCHEMA_VERSION, type Capabilities } from 'ipfs2foc-core/ca
 
 export const DEFAULT_RELAY = 'https://ipfs2foc-relay.russell-3c4.workers.dev'
 
+/**
+ * The network the hosted console starts on. A `serve` daemon declares its own
+ * and the console follows it; on the hosted site the operator picks, starting
+ * here. Set to 'mainnet' for launch.
+ */
+export const DEFAULT_NETWORK = 'calibration' as const
+
 /** What the static hosted console can do: in-browser prepare + wallet signing. */
 export const HOSTED_DEFAULTS: Capabilities = {
   schemaVersion: CAPABILITIES_SCHEMA_VERSION,
   backend: 'hosted',
-  network: 'calibration',
+  network: DEFAULT_NETWORK,
   apiBase: null,
   pieceBase: DEFAULT_RELAY,
   supportsAssembledPieces: false,

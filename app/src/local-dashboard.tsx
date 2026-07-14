@@ -51,10 +51,10 @@ interface ServeStatus {
 
 /** 409 reasons from POST /api/submit and /api/data-sets, in operator words. */
 const REFUSAL_MESSAGES: Record<string, string> = {
-  'no-session': 'no signing session on the daemon — grant one in the Signing panel',
-  'session-margin': 'the session expires within the safety margin — extend it in the Signing panel, then retry',
-  'ingress-unreachable': 'providers cannot reach this daemon — check the pieces chip / tunnel, then retry',
-  'job-running': 'a chain job is already in progress — wait for it to finish',
+  'no-session': 'no signing session on the daemon. Grant one in the Signing panel.',
+  'session-margin': 'the session expires within the safety margin. Extend it in the Signing panel, then retry.',
+  'ingress-unreachable': 'providers cannot reach this daemon. Check the pieces chip or tunnel, then retry.',
+  'job-running': 'a chain job is already in progress. Wait for it to finish.',
   'network-mismatch': 'the session targets a different network than this daemon',
 }
 
@@ -217,7 +217,7 @@ export default function LocalDashboard({ caps }: { caps: Capabilities }) {
           {publicBase == null ? (
             <span
               className="chip"
-              title="providers cannot pull yet — restart with --ingress cloudflared or --public-base"
+              title="providers cannot pull yet. Restart with --ingress cloudflared or --public-base."
             >
               pieces · local only
             </span>
@@ -233,19 +233,21 @@ export default function LocalDashboard({ caps }: { caps: Capabilities }) {
           <span
             className="chip"
             title={
-              status?.gas == null ? 'base-fee monitor is off — start serve with --network or --rpc-url to enable' : ''
+              status?.gas == null
+                ? 'base-fee monitor is off. Start serve with --network or --rpc-url to enable it.'
+                : ''
             }
           >
             {status?.gas == null
               ? 'base fee · off'
-              : `base fee ${status.gas.baseFee} · ${status.gas.multipleOfFloor}× · ${status.gas.pause ? 'SPIKE — pause' : status.gas.level}`}
+              : `base fee ${status.gas.baseFee} · ${status.gas.multipleOfFloor}× · ${status.gas.pause ? 'SPIKE · pause' : status.gas.level}`}
           </span>
         </div>
       </header>
 
       <p className="lede">
-        This daemon computes piece commitments and packs aggregates in the background — add CIDs, press start, close the
-        tab whenever. State lives in <code className="mono">{db}</code>.
+        This daemon computes piece commitments and packs aggregates in the background. Add CIDs, press start, and close
+        the tab whenever. State lives in <code className="mono">{db}</code>.
       </p>
 
       <section className="panel">
@@ -376,8 +378,8 @@ export default function LocalDashboard({ caps }: { caps: Capabilities }) {
             <span className="panel-note">{toCommit} aggregate(s) to commit</span>
           </div>
           <p className="hint">
-            The daemon pulls each aggregate to the provider and lands the on-chain add, signing with the session key —
-            progress shows in the Aggregates table. A data set id is reusable across runs.
+            The daemon pulls each aggregate to the provider and lands the on-chain add, signing with the session key.
+            Progress shows in the Aggregates table. A data set id is reusable across runs.
           </p>
           <div className="field">
             <span>data set id</span>
@@ -454,7 +456,7 @@ export default function LocalDashboard({ caps }: { caps: Capabilities }) {
             <span className="panel-note">{toCommit} aggregate(s) to commit</span>
           </div>
           <p className="hint">
-            This daemon runs the commP + packing stage. Putting aggregates on chain is done from the CLI — those
+            This daemon runs the commP + packing stage. Putting aggregates on chain is done from the CLI, and those
             commands sign with <code className="mono">PRIVATE_KEY</code> and need a public HTTPS ingress. Click a
             command to copy.
           </p>

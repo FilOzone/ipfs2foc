@@ -74,19 +74,19 @@ export function describePrepareFailure(err: unknown): PrepareFailure {
   const headline = (() => {
     if (msgs.some((m) => m === 'not a valid CID')) return 'not a valid CID'
     if (msgs.some((m) => /did not match multihash/.test(m))) {
-      return 'gateway returned bytes that do not match the CID — switch gateway'
+      return 'gateway returned bytes that do not match the CID. Switch gateway.'
     }
     if (msgs.some((m) => /received (429|5\d\d) /.test(m))) {
-      return 'gateway kept timing out on a block — likely not cached there; retry, or switch gateway'
+      return 'gateway kept timing out on a block. It is likely not cached there; retry, or switch gateway.'
     }
     if (msgs.some((m) => /received (404|410) /.test(m))) {
-      return 'the gateway does not have this content — switch gateway'
+      return 'the gateway does not have this content. Switch gateway.'
     }
     if (msgs.some((m) => /Failed to fetch|NetworkError/i.test(m))) {
-      return 'network failure while fetching — check connectivity and retry'
+      return 'network failure while fetching. Check connectivity and retry.'
     }
     if (msgs.some((m) => /stopped sending bytes/.test(m))) {
-      return 'source stalled — not serving this CID right now; retry later'
+      return 'source stalled. It is not serving this CID right now; retry later.'
     }
     return msgs[0] ?? 'failed'
   })()

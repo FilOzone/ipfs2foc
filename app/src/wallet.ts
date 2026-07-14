@@ -1,7 +1,7 @@
-// BYOW wallet connect over an injected EIP-1193 provider. The prepare-migration
-// flow reads the account and chain only; it signs nothing. Wallet-signed
-// createDataSet / AddPieces (via the Synapse SDK with a viem wallet client) are
-// not wired here.
+// BYOW wallet connect over an injected EIP-1193 provider. Prepare reads the
+// account and chain only and signs nothing; createDataSet / AddPieces are
+// signed by a session key (see session.ts, submit.ts), which is scoped to the
+// account and network that were live when it was granted.
 import { createWalletClient, custom, type WalletClient } from 'viem'
 
 /** Filecoin network chain ids. Calibration is the testnet default for the hosted app. */
@@ -21,6 +21,7 @@ export interface WalletState {
 interface Eip1193Provider {
   request(args: { method: string; params?: unknown[] }): Promise<unknown>
   on?(event: string, handler: (...args: unknown[]) => void): void
+  removeListener?(event: string, handler: (...args: unknown[]) => void): void
 }
 
 export function injectedProvider(): Eip1193Provider | null {
@@ -31,7 +32,7 @@ export function injectedProvider(): Eip1193Provider | null {
 export async function connectWallet(): Promise<WalletState> {
   const provider = injectedProvider()
   if (provider == null) {
-    throw new Error('no injected wallet found — install MetaMask or another EIP-1193 wallet')
+    throw new Error('no injected wallet found. Install MetaMask or another EIP-1193 wallet.')
   }
   const accounts = (await provider.request({ method: 'eth_requestAccounts' })) as `0x${string}`[]
   if (accounts.length === 0) throw new Error('wallet returned no accounts')
@@ -92,13 +93,32 @@ export async function switchToNetwork(network: NetworkKey): Promise<void> {
   }
 }
 
-export async function switchToCalibration(): Promise<void> {
-  return switchToNetwork('calibration')
-}
-
 /** Re-read the connected account + chain (after a network switch). */
 export async function refreshWallet(): Promise<WalletState> {
   return connectWallet()
+}
+
+/**
+ * Subscribe to account and chain changes made inside the wallet, so the UI does
+ * not keep rendering a disconnected account's balances and gating. Returns an
+ * unsubscribe function. Providers without EIP-1193 events never fire them, and
+ * the subscription is a no-op.
+ */
+export function onWalletChange(handler: () => void): () => void {
+  const provider = injectedProvider()
+  if (provider?.on == null) {
+    return () => {
+      // Nothing was subscribed, so there is nothing to tear down.
+    }
+  }
+  const onAccounts = () => handler()
+  const onChain = () => handler()
+  provider.on('accountsChanged', onAccounts)
+  provider.on('chainChanged', onChain)
+  return () => {
+    provider.removeListener?.('accountsChanged', onAccounts)
+    provider.removeListener?.('chainChanged', onChain)
+  }
 }
 
 /** Resolve a chain id to a known network label, or null if unrecognized. */

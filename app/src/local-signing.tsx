@@ -241,7 +241,7 @@ export default function LocalSigningPanel({
       <div className="panel-head">
         <span className="panel-no">{panelNo}</span>
         <h2>Signing</h2>
-        <span className="panel-note">grant a scoped key — the daemon submits, this tab can close</span>
+        <span className="panel-note">Grant a scoped key. The daemon submits, and this tab can close.</span>
       </div>
       <div className="wallet-row">
         {wallet == null ? (
@@ -260,7 +260,7 @@ export default function LocalSigningPanel({
                 <button className="btn small" onClick={() => void switchNet()} type="button">
                   Switch to {NETWORKS[network].label}
                 </button>
-                <span className="hint">the daemon runs {network} — signing needs the wallet on the same network</span>
+                <span className="hint">The daemon runs {network}. Signing needs the wallet on the same network.</span>
               </>
             )}
           </div>
@@ -291,9 +291,9 @@ export default function LocalSigningPanel({
                 {!readyToSign(payments) && (
                   <span className="pay-setup">
                     signing needs a one-time payment setup: deposit USDFC into Filecoin Pay and approve the storage
-                    service as a payments operator —{' '}
+                    service as a payments operator. See the{' '}
                     <a
-                      href="https://github.com/SgtPooki/ipfs2foc#network-gas-and-payments"
+                      href="https://github.com/FilOzone/ipfs2foc#network-gas-and-payments"
                       rel="noreferrer"
                       target="_blank"
                     >
@@ -363,7 +363,7 @@ export default function LocalSigningPanel({
                     )}
                     {nudgeExtend && session != null && (
                       <span className="pay-setup">
-                        the session expires soon — extending now keeps a running submit going (the daemon re-checks the
+                        The session expires soon. Extending now keeps a running submit going (the daemon re-checks the
                         chain; no resubmit needed)
                       </span>
                     )}

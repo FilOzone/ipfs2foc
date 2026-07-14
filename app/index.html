@@ -3,15 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ipfs2foc — browser migration console</title>
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2307090c'/%3E%3Cpath d='M9 9 L23 9 L9 23 Z' fill='%2336e0c4'/%3E%3C/svg%3E"
-    />
-    <meta
-      name="description"
-      content="Compute Filecoin piece commitments for pinned IPFS CIDs in the browser, then export the provider pull URLs. No re-chunking, no server."
-    />
+    <title>ipfs2foc: move pinned IPFS content to Filecoin</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='219.00 782.00 120.08 120.08'%3E%3Cpath fill='%230090ff' d='M 219 787.363281 C 219 784.402344 221.402344 782 224.363281 782 L 333.71875 782 C 336.679688 782 339.082031 784.402344 339.082031 787.363281 L 339.082031 896.71875 C 339.082031 899.679688 336.679688 902.078125 333.71875 902.078125 L 224.363281 902.078125 C 221.402344 902.078125 219 899.679688 219 896.71875 Z M 219 787.363281 '/%3E%3Cpath fill='%23f7f7f7' d='M 297.660156 873.742188 C 287.410156 879.660156 275.449219 879.925781 265.382812 875.5 C 258.664062 872.546875 252.789062 867.5 248.835938 860.65625 C 248.09375 859.367188 247.4375 858.050781 246.871094 856.714844 C 249.011719 855.273438 251.585938 854.429688 254.359375 854.429688 C 257.84375 854.429688 261.019531 855.761719 263.402344 857.941406 C 263.726562 858.289062 264.054688 858.625 264.398438 858.949219 C 264.398438 858.949219 264.398438 858.949219 264.398438 858.953125 C 268.40625 862.765625 273.824219 865.105469 279.789062 865.105469 C 289.457031 865.105469 297.6875 858.960938 300.789062 850.363281 C 301.644531 847.996094 302.109375 845.441406 302.109375 842.777344 L 302.109375 842.734375 L 256.367188 842.734375 C 253.066406 842.484375 250.097656 841.035156 247.894531 838.824219 C 246.675781 837.601562 245.691406 836.140625 245.015625 834.523438 C 244.484375 833.253906 244.144531 831.886719 244.027344 830.453125 L 244.027344 810.542969 C 244.027344 809.265625 245.570312 808.625 246.472656 809.527344 L 253.460938 816.519531 C 254.308594 816.261719 255.195312 816.082031 256.109375 815.992188 C 256.53125 815.953125 256.964844 815.933594 257.398438 815.933594 C 258.996094 815.933594 260.523438 816.210938 261.941406 816.71875 L 261.941406 810.542969 C 261.941406 809.265625 263.484375 808.625 264.386719 809.527344 L 273.578125 818.722656 C 276.441406 813.441406 281.375 809.445312 287.289062 807.824219 C 289.171875 807.304688 291.160156 807.027344 293.210938 807.027344 C 305.207031 807.027344 314.992188 816.496094 315.507812 828.371094 C 315.523438 828.695312 315.53125 829.027344 315.53125 829.355469 L 315.53125 842.082031 C 315.761719 854.667969 309.332031 867 297.660156 873.742188 Z M 297.660156 873.742188 '/%3E%3C/svg%3E" />
+    <meta name="description" content="Move content you already have pinned on IPFS to Filecoin storage. The CID does not change, and the end state is verifiable on chain." />
+    <meta name="theme-color" content="#0090ff" />
+    <link rel="canonical" href="https://filozone.github.io/ipfs2foc/" />
+
+    <!-- This URL is the campaign call to action, so it has to unfurl. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ipfs2foc" />
+    <meta property="og:title" content="Move pinned IPFS content to Filecoin" />
+    <meta property="og:description" content="Move content you already have pinned on IPFS to Filecoin storage. The CID does not change, and the end state is verifiable on chain." />
+    <meta property="og:url" content="https://filozone.github.io/ipfs2foc/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Move pinned IPFS content to Filecoin" />
+    <meta name="twitter:description" content="Move content you already have pinned on IPFS to Filecoin storage. The CID does not change, and the end state is verifiable on chain." />
   </head>
   <body>
     <div id="root"></div>

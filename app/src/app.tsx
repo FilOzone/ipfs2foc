@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
 import { computePiece, describePrepareFailure, type PieceResult } from './commp.ts'
+import { FilOzMark } from './filoz-mark.tsx'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
 import { fmtToken, type PaymentsStatus, RPC_URLS, readPaymentsStatus, readyToSign } from './payments.ts'
@@ -29,13 +30,18 @@ import {
 } from './submit.ts'
 import { useTabLifetime } from './tab-guard.ts'
 import { type VerifyResult, verifyDataSet } from './verify.ts'
-import { connectWallet, NETWORKS, networkOf, refreshWallet, switchToCalibration, type WalletState } from './wallet.ts'
+import {
+  connectWallet,
+  NETWORKS,
+  type NetworkKey,
+  networkOf,
+  onWalletChange,
+  refreshWallet,
+  switchToNetwork,
+  type WalletState,
+} from './wallet.ts'
 
 const DEFAULT_GATEWAY = 'https://trustless-gateway.link'
-// The hosted signing flow is calibration-only for now: session/submit take a
-// network parameter already, but wallet switching knows only calibration.
-// Generalizing to capabilities.network lands with the local signing flow.
-const TARGET_NETWORK = 'calibration' as const
 
 type RowState =
   | { phase: 'queued' }
@@ -93,6 +99,37 @@ function Led({ on, color }: { on: boolean; color: string }) {
   return <span className="led" style={{ background: on ? color : 'transparent', borderColor: color }} />
 }
 
+/**
+ * One prepared item, shown as the same CID on both sides of the move.
+ *
+ * The pieces table pairs each CID with its PieceCID, which reads as a
+ * transformation. It isn't one: the PieceCID is the commitment Filecoin proves
+ * against, while the CID that addresses the content is unchanged and stays
+ * retrievable. This states that directly for the item in hand — the fact the
+ * rest of the run depends on.
+ */
+function Continuity({ cid, pieceCid, size, drawn }: { cid: string; pieceCid: string; size: string; drawn: boolean }) {
+  return (
+    <div className="continuity">
+      <div className="continuity-ends">
+        <span className="side">
+          <span className="side-label">On IPFS today</span>
+          <code className="side-cid">{short(cid, 12, 8)}</code>
+        </span>
+        <span aria-hidden className={`continuity-rule ${drawn ? 'rule-draw' : ''}`} />
+        <span className="side side-dest">
+          <span className="side-label">On Filecoin</span>
+          <code className="side-cid">{short(cid, 12, 8)}</code>
+        </span>
+      </div>
+      <p className="continuity-note">
+        Same CID, both sides. Filecoin proves it holds <code className="mono">{short(pieceCid, 10, 6)}</code>, the{' '}
+        {size} commitment over those exact bytes.
+      </p>
+    </div>
+  )
+}
+
 function describeSubmitPhase(c: SubmitContextStatus): string {
   // Large runs land in several chunks (one provider add each); show which
   // one is in flight so a long submit reads as progress, not repetition.
@@ -121,6 +158,10 @@ function describeSubmitPhase(c: SubmitContextStatus): string {
 export default function App({ caps }: { caps: Capabilities }) {
   const [wallet, setWallet] = useState<WalletState | null>(null)
   const [walletError, setWalletError] = useState<string | null>(null)
+  // The network this run targets. A `serve` daemon pins its own; the hosted
+  // console starts on capabilities.DEFAULT_NETWORK and lets the operator switch,
+  // so a run can be rehearsed on calibration before it spends real USDFC.
+  const [targetNetwork, setTargetNetwork] = useState<NetworkKey>(caps.network)
   const [payments, setPayments] = useState<PaymentsStatus | null>(null)
   const [paymentsError, setPaymentsError] = useState<string | null>(null)
   const [paymentsLoading, setPaymentsLoading] = useState(false)
@@ -247,15 +288,34 @@ export default function App({ caps }: { caps: Capabilities }) {
   )
 
   const results = useMemo(() => rows.flatMap((r) => (r.state.phase === 'done' ? [r.state.result] : [])), [rows])
+  // The most recently finished piece, in row order — what Continuity shows.
+  const latest = results.length > 0 ? results[results.length - 1] : null
   const errors = rows.filter((r) => r.state.phase === 'error').length
   const walletNetwork = wallet == null ? null : networkOf(wallet.chainId)
-  const onCalibration = walletNetwork === TARGET_NETWORK
+  const onTargetNetwork = walletNetwork === targetNetwork
+  const isTestnet = targetNetwork !== 'mainnet'
+  // A `serve` daemon operates on one network and the console follows it.
+  // Otherwise the choice stays open until something is keyed to a network:
+  // the session key and the submit record both are.
+  const netLocked = caps.backend === 'local' || running || submitting || session != null || submitState != null
   const allCommitted =
     submitState != null && submitState.contexts.length > 0 && submitState.contexts.every((c) => c.phase === 'done')
 
   // Long runs: keep the screen awake and confirm accidental closes while
   // prepare or submit is in flight. Closing stays safe — both resume.
   useTabLifetime(running || submitting)
+
+  // Follow account and chain changes made inside the wallet. Spending is
+  // authorized against the connected account, so a stale address here would
+  // show one account's balances while a session key signs for another.
+  useEffect(() => {
+    if (wallet == null) return
+    return onWalletChange(() => {
+      refreshWallet()
+        .then(setWallet)
+        .catch(() => setWallet(null))
+    })
+  }, [wallet])
 
   // Payment-readiness reads (#23 signing prerequisites). Public-RPC reads on
   // the connected address — nothing is signed; re-read whenever the wallet or
@@ -292,7 +352,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     setSessionError(null)
     if (wallet == null) return
     const network = networkOf(wallet.chainId)
-    if (network !== TARGET_NETWORK) return
+    if (network !== targetNetwork) return
     let stale = false
     resumeSession(wallet, network)
       .then((s) => {
@@ -304,7 +364,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     return () => {
       stale = true
     }
-  }, [wallet])
+  }, [wallet, targetNetwork])
 
   // Without a wallet the saved submit still renders read-only so verify-on-chain
   // (an account-less RPC read) can answer "is everything on FOC?" — the resume
@@ -325,9 +385,9 @@ export default function App({ caps }: { caps: Capabilities }) {
   // to all three. Shown read-only until the operator presses Submit again.
   useEffect(() => {
     setResumable(null)
-    if (wallet == null || results.length === 0 || !onCalibration) return
+    if (wallet == null || results.length === 0 || !onTargetNetwork) return
     let stale = false
-    findResumableSubmit(wallet, TARGET_NETWORK, results).then((saved) => {
+    findResumableSubmit(wallet, targetNetwork, results).then((saved) => {
       if (stale || saved == null) return
       setResumable(saved)
       setCopies(saved.copies)
@@ -336,7 +396,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     return () => {
       stale = true
     }
-  }, [wallet, onCalibration, results])
+  }, [wallet, onTargetNetwork, results, targetNetwork])
 
   const submitWith = useCallback(
     async (excludePieceCids: string[] | null, ignoreMinPieceSize = false) => {
@@ -347,10 +407,10 @@ export default function App({ caps }: { caps: Capabilities }) {
       setSubmitBlocked(null)
       setSubmitting(true)
       try {
-        const prior = await findResumableSubmit(wallet, TARGET_NETWORK, pieces)
+        const prior = await findResumableSubmit(wallet, targetNetwork, pieces)
         const finished = await runSubmit({
           wallet,
-          network: TARGET_NETWORK,
+          network: targetNetwork,
           session,
           pieces,
           copies: prior?.copies ?? copies,
@@ -358,7 +418,7 @@ export default function App({ caps }: { caps: Capabilities }) {
           ignoreMinPieceSize,
           onUpdate: setSubmitState,
         })
-        setResumable(await findResumableSubmit(wallet, TARGET_NETWORK, pieces))
+        setResumable(await findResumableSubmit(wallet, targetNetwork, pieces))
         return finished
       } catch (err) {
         if (err instanceof SubmitBlockedError) {
@@ -370,7 +430,7 @@ export default function App({ caps }: { caps: Capabilities }) {
         setSubmitting(false)
       }
     },
-    [wallet, session, results, copies]
+    [wallet, session, results, copies, targetNetwork]
   )
 
   // The advertised min-piece floor is not enforced by default: no enforcement
@@ -395,7 +455,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     setSessionError(null)
     setSessionBusy('extending…')
     try {
-      const s = await extendSession(wallet, TARGET_NETWORK, session, DEFAULT_SESSION_DURATION_SECONDS, () =>
+      const s = await extendSession(wallet, targetNetwork, session, DEFAULT_SESSION_DURATION_SECONDS, () =>
         setSessionBusy('confirming…')
       )
       setSession(s)
@@ -405,28 +465,28 @@ export default function App({ caps }: { caps: Capabilities }) {
     } finally {
       setSessionBusy(null)
     }
-  }, [wallet, session])
+  }, [wallet, session, targetNetwork])
 
   const grant = useCallback(async () => {
     if (wallet == null) return
     setSessionError(null)
     setSessionBusy('authorizing…')
     try {
-      const s = await grantSession(wallet, TARGET_NETWORK, sessionDuration, () => setSessionBusy('confirming…'))
+      const s = await grantSession(wallet, targetNetwork, sessionDuration, () => setSessionBusy('confirming…'))
       setSession(s)
     } catch (err) {
       setSessionError(err instanceof Error ? err.message : String(err))
     } finally {
       setSessionBusy(null)
     }
-  }, [wallet, sessionDuration])
+  }, [wallet, sessionDuration, targetNetwork])
 
   const revoke = useCallback(async () => {
     if (wallet == null || session == null) return
     setSessionError(null)
     setSessionBusy('revoking…')
     try {
-      await revokeSession(wallet, TARGET_NETWORK, session, () => setSessionBusy('confirming revoke…'))
+      await revokeSession(wallet, targetNetwork, session, () => setSessionBusy('confirming revoke…'))
       setSession(null)
     } catch (err) {
       // Chain-first revoke failed — the key stays usable and revocable.
@@ -434,7 +494,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     } finally {
       setSessionBusy(null)
     }
-  }, [wallet, session])
+  }, [wallet, session, targetNetwork])
 
   const connect = useCallback(async () => {
     setWalletError(null)
@@ -448,12 +508,12 @@ export default function App({ caps }: { caps: Capabilities }) {
   const switchNet = useCallback(async () => {
     setWalletError(null)
     try {
-      await switchToCalibration()
+      await switchToNetwork(targetNetwork)
       setWallet(await refreshWallet())
     } catch (err) {
       setWalletError(err instanceof Error ? err.message : String(err))
     }
-  }, [])
+  }, [targetNetwork])
 
   // Live AbortControllers by CID — the stall watchdog and the per-row cancel
   // button abort through these (#43).
@@ -477,8 +537,8 @@ export default function App({ caps }: { caps: Capabilities }) {
         if (performance.now() - lastAdvanceAt > STALL_TIMEOUT_MS) {
           controller.abort(
             new Error(
-              `the source stopped sending bytes (${Math.round(STALL_TIMEOUT_MS / 1000)}s without progress) — ` +
-                'the network is not serving this CID right now; retry later or check availability'
+              `the source stopped sending bytes (${Math.round(STALL_TIMEOUT_MS / 1000)}s without progress). ` +
+                'The network is not serving this CID right now. Retry later, or check availability.'
             )
           )
         }
@@ -513,7 +573,7 @@ export default function App({ caps }: { caps: Capabilities }) {
   )
 
   const cancelOne = useCallback((cid: string) => {
-    prepareControllers.current.get(cid)?.abort(new Error('cancelled — retry whenever'))
+    prepareControllers.current.get(cid)?.abort(new Error('cancelled. Retry whenever you like.'))
   }, [])
 
   const run = useCallback(async () => {
@@ -561,7 +621,7 @@ export default function App({ caps }: { caps: Capabilities }) {
         setCidFile(null)
         setCidFileError(
           intake.invalidCount > 0
-            ? `no valid CIDs in ${file.name} — ${intake.invalidCount} line(s) rejected (line ${intake.invalidSamples[0].line}: "${intake.invalidSamples[0].text}")`
+            ? `no valid CIDs in ${file.name}. ${intake.invalidCount} line(s) rejected (line ${intake.invalidSamples[0].line}: "${intake.invalidSamples[0].text}")`
             : `no CIDs in ${file.name}`
         )
         return
@@ -606,13 +666,13 @@ export default function App({ caps }: { caps: Capabilities }) {
     downloadManifest(
       buildManifest(results, {
         tool: 'ipfs2foc-app',
-        network: TARGET_NETWORK,
+        network: targetNetwork,
         relayBase,
         gateway,
         now: new Date().toISOString(),
       })
     )
-  }, [results, relayBase, gateway])
+  }, [results, relayBase, gateway, targetNetwork])
 
   // Manifest of only the items a provider refused as too small — the exact
   // input the local packing path needs, without re-submitting what already
@@ -623,13 +683,13 @@ export default function App({ caps }: { caps: Capabilities }) {
     downloadManifest(
       buildManifest(small, {
         tool: 'ipfs2foc-app',
-        network: TARGET_NETWORK,
+        network: targetNetwork,
         relayBase,
         gateway,
         now: new Date().toISOString(),
       })
     )
-  }, [tooSmallCids, results, relayBase, gateway])
+  }, [tooSmallCids, results, relayBase, gateway, targetNetwork])
 
   // Pieces no provider could fetch this run (deduped across copies) — the
   // committable rest already landed; these get a retry and a remainder.
@@ -643,20 +703,20 @@ export default function App({ caps }: { caps: Capabilities }) {
     downloadManifest(
       buildManifest(
         results.filter((r) => set.has(r.pieceCid)),
-        { tool: 'ipfs2foc-app', network: TARGET_NETWORK, relayBase, gateway, now: new Date().toISOString() }
+        { tool: 'ipfs2foc-app', network: targetNetwork, relayBase, gateway, now: new Date().toISOString() }
       )
     )
-  }, [deferredCids, results, relayBase, gateway])
+  }, [deferredCids, results, relayBase, gateway, targetNetwork])
 
   const retryDeferred = useCallback(async () => {
     if (wallet == null) return
-    const saved = await findResumableSubmit(wallet, TARGET_NETWORK, results)
+    const saved = await findResumableSubmit(wallet, targetNetwork, results)
     if (saved == null) return
     setResumable(await requeueDeferred(saved))
     // Same advisory-floor stance as the regular Submit — the deferred pieces
     // are small ones by definition, so the strict pre-check would just block.
     void submitWith(null, true)
-  }, [wallet, results, submitWith])
+  }, [wallet, results, submitWith, targetNetwork])
 
   // Verify-on-chain (#47): account-less reads of the data set's active pieces
   // and proving status, keyed per provider context. The chain is the only
@@ -719,29 +779,60 @@ export default function App({ caps }: { caps: Capabilities }) {
 
   return (
     <div className="shell">
+      <a className="skip-link" href="#start">
+        Skip to the migration steps
+      </a>
       <div aria-hidden className="grid-overlay" />
       <header className="masthead">
         <div className="brand">
-          <span className="mark">ipfs2foc</span>
-          <span className="sub">browser migration console</span>
+          <FilOzMark size={34} />
+          <span className="brand-text">
+            <span className="mark">ipfs2foc</span>
+            <span className="sub">by FilOz</span>
+          </span>
         </div>
-        <div className="net-badge">
-          <Led color="var(--accent)" on />
-          <span>calibration · testnet</span>
+        <div className={`net-badge ${isTestnet ? 'is-test' : ''}`}>
+          <Led color={isTestnet ? 'var(--alert)' : 'var(--accent)'} on />
+          <label htmlFor="network">
+            <span className="sr-only">Network</span>
+          </label>
+          <select
+            disabled={netLocked}
+            id="network"
+            onChange={(e) => setTargetNetwork(e.target.value as NetworkKey)}
+            title={netLocked ? 'The network is fixed while a run is in flight' : 'Choose the network for this run'}
+            value={targetNetwork}
+          >
+            {(Object.keys(NETWORKS) as NetworkKey[]).map((k) => (
+              <option key={k} value={k}>
+                {k === 'mainnet' ? 'Mainnet' : 'Calibration testnet'}
+              </option>
+            ))}
+          </select>
         </div>
       </header>
 
-      <p className="lede">
-        Compute Filecoin piece commitments for your pinned IPFS CIDs <em>in this tab</em> — the CAR bytes stream through
-        the hasher and never leave your browser — then export the pull URLs a storage provider follows through the
-        redirect relay. No re-chunking. No server.
+      {/* Each sentence is its own block, so the line break is fixed rather
+          than set by the viewport width. */}
+      <h1 className="lede">
+        <span>Move pinned IPFS content to Filecoin.</span>
+        <em>The CID does not change.</em>
+      </h1>
+      <p className="lede-sub">
+        Point this at content you already have pinned. A storage provider fetches each item, stores it as the original
+        DAG, and commits it on chain, so every link you have published keeps resolving and you can prove the content
+        landed. Items served whole by a public gateway migrate here in the browser;{' '}
+        <a href="https://github.com/FilOzone/ipfs2foc#readme" rel="noreferrer" target="_blank">
+          the command line tool
+        </a>{' '}
+        covers the rest.
       </p>
 
-      <section className="panel">
+      <section className="panel" id="start">
         <div className="panel-head">
-          <span className="panel-no">01</span>
+          <span className={`panel-no ${wallet == null ? 'is-current' : 'is-done'}`}>01</span>
           <h2>Wallet</h2>
-          <span className="panel-note">read-only in this step — nothing is signed yet</span>
+          <span className="panel-note">Nothing is signed in this step.</span>
         </div>
         <div className="wallet-row">
           {wallet == null ? (
@@ -750,17 +841,17 @@ export default function App({ caps }: { caps: Capabilities }) {
             </button>
           ) : (
             <div className="wallet-on">
-              <Led color={onCalibration ? 'var(--ok)' : 'var(--warn)'} on />
+              <Led color={onTargetNetwork ? 'var(--ok)' : 'var(--warn)'} on />
               <code className="addr">{short(wallet.address, 8, 6)}</code>
-              <span className={`chip ${onCalibration ? 'chip-ok' : 'chip-warn'}`}>
+              <span className={`chip ${onTargetNetwork ? 'chip-ok' : 'chip-warn'}`}>
                 {walletNetwork ? NETWORKS[walletNetwork].label : `chain ${wallet.chainId}`}
               </span>
-              {!onCalibration && (
+              {!onTargetNetwork && (
                 <>
                   <button className="btn small" onClick={switchNet} type="button">
-                    Switch to Calibration
+                    Switch to {NETWORKS[targetNetwork].label}
                   </button>
-                  <span className="hint">optional now — the prepare step below works on any network</span>
+                  <span className="hint">Needed only to submit. Preparing pieces works on any network.</span>
                 </>
               )}
             </div>
@@ -791,10 +882,10 @@ export default function App({ caps }: { caps: Capabilities }) {
                   </span>
                   {!readyToSign(payments) && (
                     <span className="pay-setup">
-                      signing needs a one-time payment setup: deposit USDFC into Filecoin Pay and approve the storage
-                      service as a payments operator —{' '}
+                      Signing needs a one-time payment setup: deposit USDFC into Filecoin Pay and approve the storage
+                      service as a payments operator. See the{' '}
                       <a
-                        href="https://github.com/SgtPooki/ipfs2foc#network-gas-and-payments"
+                        href="https://github.com/FilOzone/ipfs2foc#network-gas-and-payments"
                         rel="noreferrer"
                         target="_blank"
                       >
@@ -802,7 +893,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                       </a>
                     </span>
                   )}
-                  {readyToSign(payments) && onCalibration && (
+                  {readyToSign(payments) && onTargetNetwork && (
                     <>
                       <span className="pay-label">signing session</span>
                       {session == null ? (
@@ -839,17 +930,17 @@ export default function App({ caps }: { caps: Capabilities }) {
                       )}
                       {session == null ? (
                         <span className="pay-setup">
-                          one wallet approval authorizes a temporary key to sign migration steps for the chosen window.
-                          it can create data sets and add pieces — spending from the{' '}
-                          {fmtToken(payments.availableUsdfc, 'USDFC')} available — and nothing else: no removals, no
-                          deletions, no withdrawals. revoke it here when the run is done.
+                          One wallet approval authorizes a temporary key to sign migration steps for the chosen window.
+                          It can create data sets and add pieces, spending from the{' '}
+                          {fmtToken(payments.availableUsdfc, 'USDFC')} available, and nothing else: no removals, no
+                          deletions, no withdrawals. Revoke it here when the run is done.
                           {sessionDuration > 86_400n &&
-                            ' long windows leave the key authorized on this device for days — prefer shorter unless the run needs it.'}
+                            ' Long windows leave the key authorized on this device for days. Prefer shorter unless the run needs it.'}
                         </span>
                       ) : sessionCanPresign(session) ? null : (
                         <span className="pay-setup">
-                          session expires soon — new submissions pause within an hour of expiry so providers can land
-                          in-flight pieces. extend it to continue.
+                          This session expires soon. New submissions pause within an hour of expiry so providers can
+                          land in-flight pieces. extend it to continue.
                         </span>
                       )}
                     </>
@@ -872,12 +963,18 @@ export default function App({ caps }: { caps: Capabilities }) {
 
       <section className="panel">
         <div className="panel-head">
-          <span className="panel-no">02</span>
+          <span className={`panel-no ${rows.length > 0 ? 'is-done' : cids.length > 0 ? 'is-current' : ''}`}>02</span>
           <h2>CIDs</h2>
-          <span className="panel-note">{cids.length} unique</span>
+          <span aria-live="polite" className="panel-note">
+            {cids.length === 0 ? '' : `${cids.length.toLocaleString()} unique`}
+          </span>
         </div>
+        <label className="input-label" htmlFor="cids">
+          The CIDs you want on Filecoin
+        </label>
         <textarea
           className="cid-input"
+          id="cids"
           onChange={(e) => setCidsText(e.target.value)}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
@@ -886,7 +983,7 @@ export default function App({ caps }: { caps: Capabilities }) {
             e.preventDefault()
             void loadCidFile(file)
           }}
-          placeholder={'bafybei…\nQm…  (CIDv0 or CIDv1, one per line)\nor drop a cids.txt here'}
+          placeholder={'bafybei…\nQm…  (CIDv0 or CIDv1, one per line)\nor drop a cids.txt file here'}
           spellCheck={false}
           value={cidsText}
         />
@@ -935,7 +1032,11 @@ export default function App({ caps }: { caps: Capabilities }) {
         </details>
         <div className="actions">
           <button className="btn primary" disabled={running || cids.length === 0} onClick={run} type="button">
-            {running ? 'Computing…' : `Prepare ${cids.length || ''} migration${cids.length === 1 ? '' : 's'}`.trim()}
+            {running
+              ? 'Preparing…'
+              : cids.length === 0
+                ? 'Prepare'
+                : `Prepare ${cids.length.toLocaleString()} item${cids.length === 1 ? '' : 's'}`}
           </button>
           {(cids.length > 0 || rows.length > 0) && (
             <button className="btn small" disabled={running} onClick={reset} type="button">
@@ -948,19 +1049,35 @@ export default function App({ caps }: { caps: Capabilities }) {
       {rows.length > 0 && (
         <section className="panel">
           <div className="panel-head">
-            <span className="panel-no">03</span>
+            <span className={`panel-no ${results.length > 0 && !running ? 'is-done' : running ? 'is-current' : ''}`}>
+              03
+            </span>
             <h2>Pieces</h2>
-            <span className="panel-note">
-              {results.length} ready{errors > 0 ? ` · ${errors} failed` : ''}
-              {restored ? ' · restored from last session' : ''}
+            {/* A prepare run reports for minutes to hours, so its counts are
+                announced rather than only painted. */}
+            <span aria-live="polite" className="panel-note">
+              {results.length.toLocaleString()} ready{errors > 0 ? ` · ${errors.toLocaleString()} failed` : ''}
+              {restored ? ' · restored from your last visit' : ''}
             </span>
           </div>
+          {/* The newest finished item only: one worked example, not a second
+              table. Rendering it per row would double the table's width and
+              its cost at the CID counts this tool targets. */}
+          {latest != null && (
+            <Continuity
+              cid={latest.cid}
+              drawn={running}
+              key={latest.cid}
+              pieceCid={latest.pieceCid}
+              size={fmtBytes(latest.rawSize)}
+            />
+          )}
           <div className="table">
             <div className="trow thead">
-              <span>CID</span>
-              <span>PieceCID</span>
+              <span>Your CID</span>
+              <span>Commitment</span>
               <span className="num">Size</span>
-              <span>Pull URL</span>
+              <span>Source the provider reads</span>
             </div>
             {rows.map((r) => {
               // Show the canonical CIDv1 once computed (a `Qm…` input is converted),
@@ -979,7 +1096,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                       {r.state.result.gapFillCount > 0 && (
                         <span
                           className="warn"
-                          title={`Gateway served an incomplete CAR — ${r.state.result.gapFillCount} block(s) recovered per-block. The provider pulls the CAR URL, so re-verify this gateway before submitting; if its CAR is still incomplete at pull time the on-chain AddPieces will fail.`}
+                          title={`Gateway served an incomplete CAR. ${r.state.result.gapFillCount} block(s) recovered per-block. The provider pulls the CAR URL, so re-verify this gateway before submitting; if its CAR is still incomplete at pull time the on-chain AddPieces will fail.`}
                         >
                           ⚠ incomplete CAR
                         </span>
@@ -1033,20 +1150,20 @@ export default function App({ caps }: { caps: Capabilities }) {
           </div>
           {errors > 0 && (
             <p className="gate-note">
-              finished rows are kept — Prepare and per-row retry recompute only what failed. hover a failure for the
-              full error; "check availability" shows whether the network can serve that CID at all.
+              Finished rows are kept: Prepare and per-row retry recompute only what failed. Hover a failure for the full
+              error; "check availability" shows whether the network can serve that CID at all.
             </p>
           )}
           {!running && queuedCount > 0 && rows.length > 0 && (
             <p className="gate-note">
-              {queuedCount} item{queuedCount === 1 ? '' : 's'} not prepared yet — press Prepare to continue; it picks up
+              {queuedCount} item{queuedCount === 1 ? '' : 's'} not prepared yet. Press Prepare to continue; it picks up
               exactly where the run stopped and never recomputes a finished row.
             </p>
           )}
           {running && (
             <p className="gate-note">
-              reloading is safe at any point: finished rows are restored from this browser and Prepare resumes the rest.
-              a row that stops receiving bytes for {Math.round(STALL_TIMEOUT_MS / 60000)} minutes fails on its own and
+              Reloading is safe at any point: finished rows are restored from this browser and Prepare resumes the rest.
+              A row that stops receiving bytes for {Math.round(STALL_TIMEOUT_MS / 60000)} minutes fails on its own and
               frees the worker; cancel does the same immediately.
             </p>
           )}
@@ -1056,7 +1173,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                 Download run manifest ({results.length})
               </button>
               <span className="panel-note">
-                the portable record of this run — pull URLs and commitments for the submit step
+                The portable record of this run: pull URLs and commitments for the submit step.
               </span>
             </div>
           )}
@@ -1066,34 +1183,36 @@ export default function App({ caps }: { caps: Capabilities }) {
       {(results.length > 0 || submitState != null) && (
         <section className="panel">
           <div className="panel-head">
-            <span className="panel-no">04</span>
+            <span className={`panel-no ${allCommitted ? 'is-done' : submitting ? 'is-current' : ''}`}>04</span>
             <h2>Submit</h2>
-            <span className="panel-note">one on-chain commit per copy · signed by the session key, no prompts</span>
+            <span className="panel-note">
+              One on-chain commit per copy, signed by the session key without further prompts.
+            </span>
           </div>
           {results.length === 0 ? (
             <p className="gate-note">
-              a previous run's submit state is shown below — verify it against the chain anytime, or paste the run's
+              A previous run's submit state is shown below. Verify it against the chain at any time, or paste that run's
               CIDs above to resume submitting.
             </p>
-          ) : wallet == null || !onCalibration ? (
-            <p className="gate-note">connect the wallet on Calibration above to submit.</p>
+          ) : wallet == null || !onTargetNetwork ? (
+            <p className="gate-note">Connect a wallet on {NETWORKS[targetNetwork].label} above to submit.</p>
           ) : payments == null || !readyToSign(payments) ? (
-            <p className="gate-note">finish the one-time payment setup above to submit.</p>
+            <p className="gate-note">Finish the one-time payment setup above to submit.</p>
           ) : session == null ? (
-            <p className="gate-note">enable signing above to submit.</p>
+            <p className="gate-note">Enable signing above to submit.</p>
           ) : (
             <>
               <div className="actions">
                 <span className="session-controls">
-                  <span className="copies-label">copies</span>
+                  <span className="copies-label">Copies</span>
                   <select
                     disabled={submitting || resumable != null}
                     onChange={(e) => setCopies(Number(e.target.value))}
                     value={copies}
                   >
-                    <option value={1}>1 — single provider</option>
-                    <option value={2}>2 — primary + secondary</option>
-                    <option value={3}>3 — primary + two secondaries</option>
+                    <option value={1}>1 (single provider)</option>
+                    <option value={2}>2 (primary + secondary)</option>
+                    <option value={3}>3 (primary + two secondaries)</option>
                   </select>
                 </span>
                 <button
@@ -1118,10 +1237,10 @@ export default function App({ caps }: { caps: Capabilities }) {
                 {underTypicalFloor > 0 && !submitting && (
                   <span className="hint">
                     {underTypicalFloor} item{underTypicalFloor === 1 ? '' : 's'} sit below the 1 MiB minimum most
-                    providers advertise — submission proceeds anyway; a refusal would show per piece in the pull status,
+                    providers advertise. Submission proceeds anyway; a refusal would show per piece in the pull status,
                     and the{' '}
                     <a
-                      href="https://github.com/SgtPooki/ipfs2foc/blob/main/docs/local-console.md"
+                      href="https://github.com/FilOzone/ipfs2foc/blob/main/docs/local-console.md"
                       rel="noreferrer"
                       target="_blank"
                     >
@@ -1133,19 +1252,19 @@ export default function App({ caps }: { caps: Capabilities }) {
               </div>
               {resumable != null && !submitting && !allCommitted && (
                 <p className="gate-note">
-                  a previous submit for these pieces is saved — Resume continues it without re-signing or re-submitting
+                  A previous submit for these pieces is saved. Resume continues it without re-signing or re-submitting
                   anything. Discard only forgets local progress; commits already submitted stay on chain.
                 </p>
               )}
               {submitState != null && !submitState.persisted && (
                 <p className="pay-setup">
-                  this browser is blocking storage — progress cannot survive a reload. keep this tab open until every
+                  This browser is blocking storage, so progress cannot survive a reload. Keep this tab open until every
                   copy reads committed.
                 </p>
               )}
               {submitting && submitState?.persisted !== false && (
                 <p className="gate-note">
-                  providers pull and confirm on their own. closing this tab only pauses new submissions — progress is
+                  Providers pull and confirm on their own. Closing this tab only pauses new submissions. Progress is
                   saved, and Resume continues exactly where it stopped.
                 </p>
               )}
@@ -1166,7 +1285,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                 <div className="gate-note">
                   <p>
                     Items below the minimum ship through the local migration path, which packs them into pieces the
-                    provider accepts — still signed by your wallet, no exported key. Two-part plan:
+                    provider accepts, still signed by your wallet, with no exported key. Two-part plan:
                   </p>
                   <div className="actions">
                     <button className="btn small" onClick={submitAllAnyway} type="button">
@@ -1181,7 +1300,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                       Download manifest of the {tooSmallCids.length} small item{tooSmallCids.length === 1 ? '' : 's'}
                     </button>
                     <span className="hint">
-                      the minimum is the provider's advertised value — small pieces may still be accepted, and a real
+                      The minimum is the provider's advertised value. Small pieces may still be accepted, and a real
                       refusal shows per piece in the pull status
                     </span>
                   </div>
@@ -1195,7 +1314,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                   <ol className="steps">
                     <li>
                       <code>
-                        npx ipfs2foc import-manifest manifest.json --db migrate.db --network {TARGET_NETWORK}{' '}
+                        npx ipfs2foc import-manifest manifest.json --db migrate.db --network {targetNetwork}{' '}
                         --no-auto-pack
                       </code>
                     </li>
@@ -1203,25 +1322,25 @@ export default function App({ caps }: { caps: Capabilities }) {
                       <code>npx ipfs2foc pack-cars --db migrate.db --car-store ./cars</code>
                     </li>
                     <li>
-                      <code>npx ipfs2foc serve --db migrate.db --ingress cloudflared --network {TARGET_NETWORK}</code> —
-                      open the printed console, grant a signing session, press Submit
+                      <code>npx ipfs2foc serve --db migrate.db --ingress cloudflared --network {targetNetwork}</code>,
+                      then open the printed console, grant a signing session, and press Submit
                     </li>
                   </ol>
                   <p>
                     <a
-                      href="https://github.com/SgtPooki/ipfs2foc/blob/main/docs/local-console.md"
+                      href="https://github.com/FilOzone/ipfs2foc/blob/main/docs/local-console.md"
                       rel="noreferrer"
                       target="_blank"
                     >
                       Local console guide
                     </a>{' '}
-                    — nothing is lost: anything committed here stays committed, and the manifest carries the rest over.
+                    . Nothing is lost: anything committed here stays committed, and the manifest carries the rest over.
                   </p>
                 </div>
               )}
               {allCommitted && !submitting && (
                 <p className="gate-note">
-                  every copy is committed — revoke the signing session above once you are done migrating.
+                  Every copy is committed. Revoke the signing session above once you are done migrating.
                 </p>
               )}
             </>
@@ -1292,7 +1411,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                   {cleared > 0 && (
                     <>
                       {' '}
-                      {cleared} previously-skipped piece{cleared === 1 ? ' is' : 's are'} actually committed — their
+                      {cleared} previously-skipped piece{cleared === 1 ? ' is' : 's are'} actually committed, so the
                       skipped state is cleared.
                     </>
                   )}
@@ -1302,7 +1421,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                     ? 'The provider has not yet submitted a proof of possession for this data set.'
                     : h.provenSinceAdd
                       ? `Possession proven: the provider's last accepted proof (epoch ${h.lastProvenEpoch}) covers everything this run added.`
-                      : `The provider has proven possession (epoch ${h.lastProvenEpoch}), but not yet since this run's last add — the next proof will cover it.`}{' '}
+                      : `The provider has proven possession (epoch ${h.lastProvenEpoch}), but not yet since this run's last add. The next proof will cover it.`}{' '}
                   {h.inGoodStanding ? 'Proving deadline not missed.' : 'The next proving deadline has passed.'}
                 </p>
                 {result.missing.length > 0 && (
@@ -1311,8 +1430,8 @@ export default function App({ caps }: { caps: Capabilities }) {
                       {result.missing.length} piece{result.missing.length === 1 ? '' : 's'} from this run{' '}
                       {result.missing.length === 1 ? 'is' : 'are'} not on the data set under{' '}
                       {result.missing.length === 1 ? 'its' : 'their'} own PieceCID. A piece migrated through the local
-                      packing path lives on chain under the packed piece's CID instead, which this page cannot match up
-                      — <code>ipfs2foc report</code> on the local database reconciles those.
+                      packing path lives on chain under the packed piece's CID instead, which this page cannot match up.{' '}
+                      <code>ipfs2foc report</code> on the local database reconciles those.
                     </p>
                     <ul className="mono">
                       {result.missing.slice(0, 8).map((p) => (
@@ -1329,8 +1448,8 @@ export default function App({ caps }: { caps: Capabilities }) {
                 {result.unrecognized.length > 0 && (
                   <p>
                     The data set also holds {result.unrecognized.length} piece
-                    {result.unrecognized.length === 1 ? '' : 's'} this run did not prepare — typically packed pieces
-                    committed from the local console against the same data set.
+                    {result.unrecognized.length === 1 ? '' : 's'} this run did not prepare. Those are typically packed
+                    pieces committed from the local console against the same data set.
                   </p>
                 )}
               </div>
@@ -1341,10 +1460,10 @@ export default function App({ caps }: { caps: Capabilities }) {
               <p>
                 {deferredCids.length} piece{deferredCids.length === 1 ? ' was' : 's were'} skipped: the provider could
                 not fetch them from their source after retries (the "check availability" links above show why).
-                Everything else committed. If the source recovers — or you host the bytes another way — retry here;
+                Everything else committed. If the source recovers, or you host the bytes another way, retry here;
                 otherwise the remainder manifest carries them to the{' '}
                 <a
-                  href="https://github.com/SgtPooki/ipfs2foc/blob/main/docs/local-console.md"
+                  href="https://github.com/FilOzone/ipfs2foc/blob/main/docs/local-console.md"
                   rel="noreferrer"
                   target="_blank"
                 >
@@ -1371,11 +1490,11 @@ export default function App({ caps }: { caps: Capabilities }) {
 
       <footer className="foot">
         <span>
-          piece commitment computed locally over hash-verified blocks in canonical CAR form; the relay streams the same
-          canonical bytes to the provider, rebuilding anything the gateway truncates
+          Every commitment is computed in this tab from blocks it hash-checks itself, so a gateway cannot hand you the
+          wrong bytes without the run failing.
         </span>
-        <a href="https://github.com/SgtPooki/ipfs2foc" rel="noreferrer" target="_blank">
-          SgtPooki/ipfs2foc
+        <a href="https://github.com/FilOzone/ipfs2foc" rel="noreferrer" target="_blank">
+          FilOzone/ipfs2foc
         </a>
       </footer>
     </div>
