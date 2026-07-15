@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
 import { computePiece, describePrepareFailure, type PieceResult } from './commp.ts'
-import { FilOzMark } from './filoz-mark.tsx'
+import { FocMark } from './foc-mark.tsx'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
 import { fmtToken, type PaymentsStatus, RPC_URLS, readPaymentsStatus, readyToSign } from './payments.ts'
@@ -750,10 +750,10 @@ export default function App({ caps }: { caps: Capabilities }) {
       <div aria-hidden className="grid-overlay" />
       <header className="masthead">
         <div className="brand">
-          <FilOzMark size={34} />
+          <FocMark size={38} />
           <span className="brand-text">
             <span className="mark">ipfs2foc</span>
-            <span className="sub">by FilOz</span>
+            <span className="sub">Filecoin Onchain Cloud</span>
           </span>
         </div>
         <div className={`net-badge ${isTestnet ? 'is-test' : ''}`}>

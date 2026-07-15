@@ -5,21 +5,29 @@
  *   hosted-app — the public self-service app.
  *   local-app  — the `ipfs2foc serve` daemon console.
  *
- * The palette is the FilOz brand guide (p14): #0090FF blue, #DFF1FF pale,
- * #002292 navy, #F7F7F7 off-white, #8EB6E3 muted, #000000 black. Filecoin's
- * primary is also #0090FF.
+ * The palette is the Filecoin Onchain Cloud brandsheet: #0090FF blue,
+ * #00FFAE mint, #D400FF magenta, #FF7400 orange, #FFCC00 yellow, on black.
+ * FilOz and Filecoin both give the same #0090FF, so the blue is the one value
+ * every brand in this stack agrees on.
  *
- * The guide (p12) allows no colors outside those six. Values marked EXCEPTION
- * are outside it and need brand sign-off; each carries the contrast figure
- * that forced it. Ratios below are measured against the surface named.
+ * FOC is a dark brand and the palette only works there: on an off-white ground
+ * mint reads 1.23:1, yellow 1.41:1, orange 2.53:1. On black every brand color
+ * clears AA, and every one carries black text at AA — which is why filled
+ * controls take black labels, not white.
+ *
+ * Values outside the sheet are marked EXCEPTION. Ratios are measured against
+ * the surface named.
  */
-
 :root {
-  /* IBM Plex Sans is the FilOz primary (p16) and ipfs.tech's sans; DM Sans is
-     the FilOz secondary, for longer prose. CIDs are read character by
-     character, so they get IBM Plex Mono. */
-  --display: "IBM Plex Sans", system-ui, sans-serif;
-  --sans: "DM Sans", system-ui, sans-serif;
+  /* The brandsheet names Aspekta, Funnel Display and Funnel Sans without
+     assigning roles. Funnel Display and Funnel Sans are one superfamily and
+     split cleanly into display and text. Aspekta is not packaged for npm (its
+     workspace marks it private), and the CSP forbids a remote origin, so
+     adopting it means vendoring OFL binaries — not done here.
+     EXCEPTION: the sheet names no mono, and CIDs are compared character by
+     character, so they keep IBM Plex Mono. */
+  --display: "Funnel Display", system-ui, sans-serif;
+  --sans: "Funnel Sans", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   /* 1.25 scale, 16px body floor. Explanatory copy carries the meaning here,
@@ -40,49 +48,50 @@
 }
 
 /* ── hosted: the public app ─────────────────────────────────────────────── */
+/* Each brand color does exactly one job, so state never rests on hue alone. */
 body.hosted-app {
-  --bg: #f7f7f7;
-  --panel: #ffffff; /* EXCEPTION: white cards on the off-white page */
-  --panel-edge: #d9ddeb; /* EXCEPTION: navy 88% toward page */
-  --ink: #002292; /* 11.92:1 on page */
-  --ink-dim: #4a62b0; /* EXCEPTION: navy 70%. 5.35:1 */
-  --accent: #0090ff;
-  --accent-ink: #000000; /* 6.43:1 on accent. white would be 3.26:1 */
-  --accent-deep: #086dc5; /* EXCEPTION: Filecoin ramp 800. 4.90:1 */
-  --wash: #dff1ff;
-  --edge-strong: #8eb6e3;
-  --source: #10aab2; /* EXCEPTION: ipfs.tech tealDark. marker only */
-  --proof: #002292;
-  --proof-ink: #f7f7f7; /* 11.92:1 on proof */
-  --ok: #002292;
-  --alert: #ff5846; /* EXCEPTION: marker only, 2.91:1 */
-  --err: #bf4235; /* EXCEPTION: alert darkened 25%. 4.84:1 */
-  --warn: #bf4235;
-  --shadow: 0 1px 2px rgb(0 34 146 / 6%), 0 4px 16px -8px rgb(0 34 146 / 18%);
-  color-scheme: light;
+  --bg: #000000;
+  --panel: #0d0d0d; /* EXCEPTION: the sheet names no surface; black lifted 5% */
+  --panel-edge: #262626; /* EXCEPTION: white 15% on black */
+  --ink: #ffffff; /* 21:1 on page */
+  --ink-dim: #a6a6a6; /* EXCEPTION: white 65%. 7.0:1 */
+  --accent: #0090ff; /* 6.43:1 on black, and takes black text at 6.43:1 */
+  --accent-ink: #000000;
+  --accent-deep: #0090ff; /* links clear AA on black, so no darker ramp is needed */
+  --wash: #001b33; /* EXCEPTION: blue 18% on black — the in-flight fill */
+  --edge-strong: #0090ff;
+  --source: #d400ff; /* the IPFS side of a move. marker only */
+  --proof: #0090ff; /* committed: the one filled slab on a black page */
+  --proof-ink: #000000; /* 6.43:1 on proof */
+  --ok: #00ffae; /* 15.92:1 */
+  --alert: #ff7400; /* 7.75:1 */
+  --err: #ff7400;
+  --warn: #ffcc00; /* 13.89:1 */
+  --shadow: none;
+  color-scheme: dark;
 }
 
 /* ── local: the daemon control plane ────────────────────────────────────── */
-/* An instrument panel for an operator watching a long run: black ground, navy
-   panels, blue accent, off-white ink. */
+/* Same palette, more instrument: the grid overlay and the LED glow stay here
+   because an operator watches this one for hours. */
 body.local-app {
   --bg: #000000;
-  --panel: #000b33; /* navy ~35% on black */
-  --panel-edge: #002292;
-  --ink: #f7f7f7;
-  --ink-dim: #8eb6e3; /* 9.95:1 on black — muted blue works on dark */
-  --accent: #0090ff; /* 6.43:1 on black */
+  --panel: #0d0d0d;
+  --panel-edge: #262626;
+  --ink: #ffffff;
+  --ink-dim: #a6a6a6;
+  --accent: #0090ff;
   --accent-ink: #000000;
   --accent-deep: #0090ff;
-  --wash: #002292;
-  --edge-strong: #8eb6e3;
-  --source: #10d3d4;
+  --wash: #001b33;
+  --edge-strong: #0090ff;
+  --source: #d400ff;
   --proof: #0090ff;
   --proof-ink: #000000;
-  --ok: #0090ff;
-  --alert: #ff5846;
-  --err: #ff5846;
-  --warn: #8eb6e3;
+  --ok: #00ffae;
+  --alert: #ff7400;
+  --err: #ff7400;
+  --warn: #ffcc00;
   --shadow: none;
   color-scheme: dark;
 }
@@ -116,8 +125,6 @@ body {
   border-radius: var(--r-sm);
 }
 body.hosted-app :is(a, button, select, summary, textarea, input):focus-visible {
-  /* #0090FF is only 3.05:1 on white, so the ring gets a navy companion */
-  outline-color: var(--ink);
   box-shadow: 0 0 0 4px var(--wash);
 }
 
@@ -286,14 +293,9 @@ body.local-app .led {
 .lede em {
   display: block;
 }
-/* #0090FF is 3.05:1 on the page and legible only at display sizes. The ramp's
-   800 is 4.90:1 and holds at any size. */
 .lede em {
-  color: var(--accent-deep);
-  font-style: normal;
-}
-body.local-app .lede em {
   color: var(--accent);
+  font-style: normal;
 }
 .lede-sub {
   font-family: var(--sans);
@@ -400,19 +402,16 @@ body.local-app .lede {
   padding: 6px 12px;
   font-size: var(--t-xs);
 }
-/* Blue buttons take black labels: white on #0090FF is 3.26:1 and fails AA,
-   black is 6.43:1. The guide pairs black with blue on p7. */
+/* Every brand color carries black text at AA and white below it, so filled
+   controls take black labels. Hover moves to mint, the palette's brightest. */
 .btn.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-ink);
 }
 .btn.primary:hover:not(:disabled) {
-  background: var(--accent-deep);
-  border-color: var(--accent-deep);
-  color: #ffffff;
-}
-body.local-app .btn.primary:hover:not(:disabled) {
+  background: var(--ok);
+  border-color: var(--ok);
   color: var(--accent-ink);
 }
 

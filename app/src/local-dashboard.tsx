@@ -14,6 +14,7 @@
 
 import type { Capabilities } from 'ipfs2foc-core/capabilities'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { FocMark } from './foc-mark.tsx'
 import LocalSigningPanel, { type ServerSessionInfo } from './local-signing.tsx'
 
 interface ServeStatus {
@@ -208,8 +209,11 @@ export default function LocalDashboard({ caps }: { caps: Capabilities }) {
       <div aria-hidden className="grid-overlay" />
       <header className="masthead">
         <div className="brand">
-          <span className="mark">ipfs2foc</span>
-          <span className="sub">migration control · local</span>
+          <FocMark size={34} />
+          <span className="brand-text">
+            <span className="mark">ipfs2foc</span>
+            <span className="sub">Filecoin Onchain Cloud · running locally</span>
+          </span>
         </div>
         <div className="net-badge">
           <span className={`chip ${stale ? 'chip-warn' : 'chip-ok'}`}>{stale ? 'reconnecting…' : state}</span>

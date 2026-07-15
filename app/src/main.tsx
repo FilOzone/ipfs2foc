@@ -1,13 +1,12 @@
 // Fonts are self-hosted (bundled) rather than loaded from a third-party CDN:
 // the page stores session signing material, so its CSP allows no remote
 // script/style/font origins.
-import '@fontsource/dm-sans/400.css'
-import '@fontsource/dm-sans/500.css'
+import '@fontsource/funnel-display/500.css'
+import '@fontsource/funnel-display/600.css'
+import '@fontsource/funnel-sans/400.css'
+import '@fontsource/funnel-sans/500.css'
 import '@fontsource/ibm-plex-mono/400.css'
 import '@fontsource/ibm-plex-mono/500.css'
-import '@fontsource/ibm-plex-sans/400.css'
-import '@fontsource/ibm-plex-sans/600.css'
-import '@fontsource/ibm-plex-sans/700.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './app.tsx'
