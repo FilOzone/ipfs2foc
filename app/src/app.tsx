@@ -67,8 +67,14 @@ const STALL_TIMEOUT_MS = 120_000
 const STALL_POLL_MS = 5_000
 // The pieces table shows one page at a time (#57): a million-CID run must
 // never put a million rows in the DOM. One page fits on a screen or two, and
-// the state filters get the operator to the rows that matter.
+// the state filters get the operator to the rows that matter. The Working
+// view pages smaller still — it is a glance at live progress, not a list to
+// read, and the full worker pool would fill the screen.
 const PAGE_SIZE = 50
+const WORKING_PAGE_SIZE = 8
+// The ETA averages completions over this trailing window: long enough to
+// smooth the small-piece bursts, short enough to follow a slowing source.
+const ETA_WINDOW_MS = 90_000
 // Persisting the run snapshots the whole input list and every result into
 // IndexedDB. Per-completion saves were fine at hundreds of CIDs; at millions
 // each save clones the full list, so completions coalesce into one save per
@@ -82,6 +88,20 @@ const ROW_FILTERS: Array<{ key: RowFilter; label: string }> = [
   { key: 'done', label: 'Ready' },
   { key: 'error', label: 'Failed' },
 ]
+
+/** A duration an operator plans around — nearest useful unit, no precision theater. */
+function fmtEta(seconds: number): string {
+  if (seconds < 90) return 'under 2 minutes'
+  const minutes = seconds / 60
+  if (minutes < 90) return `about ${Math.round(minutes)} minutes`
+  const hours = minutes / 60
+  if (hours < 36) {
+    const h = Math.round(hours)
+    return `about ${h} hour${h === 1 ? '' : 's'}`
+  }
+  const d = Math.round(hours / 24)
+  return `about ${d} day${d === 1 ? '' : 's'}`
+}
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`
@@ -804,13 +824,43 @@ export default function App({ caps }: { caps: Capabilities }) {
 
   const queuedCount = counts.queued
   // The filtered CID list and the page of it that renders. Both are cheap
-  // reads: the store caches the list until membership changes, and only
-  // PAGE_SIZE rows ever reach the DOM.
+  // reads: the store caches the list until membership changes, and only one
+  // page of rows ever reaches the DOM.
   const filteredCids = store.listFor(rowFilter)
-  const pageCount = Math.max(1, Math.ceil(filteredCids.length / PAGE_SIZE))
+  const pageSize = rowFilter === 'working' ? WORKING_PAGE_SIZE : PAGE_SIZE
+  const pageCount = Math.max(1, Math.ceil(filteredCids.length / pageSize))
   const page = Math.min(rowPage, pageCount - 1)
-  const pageStart = page * PAGE_SIZE
-  const pageCids = filteredCids.slice(pageStart, pageStart + PAGE_SIZE)
+  const pageStart = page * pageSize
+  const pageCids = filteredCids.slice(pageStart, pageStart + pageSize)
+
+  // Completions per second over the trailing window → time left. Samples
+  // append only when the processed count moves, but the rate reads against
+  // the clock, so a stalling source shows a growing estimate instead of a
+  // frozen one. Held back until there is enough signal to mean something.
+  const processed = counts.done + counts.error
+  const etaSamples = useRef<Array<{ t: number; n: number }>>([])
+  useEffect(() => {
+    if (!running) {
+      etaSamples.current = []
+      return
+    }
+    const now = performance.now()
+    etaSamples.current.push({ t: now, n: processed })
+    while (etaSamples.current.length > 2 && etaSamples.current[0].t < now - ETA_WINDOW_MS) {
+      etaSamples.current.shift()
+    }
+  }, [processed, running])
+  const eta = (() => {
+    if (!running || etaSamples.current.length < 2) return null
+    const first = etaSamples.current[0]
+    const last = etaSamples.current[etaSamples.current.length - 1]
+    const elapsed = (performance.now() - first.t) / 1000
+    const gained = last.n - first.n
+    if (elapsed < 15 || gained < 5) return null
+    const rate = gained / elapsed
+    const remaining = counts.queued + counts.working
+    return remaining > 0 ? { rate, text: fmtEta(remaining / rate) } : null
+  })()
 
   return (
     <div className="shell">
@@ -1092,6 +1142,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                 announced rather than only painted. */}
             <span aria-live="polite" className="panel-note">
               {counts.done.toLocaleString()} ready{errors > 0 ? ` · ${errors.toLocaleString()} failed` : ''}
+              {eta != null ? ` · ${eta.rate.toFixed(1)}/s · ${eta.text} left` : ''}
               {restored ? ' · restored from your last visit' : ''}
             </span>
           </div>
@@ -1211,7 +1262,7 @@ export default function App({ caps }: { caps: Capabilities }) {
               )
             })}
           </div>
-          {filteredCids.length > PAGE_SIZE && (
+          {filteredCids.length > pageSize && (
             <div className="pager">
               <button className="btn small" disabled={page === 0} onClick={() => setRowPage(page - 1)} type="button">
                 ‹ Previous
