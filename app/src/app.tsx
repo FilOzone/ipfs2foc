@@ -1,13 +1,14 @@
 import type { Capabilities } from 'ipfs2foc-core/capabilities'
 import { explorerDataSetUrl, explorerPieceUrl } from 'ipfs2foc-core/pdp-verifier'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
-import { computePiece, describePrepareFailure, type PieceResult } from './commp.ts'
+import { computePiece, describePrepareFailure } from './commp.ts'
 import { FocMark } from './foc-mark.tsx'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
 import { fmtToken, type PaymentsStatus, RPC_URLS, readPaymentsStatus, readyToSign } from './payments.ts'
+import { createPrepareStore, type RowFilter } from './prepare-store.ts'
 import { clearRun, clearSubmit, loadRun, loadSubmit, type SavedSubmit, saveRun, saveSubmit } from './run-store.ts'
 import {
   DEFAULT_SESSION_DURATION_SECONDS,
@@ -43,12 +44,6 @@ import {
 
 const DEFAULT_GATEWAY = 'https://trustless-gateway.link'
 
-type RowState =
-  | { phase: 'queued' }
-  | { phase: 'working'; bytes: number; rate: number }
-  | { phase: 'done'; result: PieceResult }
-  | { phase: 'error'; message: string; detail: string }
-
 // Process several CIDs at once. Retrieval (one streaming CAR request per root)
 // and CAR assembly run on this thread; the CPU-bound hashing runs in pooled
 // workers, one core per concurrent piece.
@@ -64,11 +59,23 @@ const PROGRESS_THROTTLE_MS = 250
 // per-chunk stream, so it can be much tighter.
 const STALL_TIMEOUT_MS = 120_000
 const STALL_POLL_MS = 5_000
+// The pieces table shows one page at a time (#57): a million-CID run must
+// never put a million rows in the DOM. One page renders in a frame, and the
+// state filters below get the operator to the rows that matter.
+const PAGE_SIZE = 200
+// Persisting the run snapshots the whole input list and every result into
+// IndexedDB. Per-completion saves were fine at hundreds of CIDs; at millions
+// each save clones the full list, so completions coalesce into one save per
+// interval (the run's end still saves immediately).
+const PERSIST_INTERVAL_MS = 5_000
 
-interface Row {
-  cid: string
-  state: RowState
-}
+const ROW_FILTERS: Array<{ key: RowFilter; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'queued', label: 'Queued' },
+  { key: 'working', label: 'Working' },
+  { key: 'done', label: 'Ready' },
+  { key: 'error', label: 'Failed' },
+]
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`
@@ -179,7 +186,14 @@ export default function App({ caps }: { caps: Capabilities }) {
   const [cidFileError, setCidFileError] = useState<string | null>(null)
   const [relayBase, setRelayBase] = useState(caps.pieceBase ?? DEFAULT_RELAY)
   const [gateway, setGateway] = useState(DEFAULT_GATEWAY)
-  const [rows, setRows] = useState<Row[]>([])
+  // Row state lives in the store, not in a useState array: the input list can
+  // run to millions and per-row state churn must not re-render (or rebuild)
+  // the world (#57). The version subscription re-renders this component at
+  // most every NOTIFY_MS; everything read from the store is cached inside it.
+  const [store] = useState(createPrepareStore)
+  useSyncExternalStore(store.subscribe, store.getVersion)
+  const [rowFilter, setRowFilter] = useState<RowFilter>('all')
+  const [rowPage, setRowPage] = useState(0)
   const [running, setRunning] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const [copies, setCopies] = useState(2)
@@ -188,17 +202,14 @@ export default function App({ caps }: { caps: Capabilities }) {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitBlocked, setSubmitBlocked] = useState<SubmitBlockedError['reason'] | null>(null)
   const [resumable, setResumable] = useState<SavedSubmit | null>(null)
-  // Completed pieces by input CID — the write-through copy of what run-store
-  // persists, and the source for skip-on-resume in run().
-  const savedResults = useRef<Record<string, PieceResult>>({})
   const [restored, setRestored] = useState(false)
   // Writes are blocked until the restore attempt settles, so an early debounced
   // persist of the empty textarea cannot clobber a saved run.
   const hydrated = useRef(false)
   // True once any prepare run has started this page-load. The async restore
-  // below races a run started before it resolves: replacing rows and
-  // savedResults with the saved (older) snapshot re-marked finished rows as
-  // queued and made the pool look like it died mid-run (#42).
+  // below races a run started before it resolves: resetting the store to the
+  // saved (older) snapshot re-marked finished rows as queued and made the
+  // pool look like it died mid-run (#42).
   const ranRef = useRef(false)
 
   // Restore the previous run once on load (#26). Done rows come back as done;
@@ -210,7 +221,7 @@ export default function App({ caps }: { caps: Capabilities }) {
       // Merge, never replace: a run that started before this restore resolved
       // has fresher results than the snapshot read from storage (#42).
       for (const [cid, result] of Object.entries(saved.results)) {
-        savedResults.current[cid] ??= result
+        store.seedResult(cid, result)
       }
       // A live (or finished) run owns the input and the rows — restoring the
       // saved snapshot over them would clobber its progress (#42).
@@ -233,18 +244,12 @@ export default function App({ caps }: { caps: Capabilities }) {
             .concat(saved.fileCids ?? [])
         )
       )
-      const doneCount = savedCids.filter((cid) => savedResults.current[cid] != null).length
-      if (doneCount > 0) {
-        setRows(
-          savedCids.map((cid) => {
-            const result = savedResults.current[cid]
-            return { cid, state: result ? { phase: 'done', result } : { phase: 'queued' } }
-          })
-        )
+      if (savedCids.some((cid) => store.hasResult(cid))) {
+        store.setCids(savedCids)
         setRestored(true)
       }
     })
-  }, [])
+  }, [store])
 
   const persist = useCallback(
     (text: string) => {
@@ -256,12 +261,44 @@ export default function App({ caps }: { caps: Capabilities }) {
         fileInvalidCount: cidFile?.intake.invalidCount,
         gateway,
         relayBase,
-        results: savedResults.current,
+        results: store.resultsRecord(),
         updatedAt: new Date().toISOString(),
       })
     },
-    [gateway, relayBase, cidFile]
+    [gateway, relayBase, cidFile, store]
   )
+
+  // Coalesce per-completion saves into one every PERSIST_INTERVAL_MS. The
+  // trailing save always runs, so the last completions of a burst persist too.
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const persistRef = useRef<() => void>(() => {})
+  persistRef.current = () => persist(cidsText)
+  const schedulePersist = useCallback(() => {
+    if (persistTimer.current != null) return
+    persistTimer.current = setTimeout(() => {
+      persistTimer.current = null
+      persistRef.current()
+    }, PERSIST_INTERVAL_MS)
+  }, [])
+  // Save now if completions are waiting on the interval; no-op otherwise, so
+  // it can run on every tab-hide without recloning an unchanged snapshot.
+  const flushPersist = useCallback(() => {
+    if (persistTimer.current == null) return
+    clearTimeout(persistTimer.current)
+    persistTimer.current = null
+    persistRef.current()
+  }, [])
+
+  // A reload or tab close inside the save interval would drop that batch's
+  // completions (they would recompute, but the operator sees the count dip).
+  // Hidden is the last reliable moment to write.
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') flushPersist()
+    }
+    document.addEventListener('visibilitychange', onHide)
+    return () => document.removeEventListener('visibilitychange', onHide)
+  }, [flushPersist])
 
   // Persist input edits (debounced) so a refresh keeps the CID list and source
   // settings even before a run starts.
@@ -284,10 +321,13 @@ export default function App({ caps }: { caps: Capabilities }) {
     [cidsText, cidFile]
   )
 
-  const results = useMemo(() => rows.flatMap((r) => (r.state.phase === 'done' ? [r.state.result] : [])), [rows])
-  // The most recently finished piece, in row order — what Continuity shows.
-  const latest = results.length > 0 ? results[results.length - 1] : null
-  const errors = rows.filter((r) => r.state.phase === 'error').length
+  const counts = store.counts()
+  // Stable between completions: the store rebuilds this only when a row
+  // entered or left the done state, so effects keyed on it stay quiet.
+  const results = store.resultsList()
+  // The most recently finished piece — what Continuity shows.
+  const latest = store.lastDone()
+  const errors = counts.error
   const walletNetwork = wallet == null ? null : networkOf(wallet.chainId)
   const onTargetNetwork = walletNetwork === targetNetwork
   const isTestnet = targetNetwork !== 'mainnet'
@@ -382,7 +422,9 @@ export default function App({ caps }: { caps: Capabilities }) {
   // to all three. Shown read-only until the operator presses Submit again.
   useEffect(() => {
     setResumable(null)
-    if (wallet == null || results.length === 0 || !onTargetNetwork) return
+    // Not while preparing: results grows all run long, and re-checking the
+    // saved submit against a million-piece list on every batch is pure churn.
+    if (wallet == null || results.length === 0 || !onTargetNetwork || running) return
     let stale = false
     findResumableSubmit(wallet, targetNetwork, results).then((saved) => {
       if (stale || saved == null) return
@@ -393,7 +435,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     return () => {
       stale = true
     }
-  }, [wallet, onTargetNetwork, results, targetNetwork])
+  }, [wallet, onTargetNetwork, results, targetNetwork, running])
 
   const submitWith = useCallback(
     async (excludePieceCids: string[] | null) => {
@@ -513,8 +555,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     async (cid: string) => {
       const startedAt = performance.now()
       let lastEmit = 0
-      const patch = (state: RowState) => setRows((prev) => prev.map((r) => (r.cid === cid ? { ...r, state } : r)))
-      patch({ phase: 'working', bytes: 0, rate: 0 })
+      store.markWorking(cid, 0, 0)
       const controller = new AbortController()
       prepareControllers.current.set(cid, controller)
       // Every progress callback means the byte counter advanced (the exporter
@@ -542,61 +583,70 @@ export default function App({ caps }: { caps: Capabilities }) {
             if (now - lastEmit < PROGRESS_THROTTLE_MS) return
             lastEmit = now
             const secs = (now - startedAt) / 1000
-            patch({ phase: 'working', bytes, rate: secs > 0 ? bytes / 1048576 / secs : 0 })
+            store.markWorking(cid, bytes, secs > 0 ? bytes / 1048576 / secs : 0)
           },
           controller.signal
         )
-        patch({ phase: 'done', result })
-        savedResults.current[cid] = result
-        persist(cidsText)
+        store.markDone(cid, result)
+        schedulePersist()
       } catch (err) {
         const failure = describePrepareFailure(err)
-        patch({ phase: 'error', message: failure.headline, detail: failure.detail })
+        store.markError(cid, failure.headline, failure.detail)
       } finally {
         clearInterval(watchdog)
         prepareControllers.current.delete(cid)
       }
     },
-    [cidsText, gateway, relayBase, persist]
+    [gateway, relayBase, schedulePersist, store]
   )
 
   const cancelOne = useCallback((cid: string) => {
     prepareControllers.current.get(cid)?.abort(new Error('cancelled. Retry whenever you like.'))
   }, [])
 
+  // Shared worker pool: run() feeds it everything unprepared, retryFailed()
+  // only the failures. prepareOne resolves on every path (its catch maps
+  // failures to row state), but `running` must never stick at true: the
+  // finally keeps the button honest even if a future edit lets a worker
+  // reject.
+  const runPool = useCallback(
+    async (pending: string[]) => {
+      ranRef.current = true
+      setRunning(true)
+      let next = 0
+      const worker = async () => {
+        while (next < pending.length) {
+          await prepareOne(pending[next++])
+        }
+      }
+      try {
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker))
+      } finally {
+        setRunning(false)
+        flushPersist()
+      }
+    },
+    [prepareOne, flushPersist]
+  )
+
   const run = useCallback(async () => {
     ranRef.current = true
-    setRunning(true)
     // Prune saved results for CIDs no longer in the input, then seed done rows
     // from the saved run — pieces are deterministic, so a saved result is final
     // and only the pending/failed CIDs go back through a worker.
-    const inputSet = new Set(cids)
-    savedResults.current = Object.fromEntries(Object.entries(savedResults.current).filter(([cid]) => inputSet.has(cid)))
-    setRows(
-      cids.map((cid) => {
-        const result = savedResults.current[cid]
-        return { cid, state: result ? { phase: 'done', result } : { phase: 'queued' } }
-      })
-    )
+    store.setCids(cids)
+    setRowFilter('all')
+    setRowPage(0)
     persist(cidsText)
+    await runPool(cids.filter((cid) => !store.hasResult(cid)))
+  }, [cids, cidsText, persist, runPool, store])
 
-    // Worker pool over the CIDs that still need computing.
-    const pending = cids.filter((cid) => savedResults.current[cid] == null)
-    let next = 0
-    const worker = async () => {
-      while (next < pending.length) {
-        await prepareOne(pending[next++])
-      }
-    }
-    // prepareOne resolves on every path (its catch maps failures to row state),
-    // but `running` must never stick at true: the finally keeps the button
-    // honest even if a future edit lets a worker reject.
-    try {
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker))
-    } finally {
-      setRunning(false)
-    }
-  }, [cids, cidsText, persist, prepareOne])
+  // Requeue exactly the failures (#57): on a large run they are the rows the
+  // operator is looking at, and Prepare would also recompute everything
+  // still queued.
+  const retryFailed = useCallback(async () => {
+    await runPool(store.listFor('error'))
+  }, [runPool, store])
 
   // Parse a picked or dropped cids.txt. Streaming, so the only state the tab
   // holds afterward is the accepted list and the reject summary.
@@ -629,8 +679,9 @@ export default function App({ caps }: { caps: Capabilities }) {
   }, [])
 
   const reset = useCallback(() => {
-    savedResults.current = {}
-    setRows([])
+    store.clear()
+    setRowFilter('all')
+    setRowPage(0)
     setCidsText('')
     setCidFile(null)
     setCidFileError(null)
@@ -641,7 +692,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     setSubmitBlocked(null)
     void clearRun()
     void clearSubmit()
-  }, [])
+  }, [store])
 
   const copy = useCallback((text: string, key: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -740,7 +791,15 @@ export default function App({ caps }: { caps: Capabilities }) {
     }
   }, [])
 
-  const queuedCount = rows.filter((r) => r.state.phase === 'queued').length
+  const queuedCount = counts.queued
+  // The filtered CID list and the page of it that renders. Both are cheap
+  // reads: the store caches the list until membership changes, and only
+  // PAGE_SIZE rows ever reach the DOM.
+  const filteredCids = store.listFor(rowFilter)
+  const pageCount = Math.max(1, Math.ceil(filteredCids.length / PAGE_SIZE))
+  const page = Math.min(rowPage, pageCount - 1)
+  const pageStart = page * PAGE_SIZE
+  const pageCids = filteredCids.slice(pageStart, pageStart + PAGE_SIZE)
 
   return (
     <div className="shell">
@@ -928,7 +987,7 @@ export default function App({ caps }: { caps: Capabilities }) {
 
       <section className="panel">
         <div className="panel-head">
-          <span className={`panel-no ${rows.length > 0 ? 'is-done' : cids.length > 0 ? 'is-current' : ''}`}>02</span>
+          <span className={`panel-no ${counts.total > 0 ? 'is-done' : cids.length > 0 ? 'is-current' : ''}`}>02</span>
           <h2>CIDs</h2>
           <span aria-live="polite" className="panel-note">
             {cids.length === 0 ? '' : `${cids.length.toLocaleString()} unique`}
@@ -1003,7 +1062,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                 ? 'Prepare'
                 : `Prepare ${cids.length.toLocaleString()} item${cids.length === 1 ? '' : 's'}`}
           </button>
-          {(cids.length > 0 || rows.length > 0) && (
+          {(cids.length > 0 || counts.total > 0) && (
             <button className="btn small" disabled={running} onClick={reset} type="button">
               Clear
             </button>
@@ -1011,17 +1070,17 @@ export default function App({ caps }: { caps: Capabilities }) {
         </div>
       </section>
 
-      {rows.length > 0 && (
+      {counts.total > 0 && (
         <section className="panel">
           <div className="panel-head">
-            <span className={`panel-no ${results.length > 0 && !running ? 'is-done' : running ? 'is-current' : ''}`}>
+            <span className={`panel-no ${counts.done > 0 && !running ? 'is-done' : running ? 'is-current' : ''}`}>
               03
             </span>
             <h2>Pieces</h2>
             {/* A prepare run reports for minutes to hours, so its counts are
                 announced rather than only painted. */}
             <span aria-live="polite" className="panel-note">
-              {results.length.toLocaleString()} ready{errors > 0 ? ` · ${errors.toLocaleString()} failed` : ''}
+              {counts.done.toLocaleString()} ready{errors > 0 ? ` · ${errors.toLocaleString()} failed` : ''}
               {restored ? ' · restored from your last visit' : ''}
             </span>
           </div>
@@ -1037,6 +1096,34 @@ export default function App({ caps }: { caps: Capabilities }) {
               size={fmtBytes(latest.rawSize)}
             />
           )}
+          {/* The run at a glance, and the way to the rows that matter: each
+              count filters the table to its state. On a large run the
+              failures are the only rows anyone reads. */}
+          <div className="state-filter" role="group" aria-label="Filter the table by state">
+            {ROW_FILTERS.map(({ key, label }) => {
+              const count = key === 'all' ? counts.total : counts[key]
+              return (
+                <button
+                  aria-pressed={rowFilter === key}
+                  className={`btn small filter-chip ${rowFilter === key ? 'is-on' : ''} ${key === 'error' && count > 0 ? 'is-alert' : ''}`}
+                  disabled={key !== 'all' && count === 0 && rowFilter !== key}
+                  key={key}
+                  onClick={() => {
+                    setRowFilter(key)
+                    setRowPage(0)
+                  }}
+                  type="button"
+                >
+                  {label} {count.toLocaleString()}
+                </button>
+              )
+            })}
+            {errors > 0 && !running && (
+              <button className="btn small" onClick={() => void retryFailed()} type="button">
+                Retry {errors.toLocaleString()} failed
+              </button>
+            )}
+          </div>
           <div className="table">
             <div className="trow thead">
               <span>Your CID</span>
@@ -1044,34 +1131,40 @@ export default function App({ caps }: { caps: Capabilities }) {
               <span className="num">Size</span>
               <span>Source the provider reads</span>
             </div>
-            {rows.map((r) => {
+            {pageCids.length === 0 && (
+              <div className="trow">
+                <span className="dim">no items in this state right now</span>
+              </div>
+            )}
+            {pageCids.map((cid) => {
+              const state = store.getState(cid)
               // Show the canonical CIDv1 once computed (a `Qm…` input is converted),
               // so the row reflects exactly what gets committed and relayed.
-              const shownCid = r.state.phase === 'done' ? r.state.result.cid : r.cid
+              const shownCid = state.phase === 'done' ? state.result.cid : cid
               return (
-                <div className="trow" key={r.cid}>
+                <div className="trow" key={cid}>
                   <code className="mono dim" title={shownCid}>
                     {short(shownCid)}
                   </code>
-                  {r.state.phase === 'done' ? (
+                  {state.phase === 'done' ? (
                     <span className="piece">
-                      <code className="mono" title={r.state.result.pieceCid}>
-                        {short(r.state.result.pieceCid)}
+                      <code className="mono" title={state.result.pieceCid}>
+                        {short(state.result.pieceCid)}
                       </code>
-                      {r.state.result.gapFillCount > 0 && (
+                      {state.result.gapFillCount > 0 && (
                         <span
                           className="warn"
-                          title={`Gateway served an incomplete CAR. ${r.state.result.gapFillCount} block(s) recovered per-block. The provider pulls the CAR URL, so re-verify this gateway before submitting; if its CAR is still incomplete at pull time the on-chain AddPieces will fail.`}
+                          title={`Gateway served an incomplete CAR. ${state.result.gapFillCount} block(s) recovered per-block. The provider pulls the CAR URL, so re-verify this gateway before submitting; if its CAR is still incomplete at pull time the on-chain AddPieces will fail.`}
                         >
                           ⚠ incomplete CAR
                         </span>
                       )}
                     </span>
-                  ) : r.state.phase === 'error' ? (
-                    <span className="err-text" title={r.state.detail}>
-                      {short(r.state.message, 44, 0)}{' '}
+                  ) : state.phase === 'error' ? (
+                    <span className="err-text" title={state.detail}>
+                      {short(state.message, 44, 0)}{' '}
                       <a
-                        href={`https://check.ipfs.network/?cid=${r.cid}`}
+                        href={`https://check.ipfs.network/?cid=${cid}`}
                         rel="noreferrer"
                         target="_blank"
                         title="probe this CID's providers and retrievability on the public network"
@@ -1079,31 +1172,25 @@ export default function App({ caps }: { caps: Capabilities }) {
                         check availability
                       </a>
                     </span>
-                  ) : r.state.phase === 'working' ? (
+                  ) : state.phase === 'working' ? (
                     <span className="working">
-                      ▍ {fmtBytes(r.state.bytes)}
-                      {r.state.rate > 0 ? ` · ${r.state.rate.toFixed(1)} MiB/s` : ''}
+                      ▍ {fmtBytes(state.bytes)}
+                      {state.rate > 0 ? ` · ${state.rate.toFixed(1)} MiB/s` : ''}
                     </span>
                   ) : (
                     <span className="dim">queued</span>
                   )}
-                  <span className="num mono dim">
-                    {r.state.phase === 'done' ? fmtBytes(r.state.result.rawSize) : '—'}
-                  </span>
-                  {r.state.phase === 'done' ? (
-                    <button
-                      className="copy"
-                      onClick={() => copy(r.state.phase === 'done' ? r.state.result.sourceUrl : '', r.cid)}
-                      type="button"
-                    >
-                      {copied === r.cid ? 'copied ✓' : 'copy'}
+                  <span className="num mono dim">{state.phase === 'done' ? fmtBytes(state.result.rawSize) : '—'}</span>
+                  {state.phase === 'done' ? (
+                    <button className="copy" onClick={() => copy(state.result.sourceUrl, cid)} type="button">
+                      {copied === cid ? 'copied ✓' : 'copy'}
                     </button>
-                  ) : r.state.phase === 'error' ? (
-                    <button className="copy" disabled={running} onClick={() => void prepareOne(r.cid)} type="button">
+                  ) : state.phase === 'error' ? (
+                    <button className="copy" disabled={running} onClick={() => void prepareOne(cid)} type="button">
                       retry
                     </button>
-                  ) : r.state.phase === 'working' ? (
-                    <button className="copy" onClick={() => cancelOne(r.cid)} type="button">
+                  ) : state.phase === 'working' ? (
+                    <button className="copy" onClick={() => cancelOne(cid)} type="button">
                       cancel
                     </button>
                   ) : (
@@ -1113,15 +1200,35 @@ export default function App({ caps }: { caps: Capabilities }) {
               )
             })}
           </div>
+          {filteredCids.length > PAGE_SIZE && (
+            <div className="pager">
+              <button className="btn small" disabled={page === 0} onClick={() => setRowPage(page - 1)} type="button">
+                ‹ Previous
+              </button>
+              <span className="panel-note">
+                {(pageStart + 1).toLocaleString()}–{(pageStart + pageCids.length).toLocaleString()} of{' '}
+                {filteredCids.length.toLocaleString()}
+              </span>
+              <button
+                className="btn small"
+                disabled={page >= pageCount - 1}
+                onClick={() => setRowPage(page + 1)}
+                type="button"
+              >
+                Next ›
+              </button>
+            </div>
+          )}
           {errors > 0 && (
             <p className="gate-note">
               Finished rows are kept: Prepare and per-row retry recompute only what failed. Hover a failure for the full
               error; "check availability" shows whether the network can serve that CID at all.
             </p>
           )}
-          {!running && queuedCount > 0 && rows.length > 0 && (
+          {!running && queuedCount > 0 && (
             <p className="gate-note">
-              {queuedCount} item{queuedCount === 1 ? '' : 's'} not prepared yet. Press Prepare to continue; it picks up
+              {queuedCount.toLocaleString()} item{queuedCount === 1 ? '' : 's'} not prepared yet. Press Prepare to
+              continue; it picks up
               exactly where the run stopped and never recomputes a finished row.
             </p>
           )}
@@ -1135,7 +1242,7 @@ export default function App({ caps }: { caps: Capabilities }) {
           {results.length > 0 && (
             <div className="actions">
               <button className="btn" onClick={saveManifest} type="button">
-                Download run manifest ({results.length})
+                Download run manifest ({results.length.toLocaleString()})
               </button>
               <span className="panel-note">
                 The portable record of this run: pull URLs and commitments for the submit step.
@@ -1191,7 +1298,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                     : allCommitted
                       ? 'Submitted ✓'
                       : resumable == null
-                        ? `Submit ${results.length} piece${results.length === 1 ? '' : 's'}`
+                        ? `Submit ${results.length.toLocaleString()} piece${results.length === 1 ? '' : 's'}`
                         : 'Resume submit'}
                 </button>
                 {resumable != null && !submitting && (

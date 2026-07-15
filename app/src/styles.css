@@ -630,6 +630,37 @@ body.local-app .pay-setup {
   font-size: var(--t-xs);
 }
 
+/* State counts double as the table filter: one chip per row state, pressed
+   chip = active filter. The failed chip carries the alert color whenever
+   failures exist, because on a large run those are the rows that matter. */
+.state-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 14px 0 10px;
+}
+.filter-chip {
+  border-radius: 999px;
+}
+.filter-chip.is-on {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+.filter-chip.is-alert:not(.is-on) {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+/* One page of rows at a time; the pager names the slice it is showing. */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 10px;
+}
+
 .mono {
   font-family: var(--mono);
 }
