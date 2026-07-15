@@ -60,9 +60,9 @@ const PROGRESS_THROTTLE_MS = 250
 const STALL_TIMEOUT_MS = 120_000
 const STALL_POLL_MS = 5_000
 // The pieces table shows one page at a time (#57): a million-CID run must
-// never put a million rows in the DOM. One page renders in a frame, and the
-// state filters below get the operator to the rows that matter.
-const PAGE_SIZE = 200
+// never put a million rows in the DOM. One page fits on a screen or two, and
+// the state filters get the operator to the rows that matter.
+const PAGE_SIZE = 50
 // Persisting the run snapshots the whole input list and every result into
 // IndexedDB. Per-completion saves were fine at hundreds of CIDs; at millions
 // each save clones the full list, so completions coalesce into one save per
@@ -613,6 +613,12 @@ export default function App({ caps }: { caps: Capabilities }) {
     async (pending: string[]) => {
       ranRef.current = true
       setRunning(true)
+      // While the run is live the in-flight rows are the progress view, so
+      // the table follows them. When it ends that filter would show nothing;
+      // land on the failures if there are any, since those carry the run's
+      // next action.
+      setRowFilter('working')
+      setRowPage(0)
       let next = 0
       const worker = async () => {
         while (next < pending.length) {
@@ -623,10 +629,11 @@ export default function App({ caps }: { caps: Capabilities }) {
         await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker))
       } finally {
         setRunning(false)
+        setRowFilter((f) => (f === 'working' ? (store.counts().error > 0 ? 'error' : 'all') : f))
         flushPersist()
       }
     },
-    [prepareOne, flushPersist]
+    [prepareOne, flushPersist, store]
   )
 
   const run = useCallback(async () => {
@@ -635,8 +642,6 @@ export default function App({ caps }: { caps: Capabilities }) {
     // from the saved run — pieces are deterministic, so a saved result is final
     // and only the pending/failed CIDs go back through a worker.
     store.setCids(cids)
-    setRowFilter('all')
-    setRowPage(0)
     persist(cidsText)
     await runPool(cids.filter((cid) => !store.hasResult(cid)))
   }, [cids, cidsText, persist, runPool, store])
