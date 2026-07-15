@@ -50,6 +50,7 @@ import * as Link from 'multiformats/link'
 import { fetchBlockViaBitswap } from './bitswap-fallback.ts'
 import { beginHash, type HashJob } from './hash-pool.ts'
 import { discoverRootSources } from './provider-discovery.ts'
+import { hedgeFetch, raceBlockStreams, type StreamCandidate } from './source-race.ts'
 
 // A piece whose canonical CAR fits here is fetched entirely without holding a
 // hash worker (#59): the buffered bytes hand off to a worker only when the
@@ -58,6 +59,18 @@ import { discoverRootSources } from './provider-discovery.ts'
 // larger ones switch to streaming through the worker mid-fetch. Worst-case
 // transient memory is this cap times the prepare concurrency.
 const HASH_HANDOFF_BYTES = 4 * 1024 * 1024
+
+// Start offsets for the per-root source race. A healthy preferred source
+// answers well inside one step, so later tiers usually never start. The
+// community gateway's offset sits above a provider's normal cold-serve time
+// (measured: most roots answer inside ~3s), so the shared gateway joins only
+// for the genuinely slow tail — a dead tier still promotes it immediately.
+const RACE_STEP_MS = 400
+const RACE_COMMUNITY_MS = 3_000
+// A bitswap-walked root fetches every block over its peers; the gateway's
+// raw fetch joins a block only after this — pure insurance, since a healthy
+// peer answers a want in well under a second.
+const RACE_RAW_INSURANCE_MS = 1_500
 
 export interface PieceResult {
   cid: string
@@ -168,49 +181,64 @@ export async function computePiece(
   // verified stream, with a per-block `?format=raw` fallback for any the stream
   // misses. Scoped to this root and closed when the export ends.
   //
-  // The CAR is asked for from the root's own providers first (#59): delegated
-  // routing names the hosts that hold this content, and pulling from them
-  // spreads a big run across the network instead of funneling it through one
-  // gateway. Any discovery or candidate failure falls through — the
-  // configured gateway is always the last candidate. The commitment cannot
-  // depend on the choice: every block is hash-verified, and the canonical
-  // CAR is a pure function of the content.
+  // Every source for this root races with staggered starts (#59): the root's
+  // own providers lead (their HTTP gateway, then their bitswap peers), and
+  // the free community gateway joins last — it sees traffic only for roots
+  // the preferred sources are slow or dead on, or the moment they all fail.
+  // First block wins; the losers abort. The commitment cannot depend on who
+  // wins: every block is hash-verified, and the canonical CAR is a pure
+  // function of the content.
   //
-  // One routing lookup serves the whole piece: the CAR candidates and the
-  // bitswap rescue below share it.
+  // One routing lookup serves the whole piece: the CAR race and the
+  // per-block hedge below share it.
   const sources = discoverRootSources(canonical, signal)
-  const openCarStream = async function* (root: Parameters<typeof openGatewayCarStream>[1], streamSignal?: AbortSignal) {
-    const { carUrls } = await sources
-    let lastErr: unknown = null
-    for (const base of [...carUrls, gateway]) {
-      try {
-        yield* openGatewayCarStream(base, root, streamSignal)
-        return
-      } catch (err) {
-        if (streamSignal?.aborted === true) throw err
-        // A candidate that died mid-stream may have delivered blocks already;
-        // re-streaming from the next one is safe — the source drops
-        // duplicates after verifying them.
-        lastErr = err
-      }
+  const openCarStream = async function* (
+    streamRoot: Parameters<typeof openGatewayCarStream>[1],
+    streamSignal?: AbortSignal
+  ) {
+    const { carUrls, p2pAddrs } = await sources
+    const candidates: Array<StreamCandidate<{ cid: CID; bytes: Uint8Array }>> = carUrls.map((base, i) => ({
+      delayMs: i * RACE_STEP_MS,
+      start: (sig) => openGatewayCarStream(base, streamRoot, sig),
+    }))
+    candidates.push({
+      delayMs: candidates.length > 0 ? RACE_COMMUNITY_MS : 0,
+      start: (sig) => openGatewayCarStream(gateway, streamRoot, sig),
+    })
+    if (p2pAddrs.length > 0) {
+      // Strictly the last tier: a bitswap win flips the whole DAG into
+      // per-block fetching, which is the most expensive way to walk a root.
+      // It starts on its offset only when every CAR stream is still silent —
+      // and immediately when they have all already failed.
+      candidates.push({
+        delayMs: RACE_COMMUNITY_MS + RACE_STEP_MS,
+        onWin: () => {
+          rootViaBitswap = true
+        },
+        start: async function* (sig) {
+          yield { cid: streamRoot as CID, bytes: await fetchBlockViaBitswap(p2pAddrs, streamRoot as CID, sig) }
+        },
+      })
     }
-    throw lastErr
+    yield* raceBlockStreams(candidates, streamSignal)
   }
-  // Gap-fill: the gateway's single-block raw fetch first (unchanged), then a
-  // bitswap want to the root's own browser-dialable peers. The rescue only
-  // engages when every HTTP path for a block is exhausted, so a root nothing
-  // HTTP can serve still prepares as long as one of its peers answers.
+  // Per-block hedge for everything the winning stream did not carry. When
+  // the root itself came over bitswap the peers lead and the gateway raw
+  // fetch is late insurance; for a gap in an HTTP CAR it is the reverse.
+  let rootViaBitswap = false
   const fetchRawBlock = async (cid: CID, blockSignal?: AbortSignal) => {
-    try {
-      return await fetchGatewayRawBlock(gateway, cid, blockSignal)
-    } catch (gatewayErr) {
-      const { p2pAddrs } = await sources
-      try {
-        return await fetchBlockViaBitswap(p2pAddrs, cid, blockSignal)
-      } catch (bitswapErr) {
-        throw new AggregateError([gatewayErr, bitswapErr], 'gateway raw fetch and bitswap rescue both failed')
-      }
-    }
+    const { p2pAddrs } = await sources
+    if (p2pAddrs.length === 0) return fetchGatewayRawBlock(gateway, cid, blockSignal)
+    const attempts = rootViaBitswap
+      ? [
+          { delayMs: 0, run: (sig: AbortSignal) => fetchBlockViaBitswap(p2pAddrs, cid, sig) },
+          { delayMs: RACE_RAW_INSURANCE_MS, run: (sig: AbortSignal) => fetchGatewayRawBlock(gateway, cid, sig) },
+        ]
+      : [
+          { delayMs: 0, run: (sig: AbortSignal) => fetchGatewayRawBlock(gateway, cid, sig) },
+          { delayMs: RACE_STEP_MS, run: (sig: AbortSignal) => fetchBlockViaBitswap(p2pAddrs, cid, sig) },
+        ]
+    return hedgeFetch(attempts, blockSignal)
   }
   const source = new CarStreamSource(gateway, { signal, openCarStream, fetchRawBlock })
   // The hash worker is claimed only once there are bytes worth hashing (#59).
