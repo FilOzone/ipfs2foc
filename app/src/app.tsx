@@ -44,10 +44,16 @@ import {
 
 const DEFAULT_GATEWAY = 'https://trustless-gateway.link'
 
-// Process several CIDs at once. Retrieval (one streaming CAR request per root)
-// and CAR assembly run on this thread; the CPU-bound hashing runs in pooled
-// workers, one core per concurrent piece.
-const CONCURRENCY = HASH_POOL_SIZE
+// Process several CIDs at once. Retrieval (one streaming CAR request per
+// root) and CAR assembly run on this thread; the CPU-bound hashing runs in
+// HASH_POOL_SIZE pooled workers. Retrieval is network-bound and mostly idle
+// waiting on the gateway, so many more fetches stay in flight than there are
+// hashing cores — a piece claims a worker only when its bytes are ready to
+// hash (#59). Measured against the default gateway on a real inventory
+// (63 KiB median root): 4 in flight ≈ 2 pieces/s, 16 ≈ 10/s, 32 ≈ 18/s, with
+// no added failures — the gateway round-trip, not bandwidth or CPU, is what
+// this hides.
+const CONCURRENCY = 8 * HASH_POOL_SIZE
 // Don't re-render on every stream chunk — that starves the thread doing the
 // hashing. Emit progress at most this often.
 const PROGRESS_THROTTLE_MS = 250
@@ -271,7 +277,7 @@ export default function App({ caps }: { caps: Capabilities }) {
   // Coalesce per-completion saves into one every PERSIST_INTERVAL_MS. The
   // trailing save always runs, so the last completions of a burst persist too.
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const persistRef = useRef<() => void>(() => {})
+  const persistRef = useRef<() => void>(() => undefined)
   persistRef.current = () => persist(cidsText)
   const schedulePersist = useCallback(() => {
     if (persistTimer.current != null) return
@@ -1104,7 +1110,7 @@ export default function App({ caps }: { caps: Capabilities }) {
           {/* The run at a glance, and the way to the rows that matter: each
               count filters the table to its state. On a large run the
               failures are the only rows anyone reads. */}
-          <div className="state-filter" role="group" aria-label="Filter the table by state">
+          <fieldset aria-label="Filter the table by state" className="state-filter">
             {ROW_FILTERS.map(({ key, label }) => {
               const count = key === 'all' ? counts.total : counts[key]
               return (
@@ -1128,7 +1134,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                 Retry {errors.toLocaleString()} failed
               </button>
             )}
-          </div>
+          </fieldset>
           <div className="table">
             <div className="trow thead">
               <span>Your CID</span>
@@ -1233,8 +1239,7 @@ export default function App({ caps }: { caps: Capabilities }) {
           {!running && queuedCount > 0 && (
             <p className="gate-note">
               {queuedCount.toLocaleString()} item{queuedCount === 1 ? '' : 's'} not prepared yet. Press Prepare to
-              continue; it picks up
-              exactly where the run stopped and never recomputes a finished row.
+              continue; it picks up exactly where the run stopped and never recomputes a finished row.
             </p>
           )}
           {running && (

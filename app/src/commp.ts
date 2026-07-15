@@ -42,7 +42,15 @@ import { CID } from 'multiformats/cid'
 import * as Raw from 'multiformats/codecs/raw'
 import * as Digest from 'multiformats/hashes/digest'
 import * as Link from 'multiformats/link'
-import { beginHash } from './hash-pool.ts'
+import { beginHash, type HashJob } from './hash-pool.ts'
+
+// A piece whose canonical CAR fits here is fetched entirely without holding a
+// hash worker (#59): the buffered bytes hand off to a worker only when the
+// stream ends, so the CPU pool spends its time hashing, not waiting on the
+// network. In the inventories this tool targets most pieces are far smaller;
+// larger ones switch to streaming through the worker mid-fetch. Worst-case
+// transient memory is this cap times the prepare concurrency.
+const HASH_HANDOFF_BYTES = 4 * 1024 * 1024
 
 export interface PieceResult {
   cid: string
@@ -153,33 +161,62 @@ export async function computePiece(
   // verified stream, with a per-block `?format=raw` fallback for any the stream
   // misses. Scoped to this root and closed when the export ends.
   const source = new CarStreamSource(gateway, { signal })
-  // If abort wins the acquire race, the late-resolving job still owns a pool
-  // slot — cancel it on arrival so the slot is replaced, not leaked.
-  const jobPromise = beginHash()
-  jobPromise.then(
-    (j) => {
-      if (signal?.aborted === true) j.cancel()
-    },
-    () => {
-      // surfaced through the raced await below
-    }
-  )
-  let job: Awaited<typeof jobPromise> | null = null
+  // The hash worker is claimed only once there are bytes worth hashing (#59).
+  // Claiming it up front held a CPU core through the whole network stream, so
+  // four slow fetches gated every other piece. A piece that fits the buffer
+  // completes its entire fetch without a worker and holds one only for the
+  // hash itself; larger pieces hand off mid-stream and continue as before,
+  // with the unpulled stream as backpressure while they wait for a slot.
+  let jobPromise: Promise<HashJob> | null = null
+  let job: HashJob | null = null
+  const buffered: Uint8Array[] = []
+  let bufferedBytes = 0
+  // Claim a worker and replay the buffered bytes into it. Called at most
+  // once per piece: both call sites are guarded by `job == null`.
+  const handOff = async (claim: Promise<HashJob>): Promise<HashJob> => {
+    const j = await raceAbort(claim, signal)
+    for (const c of buffered) await raceAbort(j.write(c), signal)
+    buffered.length = 0
+    return j
+  }
   let rawSize = 0
   let pieceCid: string
   try {
-    job = await raceAbort(jobPromise, signal)
     for await (const chunk of exportCanonicalCar(source, defaultGetCodec, root, { signal })) {
       rawSize += chunk.length
-      await raceAbort(job.write(chunk), signal)
+      if (job == null) {
+        buffered.push(chunk)
+        bufferedBytes += chunk.length
+        if (bufferedBytes >= HASH_HANDOFF_BYTES) {
+          jobPromise = beginHash()
+          job = await handOff(jobPromise)
+        }
+      } else {
+        await raceAbort(job.write(chunk), signal)
+      }
       onProgress?.(rawSize)
+    }
+    if (job == null) {
+      jobPromise = beginHash()
+      job = await handOff(jobPromise)
     }
 
     // verified: fr32-sha2-256-trunc254-padded-binary-tree-multihash src/async.js
     // digest — multihash bytes come out via digestInto(bytes, 0, true).
     pieceCid = (Link.create(Raw.code, Digest.decode(await raceAbort(job.finish(), signal))) as CID).toString()
   } catch (err) {
-    job?.cancel()
+    // A claim can still be in flight (abort or stream failure won the race);
+    // cancel on arrival so the pool slot is replaced, not leaked.
+    if (job == null) {
+      jobPromise?.then(
+        (j) => j.cancel(),
+        () => {
+          // the claim itself failed; there is no slot to release
+        }
+      )
+    } else {
+      job.cancel()
+    }
     throw err
   } finally {
     source.close()

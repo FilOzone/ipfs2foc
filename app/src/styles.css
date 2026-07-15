@@ -638,6 +638,9 @@ body.local-app .pay-setup {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  /* it's a fieldset for semantics only — no box of its own */
+  border: none;
+  padding: 0;
   margin: 14px 0 10px;
 }
 .filter-chip {

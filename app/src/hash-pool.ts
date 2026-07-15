@@ -15,8 +15,10 @@ export type HashWorkerResponse =
   | { type: 'error'; message: string }
 
 /**
- * Matches the prepare concurrency in app.tsx — one hashing core per
- * concurrently processed CID.
+ * One worker per hashing core. The prepare concurrency in app.tsx runs
+ * several fetches per worker: pieces claim a worker only when their bytes
+ * are ready to hash (commp.ts), so the pool stays CPU-sized while the
+ * network side fans out wider.
  */
 export const HASH_POOL_SIZE = 4
 
