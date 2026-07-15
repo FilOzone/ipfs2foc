@@ -137,7 +137,13 @@ async function fetchOk(url: string, init: RequestInit): Promise<Response> {
   }
 }
 
-async function* defaultOpenCarStream(
+/**
+ * The spec CAR request and parse behind the default `openCarStream`.
+ * Exported so a caller composing its own opener — multi-source failover
+ * walks a candidate list with this — reuses the exact request the defaults
+ * make instead of re-templating it.
+ */
+export async function* openGatewayCarStream(
   gateway: string,
   root: CID,
   signal?: AbortSignal
@@ -227,7 +233,7 @@ export class CarStreamSource implements BlockSource {
   constructor(gateway: string, opts: CarStreamSourceOptions = {}) {
     this.#gateway = gateway
     this.#maxBuffered = opts.maxBufferedBlocks ?? DEFAULT_MAX_BUFFERED_BLOCKS
-    this.#openStream = opts.openCarStream ?? ((root, signal) => defaultOpenCarStream(gateway, root, signal))
+    this.#openStream = opts.openCarStream ?? ((root, signal) => openGatewayCarStream(gateway, root, signal))
     this.#fetchRaw = opts.fetchRawBlock ?? ((cid, signal) => defaultFetchRawBlock(gateway, cid, signal))
     if (opts.signal != null) {
       // Forward the reason: the caller's abort error (a stall watchdog, a user

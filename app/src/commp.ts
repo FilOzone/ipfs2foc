@@ -37,12 +37,13 @@
 import { relayPullUrl, toCanonicalCidV1 } from 'ipfs2foc-core'
 import { messagesOf } from 'ipfs2foc-core/block-source'
 import { exportCanonicalCar } from 'ipfs2foc-core/car-export'
-import { CarStreamSource, defaultGetCodec } from 'ipfs2foc-core/car-stream-source'
+import { CarStreamSource, defaultGetCodec, openGatewayCarStream } from 'ipfs2foc-core/car-stream-source'
 import { CID } from 'multiformats/cid'
 import * as Raw from 'multiformats/codecs/raw'
 import * as Digest from 'multiformats/hashes/digest'
 import * as Link from 'multiformats/link'
 import { beginHash, type HashJob } from './hash-pool.ts'
+import { discoverCarSources } from './provider-discovery.ts'
 
 // A piece whose canonical CAR fits here is fetched entirely without holding a
 // hash worker (#59): the buffered bytes hand off to a worker only when the
@@ -160,7 +161,32 @@ export async function computePiece(
   // One streaming `?format=car` request per root; blocks served from the
   // verified stream, with a per-block `?format=raw` fallback for any the stream
   // misses. Scoped to this root and closed when the export ends.
-  const source = new CarStreamSource(gateway, { signal })
+  //
+  // The CAR is asked for from the root's own providers first (#59): delegated
+  // routing names the hosts that hold this content, and pulling from them
+  // spreads a big run across the network instead of funneling it through one
+  // gateway. Any discovery or candidate failure falls through — the
+  // configured gateway is always the last candidate, and gap-fill stays
+  // pinned to it. The commitment cannot depend on the choice: every block is
+  // hash-verified, and the canonical CAR is a pure function of the content.
+  const openCarStream = async function* (root: Parameters<typeof openGatewayCarStream>[1], streamSignal?: AbortSignal) {
+    const discovered = await discoverCarSources(canonical, streamSignal)
+    let lastErr: unknown = null
+    for (const base of [...discovered, gateway]) {
+      try {
+        yield* openGatewayCarStream(base, root, streamSignal)
+        return
+      } catch (err) {
+        if (streamSignal?.aborted === true) throw err
+        // A candidate that died mid-stream may have delivered blocks already;
+        // re-streaming from the next one is safe — the source drops
+        // duplicates after verifying them.
+        lastErr = err
+      }
+    }
+    throw lastErr
+  }
+  const source = new CarStreamSource(gateway, { signal, openCarStream })
   // The hash worker is claimed only once there are bytes worth hashing (#59).
   // Claiming it up front held a CPU core through the whole network stream, so
   // four slow fetches gated every other piece. A piece that fits the buffer
