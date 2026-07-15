@@ -187,9 +187,6 @@ export default function App({ caps }: { caps: Capabilities }) {
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitBlocked, setSubmitBlocked] = useState<SubmitBlockedError['reason'] | null>(null)
-  // PieceCIDs the provider refused as too small — drives the recovery offers
-  // (submit the rest now, download a manifest of just the remainder).
-  const [tooSmallCids, setTooSmallCids] = useState<string[] | null>(null)
   const [resumable, setResumable] = useState<SavedSubmit | null>(null)
   // Completed pieces by input CID — the write-through copy of what run-store
   // persists, and the source for skip-on-resume in run().
@@ -399,7 +396,7 @@ export default function App({ caps }: { caps: Capabilities }) {
   }, [wallet, onTargetNetwork, results, targetNetwork])
 
   const submitWith = useCallback(
-    async (excludePieceCids: string[] | null, ignoreMinPieceSize = false) => {
+    async (excludePieceCids: string[] | null) => {
       if (wallet == null || session == null || results.length === 0) return
       const pieces = excludePieceCids == null ? results : results.filter((r) => !excludePieceCids.includes(r.pieceCid))
       if (pieces.length === 0) return
@@ -415,7 +412,6 @@ export default function App({ caps }: { caps: Capabilities }) {
           pieces,
           copies: prior?.copies ?? copies,
           prior,
-          ignoreMinPieceSize,
           onUpdate: setSubmitState,
         })
         setResumable(await findResumableSubmit(wallet, targetNetwork, pieces))
@@ -423,7 +419,6 @@ export default function App({ caps }: { caps: Capabilities }) {
       } catch (err) {
         if (err instanceof SubmitBlockedError) {
           setSubmitBlocked(err.reason)
-          if (err.reason === 'piece-too-small') setTooSmallCids(err.pieceCids ?? null)
         }
         setSubmitError(err instanceof Error ? err.message : String(err))
       } finally {
@@ -433,13 +428,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     [wallet, session, results, copies, targetNetwork]
   )
 
-  // The advertised min-piece floor is not enforced by default: no enforcement
-  // has been found in the provider's pull path, so the provider is the judge
-  // and a real refusal shows in the per-piece pull status. The pre-check
-  // remains available for callers that want the strict behavior.
-  const submit = useCallback(() => void submitWith(null, true), [submitWith])
-  const submitEligible = useCallback(() => void submitWith(tooSmallCids), [submitWith, tooSmallCids])
-  const submitAllAnyway = useCallback(() => void submitWith(null, true), [submitWith])
+  const submit = useCallback(() => void submitWith(null), [submitWith])
 
   const discardSubmit = useCallback(() => {
     void clearSubmit()
@@ -447,7 +436,6 @@ export default function App({ caps }: { caps: Capabilities }) {
     setSubmitState(null)
     setSubmitError(null)
     setSubmitBlocked(null)
-    setTooSmallCids(null)
   }, [])
 
   const extend = useCallback(async () => {
@@ -674,23 +662,6 @@ export default function App({ caps }: { caps: Capabilities }) {
     )
   }, [results, relayBase, gateway, targetNetwork])
 
-  // Manifest of only the items a provider refused as too small — the exact
-  // input the local packing path needs, without re-submitting what already
-  // committed here.
-  const saveRemainderManifest = useCallback(() => {
-    if (tooSmallCids == null) return
-    const small = results.filter((r) => tooSmallCids.includes(r.pieceCid))
-    downloadManifest(
-      buildManifest(small, {
-        tool: 'ipfs2foc-app',
-        network: targetNetwork,
-        relayBase,
-        gateway,
-        now: new Date().toISOString(),
-      })
-    )
-  }, [tooSmallCids, results, relayBase, gateway, targetNetwork])
-
   // Pieces no provider could fetch this run (deduped across copies) — the
   // committable rest already landed; these get a retry and a remainder.
   const deferredCids = useMemo(
@@ -713,9 +684,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     const saved = await findResumableSubmit(wallet, targetNetwork, results)
     if (saved == null) return
     setResumable(await requeueDeferred(saved))
-    // Same advisory-floor stance as the regular Submit — the deferred pieces
-    // are small ones by definition, so the strict pre-check would just block.
-    void submitWith(null, true)
+    void submitWith(null)
   }, [wallet, results, submitWith, targetNetwork])
 
   // Verify-on-chain (#47): account-less reads of the data set's active pieces
@@ -771,11 +740,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     }
   }, [])
 
-  const eligibleCount = tooSmallCids == null ? 0 : results.filter((r) => !tooSmallCids.includes(r.pieceCid)).length
   const queuedCount = rows.filter((r) => r.state.phase === 'queued').length
-  // Raw CARs at or under 127/128 × 512 KiB pad below the 1 MiB floor most
-  // providers advertise. Informational only — submission proceeds regardless.
-  const underTypicalFloor = results.filter((r) => r.rawSize <= 520_192).length
 
   return (
     <div className="shell">
@@ -1234,21 +1199,6 @@ export default function App({ caps }: { caps: Capabilities }) {
                     Discard previous submit
                   </button>
                 )}
-                {underTypicalFloor > 0 && !submitting && (
-                  <span className="hint">
-                    {underTypicalFloor} item{underTypicalFloor === 1 ? '' : 's'} sit below the 1 MiB minimum most
-                    providers advertise. Submission proceeds anyway; a refusal would show per piece in the pull status,
-                    and the{' '}
-                    <a
-                      href="https://github.com/FilOzone/ipfs2foc/blob/main/docs/local-console.md"
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      local packing path
-                    </a>{' '}
-                    covers that case
-                  </span>
-                )}
               </div>
               {resumable != null && !submitting && !allCommitted && (
                 <p className="gate-note">
@@ -1280,63 +1230,6 @@ export default function App({ caps }: { caps: Capabilities }) {
                     </>
                   )}
                 </p>
-              )}
-              {submitBlocked === 'piece-too-small' && !submitting && tooSmallCids != null && (
-                <div className="gate-note">
-                  <p>
-                    Items below the minimum ship through the local migration path, which packs them into pieces the
-                    provider accepts, still signed by your wallet, with no exported key. Two-part plan:
-                  </p>
-                  <div className="actions">
-                    <button className="btn small" onClick={submitAllAnyway} type="button">
-                      Submit all anyway
-                    </button>
-                    {eligibleCount > 0 && (
-                      <button className="btn small" onClick={submitEligible} type="button">
-                        Submit the {eligibleCount} item{eligibleCount === 1 ? '' : 's'} above the minimum
-                      </button>
-                    )}
-                    <button className="btn small" onClick={saveRemainderManifest} type="button">
-                      Download manifest of the {tooSmallCids.length} small item{tooSmallCids.length === 1 ? '' : 's'}
-                    </button>
-                    <span className="hint">
-                      The minimum is the provider's advertised value. Small pieces may still be accepted, and a real
-                      refusal shows per piece in the pull status
-                    </span>
-                  </div>
-                  <p>
-                    Then, with that manifest and{' '}
-                    <a href="https://nodejs.org" rel="noreferrer" target="_blank">
-                      Node 26+
-                    </a>
-                    :
-                  </p>
-                  <ol className="steps">
-                    <li>
-                      <code>
-                        npx ipfs2foc import-manifest manifest.json --db migrate.db --network {targetNetwork}{' '}
-                        --no-auto-pack
-                      </code>
-                    </li>
-                    <li>
-                      <code>npx ipfs2foc pack-cars --db migrate.db --car-store ./cars</code>
-                    </li>
-                    <li>
-                      <code>npx ipfs2foc serve --db migrate.db --ingress cloudflared --network {targetNetwork}</code>,
-                      then open the printed console, grant a signing session, and press Submit
-                    </li>
-                  </ol>
-                  <p>
-                    <a
-                      href="https://github.com/FilOzone/ipfs2foc/blob/main/docs/local-console.md"
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      Local console guide
-                    </a>{' '}
-                    . Nothing is lost: anything committed here stays committed, and the manifest carries the rest over.
-                  </p>
-                </div>
               )}
               {allCommitted && !submitting && (
                 <p className="gate-note">

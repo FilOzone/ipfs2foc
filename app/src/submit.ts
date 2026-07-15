@@ -72,19 +72,15 @@ export interface SubmitState {
 
 /**
  * The run cannot proceed without operator action: the session is inside its
- * presign safety margin (extend it) or a piece is under the provider's
- * minimum (drop it). Nothing was signed when this is thrown mid-run; the run
- * stays resumable.
+ * presign safety margin, so it needs extending. Nothing was signed when this is
+ * thrown mid-run; the run stays resumable.
  */
 export class SubmitBlockedError extends Error {
-  readonly reason: 'session-margin' | 'piece-too-small'
-  /** For 'piece-too-small': the offending PieceCIDs, so the UI can offer to submit the rest. */
-  readonly pieceCids?: string[]
-  constructor(message: string, reason: SubmitBlockedError['reason'], pieceCids?: string[]) {
+  readonly reason: 'session-margin'
+  constructor(message: string, reason: SubmitBlockedError['reason']) {
     super(message)
     this.name = 'SubmitBlockedError'
     this.reason = reason
-    this.pieceCids = pieceCids
   }
 }
 
@@ -96,13 +92,6 @@ export interface SubmitOptions {
   pieces: PieceResult[]
   /** Provider copies to store (primary + secondaries). Ignored when resuming. */
   copies: number
-  /**
-   * Skip the advertised min-piece-size pre-check. The registry value appears
-   * to be advisory (no enforcement found in the provider's pull path); with
-   * this set the provider itself is the judge and a real rejection surfaces
-   * in the per-piece pull status.
-   */
-  ignoreMinPieceSize?: boolean
   /** Resume record from findResumableSubmit(); null starts a fresh run. */
   prior: SavedSubmit | null
   onUpdate: (state: SubmitState) => void
@@ -159,22 +148,21 @@ export async function findResumableSubmit(
 }
 
 async function deps() {
-  const [sdk, sp, piece, guard, viem, abis] = await Promise.all([
+  const [sdk, sp, piece, viem, abis] = await Promise.all([
     import('@filoz/synapse-sdk'),
     import('@filoz/synapse-core/sp'),
     import('@filoz/synapse-core/piece'),
-    import('ipfs2foc-core/min-piece-guard'),
     import('viem'),
     import('@filoz/synapse-core/abis'),
   ])
-  return { sdk, sp, piece, guard, viem, abis }
+  return { sdk, sp, piece, viem, abis }
 }
 
 export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
   const { wallet, network, session, pieces, prior, onUpdate } = opts
   if (pieces.length === 0) throw new Error('no prepared pieces to submit')
 
-  const { sdk, sp, piece, guard, viem, abis } = await deps()
+  const { sdk, sp, piece, viem, abis } = await deps()
   const chains = { calibration: sdk.calibration, mainnet: sdk.mainnet }
 
   const parsed = pieces.map((p) => {
@@ -316,35 +304,25 @@ export async function runSubmit(opts: SubmitOptions): Promise<SubmitState> {
   // signature exists, so the UI can warn while backing out is still free.
   await persist()
 
-  // The provider floor is a PADDED piece-size minimum; check every piece
-  // against every provider with outstanding work BEFORE the first signature
-  // so a too-small piece can never strand a half-signed run.
-  for (const c of live) {
-    if (opts.ignoreMinPieceSize === true) break
-    if (c.phase !== 'queued') continue
-    const ctx = await bindCtx(c)
-    const check = guard.checkMinPieceSize(
-      parsed.map((p) => ({ pieceCid: p.pieceCid.toString() })),
-      ctx.provider.pdp.minPieceSizeInBytes
-    )
-    if (!check.ok) {
-      state.running = false
-      emit()
-      // Operator-facing: name the problem in sizes, not a wall of piece CIDs —
-      // the UI pairs this with the packing walkthrough (the actual next step).
-      const sample = check.tooSmall
-        .slice(0, 3)
-        .map((t) => t.pieceCid)
-        .join(', ')
-      const more = check.tooSmall.length > 3 ? ` … and ${check.tooSmall.length - 3} more` : ''
-      const minMiB = Number(check.minPieceSize) / 1048576
-      throw new SubmitBlockedError(
-        `${check.tooSmall.length} of ${parsed.length} items are smaller than this provider's ${minMiB % 1 === 0 ? minMiB : minMiB.toFixed(1)} MiB minimum piece size: ${sample}${more}`,
-        'piece-too-small',
-        check.tooSmall.map((t) => t.pieceCid)
-      )
-    }
-  }
+  // No piece-size pre-check here, on purpose.
+  //
+  // Every provider advertises `minPieceSizeInBytes = 1048576`, verified on the
+  // SP registry across all calibration providers and all endorsed mainnet
+  // providers. Nothing enforces it. A 128 KiB piece, 8x under that floor, pulls
+  // and commits and is proven: calibration data set 14119 carries
+  // `bafkzcibdxzhqyefkufvnsmqlyrjyr3el6affnfo3l7ipfncjjzjl4hkaqhbaema3` with
+  // `provenSinceAdd: true`, and PDP samples the set pseudo-randomly, so that
+  // proof means the provider holds the bytes. Evidence and method: issue #44.
+  //
+  // Checking it here refused ~81% of a real inventory (median root 63 KiB) to
+  // prevent something no provider does. If one ever starts enforcing, the
+  // refusal arrives per piece in the pull status and the run resumes, so the
+  // failure is recoverable and does not need a client-side gate. The check
+  // still exists in `ipfs2foc-core/min-piece-guard`, behind the CLI's opt-in
+  // `--strict-piece-size`.
+  //
+  // The registry value is capacity-planning metadata, not policy. Read #44
+  // before adding a guard back here.
 
   const ensurePresigned = async (c: SubmitContextStatus, chunk: SavedChunk, ctx: Ctx) => {
     const resolved = ctx.dataSetId?.toString() ?? null
