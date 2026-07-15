@@ -156,7 +156,12 @@ export async function* openGatewayCarStream(
   }
 }
 
-async function defaultFetchRawBlock(gateway: string, cid: CID, signal?: AbortSignal): Promise<Uint8Array> {
+/**
+ * The single-block `?format=raw` request behind the default `fetchRawBlock`.
+ * Exported for callers layering their own recovery after the gateway raw
+ * fetch (e.g. a bitswap rescue); the source hash-verifies whatever comes back.
+ */
+export async function fetchGatewayRawBlock(gateway: string, cid: CID, signal?: AbortSignal): Promise<Uint8Array> {
   const res = await fetchOk(buildRawBlockUrl(gateway, cid.toString()), { headers: { accept: RAW_ACCEPT }, signal })
   return new Uint8Array(await res.arrayBuffer())
 }
@@ -234,7 +239,7 @@ export class CarStreamSource implements BlockSource {
     this.#gateway = gateway
     this.#maxBuffered = opts.maxBufferedBlocks ?? DEFAULT_MAX_BUFFERED_BLOCKS
     this.#openStream = opts.openCarStream ?? ((root, signal) => openGatewayCarStream(gateway, root, signal))
-    this.#fetchRaw = opts.fetchRawBlock ?? ((cid, signal) => defaultFetchRawBlock(gateway, cid, signal))
+    this.#fetchRaw = opts.fetchRawBlock ?? ((cid, signal) => fetchGatewayRawBlock(gateway, cid, signal))
     if (opts.signal != null) {
       // Forward the reason: the caller's abort error (a stall watchdog, a user
       // cancel) must surface from rejected gets, not a bare "signal is aborted

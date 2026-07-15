@@ -37,13 +37,19 @@
 import { relayPullUrl, toCanonicalCidV1 } from 'ipfs2foc-core'
 import { messagesOf } from 'ipfs2foc-core/block-source'
 import { exportCanonicalCar } from 'ipfs2foc-core/car-export'
-import { CarStreamSource, defaultGetCodec, openGatewayCarStream } from 'ipfs2foc-core/car-stream-source'
+import {
+  CarStreamSource,
+  defaultGetCodec,
+  fetchGatewayRawBlock,
+  openGatewayCarStream,
+} from 'ipfs2foc-core/car-stream-source'
 import { CID } from 'multiformats/cid'
 import * as Raw from 'multiformats/codecs/raw'
 import * as Digest from 'multiformats/hashes/digest'
 import * as Link from 'multiformats/link'
+import { fetchBlockViaBitswap } from './bitswap-fallback.ts'
 import { beginHash, type HashJob } from './hash-pool.ts'
-import { discoverCarSources } from './provider-discovery.ts'
+import { discoverRootSources } from './provider-discovery.ts'
 
 // A piece whose canonical CAR fits here is fetched entirely without holding a
 // hash worker (#59): the buffered bytes hand off to a worker only when the
@@ -166,13 +172,17 @@ export async function computePiece(
   // routing names the hosts that hold this content, and pulling from them
   // spreads a big run across the network instead of funneling it through one
   // gateway. Any discovery or candidate failure falls through — the
-  // configured gateway is always the last candidate, and gap-fill stays
-  // pinned to it. The commitment cannot depend on the choice: every block is
-  // hash-verified, and the canonical CAR is a pure function of the content.
+  // configured gateway is always the last candidate. The commitment cannot
+  // depend on the choice: every block is hash-verified, and the canonical
+  // CAR is a pure function of the content.
+  //
+  // One routing lookup serves the whole piece: the CAR candidates and the
+  // bitswap rescue below share it.
+  const sources = discoverRootSources(canonical, signal)
   const openCarStream = async function* (root: Parameters<typeof openGatewayCarStream>[1], streamSignal?: AbortSignal) {
-    const discovered = await discoverCarSources(canonical, streamSignal)
+    const { carUrls } = await sources
     let lastErr: unknown = null
-    for (const base of [...discovered, gateway]) {
+    for (const base of [...carUrls, gateway]) {
       try {
         yield* openGatewayCarStream(base, root, streamSignal)
         return
@@ -186,7 +196,23 @@ export async function computePiece(
     }
     throw lastErr
   }
-  const source = new CarStreamSource(gateway, { signal, openCarStream })
+  // Gap-fill: the gateway's single-block raw fetch first (unchanged), then a
+  // bitswap want to the root's own browser-dialable peers. The rescue only
+  // engages when every HTTP path for a block is exhausted, so a root nothing
+  // HTTP can serve still prepares as long as one of its peers answers.
+  const fetchRawBlock = async (cid: CID, blockSignal?: AbortSignal) => {
+    try {
+      return await fetchGatewayRawBlock(gateway, cid, blockSignal)
+    } catch (gatewayErr) {
+      const { p2pAddrs } = await sources
+      try {
+        return await fetchBlockViaBitswap(p2pAddrs, cid, blockSignal)
+      } catch (bitswapErr) {
+        throw new AggregateError([gatewayErr, bitswapErr], 'gateway raw fetch and bitswap rescue both failed')
+      }
+    }
+  }
+  const source = new CarStreamSource(gateway, { signal, openCarStream, fetchRawBlock })
   // The hash worker is claimed only once there are bytes worth hashing (#59).
   // Claiming it up front held a CPU core through the whole network stream, so
   // four slow fetches gated every other piece. A piece that fits the buffer
