@@ -56,12 +56,13 @@ const DEFAULT_GATEWAY = 'https://trustless-gateway.link'
 // no added failures — the gateway round-trip, not bandwidth or CPU, is what
 // this hides.
 // `?concurrency=64` overrides the pool width for this tab, the lever for
-// measuring where throughput stops scaling with in-flight count. Clamped:
-// worst-case transient memory is the 4 MiB hash-handoff buffer per slot, so
-// 128 bounds a typo at ~512 MiB. The gateways and routing endpoint measured
-// against all speak HTTP/2, so the browser multiplexes these over one
-// connection per host; the six-connection ceiling only applies to HTTP/1.1
-// origins.
+// measuring where throughput stops scaling with in-flight count. Each
+// in-flight piece can buffer up to HASH_HANDOFF_BYTES (4 MiB) before it
+// claims a hash worker, so pool width bounds transient memory: the clamp at
+// 128 keeps even a mistyped value to ~512 MiB of buffers instead of letting
+// it grow without limit. The gateways and routing endpoint measured against
+// all speak HTTP/2, so the browser multiplexes these over one connection
+// per host; the six-connection ceiling only applies to HTTP/1.1 origins.
 const CONCURRENCY = (() => {
   const dflt = 8 * HASH_POOL_SIZE
   const raw = Number(new URLSearchParams(window.location.search).get('concurrency'))
