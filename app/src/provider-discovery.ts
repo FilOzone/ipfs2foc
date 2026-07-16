@@ -73,60 +73,137 @@ const EMPTY: RootSources = { carUrls: [], p2pAddrs: [] }
 // every block is hash-verified regardless of source, and a source that
 // lacks a root fails fast into the next race tier. Roots that fail anyway
 // come back through a fresh lookup (`fresh`), and while an answer is
-// learned every LEARNED_REVALIDATE_EVERY-th call still asks for real, so a
+// learned every `revalidateEvery`-th call still asks for real, so a
 // provider shift mid-run drops the learned answer within one stripe.
 //
-// Only the gateway URLs are learned. Against the 2M corpus the peer
+// Only the gateway URLs key the learning. Against the 2M corpus the peer
 // records jitter per root: address subsets and order from the same peer
 // vary, and ~18% of sampled answers drop the gateway record while the
-// gateway still serves the root. So learning keys on `carUrls` alone,
-// counts only answers that name a gateway, and takes a majority tally
-// rather than a consecutive streak. A cached answer carries no p2p addrs;
-// the rare root that needed the bitswap rescue fails its HTTP tiers, and
-// its retry does a fresh lookup that restores them.
-const LEARN_AFTER = 20
-const LEARN_MAJORITY = 0.8
-const LEARNED_REVALIDATE_EVERY = 50
-// Halve the tally at this many real answers so an old majority cannot
-// outvote a genuine mid-run shift forever.
-const TALLY_DECAY_AT = 200
-
-let learned: string[] | null = null
-let learnedKey: string | null = null
-let learnedUses = 0
-const tally = new Map<string, { count: number; carUrls: string[] }>()
-let answers = 0
-
-/** Learn from a successful routing answer's gateway URLs. */
-function learn(carUrls: string[]): void {
-  if (carUrls.length === 0) return
-  const key = JSON.stringify(carUrls)
-  const entry = tally.get(key) ?? { count: 0, carUrls: [...carUrls] }
-  entry.count++
-  tally.set(key, entry)
-  answers++
-  if (answers >= TALLY_DECAY_AT) {
-    answers = 0
-    for (const [k, e] of tally) {
-      e.count = Math.floor(e.count / 2)
-      if (e.count === 0) tally.delete(k)
-      else answers += e.count
-    }
-  }
-  let best: { key: string; count: number; carUrls: string[] } | null = null
-  for (const [k, e] of tally) {
-    if (best == null || e.count > best.count) best = { key: k, count: e.count, carUrls: e.carUrls }
-  }
-  if (best != null && best.count >= LEARN_AFTER && best.count / answers >= LEARN_MAJORITY) {
-    learned = best.carUrls
-    learnedKey = best.key
-  } else if (learnedKey != null && (tally.get(learnedKey)?.count ?? 0) / answers < LEARN_MAJORITY) {
-    learned = null
-    learnedKey = null
-  }
+// gateway still serves the root. So the key is `carUrls` alone, only
+// answers that name a gateway count, and a majority tally replaces a
+// consecutive streak. A cached answer carries the most recent peer addrs
+// seen for its key, keeping the bitswap rescue available without a lookup.
+export interface RootDiscoveryOptions {
+  /** Real gateway-bearing answers required before reuse engages. */
+  learnAfter?: number
+  /** Share of the tally the learned key must hold. */
+  majority?: number
+  /** While learned, every Nth call still does a real lookup. */
+  revalidateEvery?: number
+  /**
+   * Halve the tally at this many real answers, so an old majority cannot
+   * outvote a genuine mid-run provider shift forever.
+   */
+  decayAt?: number
 }
 
-const learnedSources = (): RootSources => ({ carUrls: [...(learned ?? [])], p2pAddrs: [] })
+export interface RootDiscovery {
+  discover(cid: string, signal?: AbortSignal, fresh?: boolean): Promise<RootSources>
+}
+
+interface TallyEntry {
+  count: number
+  carUrls: string[]
+  /** Most recent browser-dialable peer addrs seen alongside this answer. */
+  p2pAddrs: string[]
+}
+
+/** A learned-reuse discovery scope. The app shares one; tests make their own. */
+export function createRootDiscovery(opts: RootDiscoveryOptions = {}): RootDiscovery {
+  const learnAfter = opts.learnAfter ?? 20
+  const majority = opts.majority ?? 0.8
+  const revalidateEvery = opts.revalidateEvery ?? 50
+  const decayAt = opts.decayAt ?? 200
+
+  let learnedKey: string | null = null
+  let learnedUses = 0
+  const tally = new Map<string, TallyEntry>()
+  let answers = 0
+
+  const learned = (): TallyEntry | null => (learnedKey == null ? null : (tally.get(learnedKey) ?? null))
+
+  /** Learn from a successful routing answer's gateway URLs. */
+  const learn = (carUrls: string[], p2pAddrs: string[]): void => {
+    if (carUrls.length === 0) return
+    const key = JSON.stringify(carUrls)
+    const entry = tally.get(key) ?? { count: 0, carUrls: [...carUrls], p2pAddrs: [] }
+    entry.count++
+    // The peer records jitter per root, so the cached rescue path is simply
+    // the freshest one seen for this gateway answer.
+    if (p2pAddrs.length > 0) entry.p2pAddrs = [...p2pAddrs]
+    tally.set(key, entry)
+    answers++
+    if (answers >= decayAt) {
+      answers = 0
+      for (const [k, e] of tally) {
+        e.count = Math.floor(e.count / 2)
+        if (e.count === 0) tally.delete(k)
+        else answers += e.count
+      }
+    }
+    let best: { key: string; entry: TallyEntry } | null = null
+    for (const [k, e] of tally) {
+      if (best == null || e.count > best.entry.count) best = { key: k, entry: e }
+    }
+    if (best != null && best.entry.count >= learnAfter && best.entry.count / answers >= majority) {
+      learnedKey = best.key
+    } else if (learnedKey != null && (tally.get(learnedKey)?.count ?? 0) / answers < majority) {
+      learnedKey = null
+    }
+  }
+
+  const learnedSources = (): RootSources => {
+    const e = learned()
+    return { carUrls: [...(e?.carUrls ?? [])], p2pAddrs: [...(e?.p2pAddrs ?? [])] }
+  }
+
+  const discover = async (cid: string, signal?: AbortSignal, fresh = false): Promise<RootSources> => {
+    if (!fresh && learned() != null && ++learnedUses % revalidateEvery !== 0) {
+      return learnedSources()
+    }
+    const timeout = AbortSignal.timeout(DISCOVERY_TIMEOUT_MS)
+    const combined = signal == null ? timeout : AbortSignal.any([signal, timeout])
+    try {
+      const res = await fetch(`${ROUTING_ENDPOINT}/${cid}`, {
+        headers: { accept: 'application/json' },
+        signal: combined,
+      })
+      // A non-OK or failed lookup teaches nothing: only a real routing answer
+      // (including a genuinely empty one) counts toward the tally, so an
+      // endpoint outage can neither build nor tear down confidence.
+      if (!res.ok) return learned() != null && !fresh ? learnedSources() : EMPTY
+      const body = (await res.json()) as { Providers?: RoutingProvider[] | null }
+      const carUrls: string[] = []
+      const p2pAddrs: string[] = []
+      for (const p of body.Providers ?? []) {
+        if ((p.Protocols ?? []).includes('transport-ipfs-gateway-http')) {
+          for (const addr of p.Addrs ?? []) {
+            const url = multiaddrToHttpsUrl(addr)
+            if (url != null && carUrls.length < MAX_CAR_SOURCES && !carUrls.includes(url)) carUrls.push(url)
+          }
+          continue
+        }
+        // Anything else is a peer record: keep the addrs a browser can dial.
+        // Protocols is unreliable here (real bitswap servers publish []), so
+        // dialability is the filter and the bitswap want is the probe.
+        if (p.ID == null) continue
+        for (const addr of p.Addrs ?? []) {
+          if (!isBrowserDialable(addr)) continue
+          const full = addr.includes('/p2p/') ? addr : `${addr}/p2p/${p.ID}`
+          if (p2pAddrs.length < MAX_P2P_ADDRS && !p2pAddrs.includes(full)) p2pAddrs.push(full)
+        }
+      }
+      learn(carUrls, p2pAddrs)
+      return { carUrls, p2pAddrs }
+    } catch {
+      return learned() != null && !fresh ? learnedSources() : EMPTY
+    }
+  }
+
+  return { discover }
+}
+
+const defaultDiscovery = createRootDiscovery()
 
 /**
  * Everything one routing lookup offers for this root: trustless-gateway base
@@ -136,44 +213,5 @@ const learnedSources = (): RootSources => ({ carUrls: [...(learned ?? [])], p2pA
  * forces a real lookup for this root regardless.
  */
 export async function discoverRootSources(cid: string, signal?: AbortSignal, fresh = false): Promise<RootSources> {
-  if (!fresh && learned != null && ++learnedUses % LEARNED_REVALIDATE_EVERY !== 0) {
-    return learnedSources()
-  }
-  const timeout = AbortSignal.timeout(DISCOVERY_TIMEOUT_MS)
-  const combined = signal == null ? timeout : AbortSignal.any([signal, timeout])
-  try {
-    const res = await fetch(`${ROUTING_ENDPOINT}/${cid}`, {
-      headers: { accept: 'application/json' },
-      signal: combined,
-    })
-    // A non-OK or failed lookup teaches nothing: only a real routing answer
-    // (including a genuinely empty one) counts toward the tally, so an
-    // endpoint outage can neither build nor tear down confidence.
-    if (!res.ok) return learned != null && !fresh ? learnedSources() : EMPTY
-    const body = (await res.json()) as { Providers?: RoutingProvider[] | null }
-    const carUrls: string[] = []
-    const p2pAddrs: string[] = []
-    for (const p of body.Providers ?? []) {
-      if ((p.Protocols ?? []).includes('transport-ipfs-gateway-http')) {
-        for (const addr of p.Addrs ?? []) {
-          const url = multiaddrToHttpsUrl(addr)
-          if (url != null && carUrls.length < MAX_CAR_SOURCES && !carUrls.includes(url)) carUrls.push(url)
-        }
-        continue
-      }
-      // Anything else is a peer record: keep the addrs a browser can dial.
-      // Protocols is unreliable here (real bitswap servers publish []), so
-      // dialability is the filter and the bitswap want is the probe.
-      if (p.ID == null) continue
-      for (const addr of p.Addrs ?? []) {
-        if (!isBrowserDialable(addr)) continue
-        const full = addr.includes('/p2p/') ? addr : `${addr}/p2p/${p.ID}`
-        if (p2pAddrs.length < MAX_P2P_ADDRS && !p2pAddrs.includes(full)) p2pAddrs.push(full)
-      }
-    }
-    learn(carUrls)
-    return { carUrls, p2pAddrs }
-  } catch {
-    return learned != null && !fresh ? learnedSources() : EMPTY
-  }
+  return defaultDiscovery.discover(cid, signal, fresh)
 }
