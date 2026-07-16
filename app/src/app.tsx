@@ -4,7 +4,7 @@ import { explorerDataSetUrl, explorerPieceUrl } from 'ipfs2foc-core/pdp-verifier
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
-import { computePiece, describePrepareFailure } from './commp.ts'
+import { computePiece, describePrepareFailure, type PreparePhase, stallMessage } from './commp.ts'
 import { FocMark } from './foc-mark.tsx'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
@@ -613,14 +613,13 @@ export default function App({ caps }: { caps: Capabilities }) {
       // reports cumulative size per chunk). No advance for the stall window →
       // abort with a retryable error and free the worker slot.
       let lastAdvanceAt = performance.now()
+      // The byte counter freezes the same way for a silent CAR stream and a
+      // stuck hash pool; the phase names which one so the operator (and the
+      // origin breaker) chase the right side.
+      let phase: PreparePhase = 'retrieve'
       const watchdog = setInterval(() => {
         if (performance.now() - lastAdvanceAt > STALL_TIMEOUT_MS) {
-          controller.abort(
-            new Error(
-              `the source stopped sending bytes (${Math.round(STALL_TIMEOUT_MS / 1000)}s without progress). ` +
-                'The network is not serving this CID right now. Retry later, or check availability.'
-            )
-          )
+          controller.abort(new Error(stallMessage(phase, Math.round(STALL_TIMEOUT_MS / 1000))))
         }
       }, STALL_POLL_MS)
       try {
@@ -637,7 +636,10 @@ export default function App({ caps }: { caps: Capabilities }) {
             store.markWorking(cid, bytes, secs > 0 ? bytes / 1048576 / secs : 0)
           },
           controller.signal,
-          sources
+          sources,
+          (p) => {
+            phase = p
+          }
         )
         store.markDone(cid, result)
         schedulePersist()

@@ -96,6 +96,31 @@ export interface PrepareFailure {
   detail: string
 }
 
+/**
+ * Where a piece's wall-clock is being spent right now. The watchdog reads
+ * this at stall time: a silent CAR stream and a saturated hash pool freeze
+ * the byte counter identically, and only the phase tells the operator (and
+ * the origin breaker) which side actually stalled.
+ */
+export type PreparePhase = 'retrieve' | 'hash-claim' | 'hash-write' | 'hash-finish'
+
+/** The abort message for a piece whose byte counter froze in `phase`. */
+export function stallMessage(phase: PreparePhase, timeoutSeconds: number): string {
+  switch (phase) {
+    case 'retrieve':
+      return (
+        `the source stopped sending bytes (${timeoutSeconds}s without progress). ` +
+        'The network is not serving this CID right now. Retry later, or check availability.'
+      )
+    case 'hash-claim':
+      return `waited ${timeoutSeconds}s for a hash worker. The hashing pool is stuck; reload the page and retry.`
+    case 'hash-write':
+      return `the hash worker stopped accepting bytes (${timeoutSeconds}s). Reload the page and retry.`
+    case 'hash-finish':
+      return `the hash worker stopped mid-digest (${timeoutSeconds}s). Reload the page and retry.`
+  }
+}
+
 /** Map a prepare failure to the action an operator takes (#34). */
 export function describePrepareFailure(err: unknown): PrepareFailure {
   const msgs = messagesOf(err)
@@ -113,6 +138,9 @@ export function describePrepareFailure(err: unknown): PrepareFailure {
     }
     if (msgs.some((m) => /Failed to fetch|NetworkError/i.test(m))) {
       return 'network failure while fetching. Check connectivity and retry.'
+    }
+    if (msgs.some((m) => /hash worker|hashing pool/.test(m))) {
+      return 'hashing stalled in this tab. Reload the page and retry the failed rows.'
     }
     if (msgs.some((m) => /stopped sending bytes/.test(m))) {
       return 'source stalled. It is not serving this CID right now; retry later.'
@@ -175,8 +203,15 @@ export async function computePiece(
   relayBase: string,
   onProgress?: (bytes: number) => void,
   signal?: AbortSignal,
-  prefetchedSources?: Promise<RootSources>
+  prefetchedSources?: Promise<RootSources>,
+  onPhase?: (phase: PreparePhase) => void
 ): Promise<PieceResult> {
+  let phase: PreparePhase = 'retrieve'
+  const setPhase = (p: PreparePhase) => {
+    if (p === phase) return
+    phase = p
+    onPhase?.(p)
+  }
   // Normalize to canonical CIDv1 (CIDv0 `Qm…` is converted automatically), then
   // export/commit/relay all under that one form so the commitment stays byte-safe.
   const canonical = toCanonicalCidV1(cidStr)
@@ -292,7 +327,9 @@ export async function computePiece(
   // Claim a worker and replay the buffered bytes into it. Called at most
   // once per piece: both call sites are guarded by `job == null`.
   const handOff = async (claim: Promise<HashJob>): Promise<HashJob> => {
+    setPhase('hash-claim')
     const j = await raceAbort(claim, signal)
+    setPhase('hash-write')
     for (const c of buffered) await raceAbort(j.write(c), signal)
     buffered.length = 0
     return j
@@ -301,6 +338,7 @@ export async function computePiece(
   let pieceCid: string
   try {
     for await (const chunk of exportCanonicalCar(source, defaultGetCodec, root, { signal })) {
+      setPhase('retrieve')
       rawSize += chunk.length
       if (job == null) {
         buffered.push(chunk)
@@ -310,7 +348,9 @@ export async function computePiece(
           job = await handOff(jobPromise)
         }
       } else {
+        setPhase('hash-write')
         await raceAbort(job.write(chunk), signal)
+        setPhase('retrieve')
       }
       onProgress?.(rawSize)
     }
@@ -321,6 +361,7 @@ export async function computePiece(
 
     // verified: fr32-sha2-256-trunc254-padded-binary-tree-multihash src/async.js
     // digest — multihash bytes come out via digestInto(bytes, 0, true).
+    setPhase('hash-finish')
     pieceCid = (Link.create(Raw.code, Digest.decode(await raceAbort(job.finish(), signal))) as CID).toString()
   } catch (err) {
     // A watchdog stall counts against the origin that was serving this piece:
