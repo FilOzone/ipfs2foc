@@ -121,7 +121,17 @@ export async function* exportCanonicalCar(
   opts: ExportCanonicalCarOptions = {}
 ): AsyncGenerator<Uint8Array, void, undefined> {
   const lookahead = opts.lookahead ?? DEFAULT_LOOKAHEAD
-  const { signal } = opts
+  // The walk always runs under a signal this generator owns: a consumer that
+  // stops consuming (break, return(), throw upstream) would otherwise leave
+  // the traversal running its prefetches — or parked forever on a
+  // `writer.put` nobody will drain — with no way to reach it. The caller's
+  // signal, when given, joins the same controller.
+  const internal = new AbortController()
+  const signal = internal.signal
+  if (opts.signal != null) {
+    if (opts.signal.aborted) internal.abort(opts.signal.reason)
+    else opts.signal.addEventListener('abort', () => internal.abort(opts.signal?.reason), { once: true, signal })
+  }
   // `as never`: the repo pins multiformats ^13 while @ipld/car types against
   // ^14; the runtime objects interoperate. Same boundary cast as
   // `pack-cars.ts` `CarWriter.create(roots as never)`.
@@ -131,7 +141,17 @@ export async function* exportCanonicalCar(
     try {
       await traverse(blocks, getCodec, root, writer, lookahead, signal)
     } finally {
-      await writer.close()
+      // With the consumer gone nothing drains the writer, so on the abort
+      // path `close()` can never finish — leave it to settle on its own (it
+      // holds only memory) instead of parking the teardown behind it.
+      const closing = writer.close()
+      if (signal.aborted) {
+        void closing.catch(() => {
+          // nothing is waiting on the writer anymore
+        })
+      } else {
+        await closing
+      }
     }
   })()
   // Surface the traversal error after the writer closes (below); without this
@@ -141,11 +161,21 @@ export async function* exportCanonicalCar(
     traversalError = err
   })
 
-  for await (const chunk of out) {
-    yield chunk
-    if (traversalError != null) break
+  try {
+    for await (const chunk of out) {
+      yield chunk
+      if (traversalError != null) break
+    }
+    await traversal
+  } finally {
+    // Runs on normal completion (abort is then a no-op) and on every early
+    // exit: stop the walk, then wait for it to settle so no fetch or parked
+    // `writer.put` outlives the export.
+    internal.abort(new Error('export consumer stopped'))
+    await traversal.catch(() => {
+      // the abort itself is the expected settlement here
+    })
   }
-  await traversal
 }
 
 /** `exportCanonicalCar` as a `ReadableStream`, for callers typed to fetch bodies. */
@@ -159,6 +189,40 @@ export function exportCanonicalCarStream(
   // bundled DOM lib types don't declare it yet.
   const from = (ReadableStream as unknown as { from(it: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> }).from
   return from(exportCanonicalCar(blocks, getCodec, root, opts))
+}
+
+/**
+ * Await `put`, but let an abort win: the promise itself is left to settle (or
+ * not — a writer nobody drains holds only memory) with its rejection observed.
+ */
+function raceAbortPut(put: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (signal == null) return put
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      void put.catch(() => {
+        // orphaned on abort; nothing consumes the writer anymore
+      })
+      reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'))
+      return
+    }
+    const onAbort = () => {
+      void put.catch(() => {
+        // orphaned on abort; nothing consumes the writer anymore
+      })
+      reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    put.then(
+      () => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      }
+    )
+  })
 }
 
 async function traverse(
@@ -217,8 +281,10 @@ async function traverse(
       bytes = await (inflight.get(key) ?? toBytes(blocks.get(cid, { signal })))
       inflight.delete(key)
       // `as never`: multiformats ^13 vs @ipld/car's ^14 types; see the
-      // CarWriter.create cast above.
-      await writer.put({ cid, bytes } as never)
+      // CarWriter.create cast above. The put itself must lose to an abort: a
+      // consumer that stopped draining the writer parks this promise forever,
+      // and the walk has to be able to leave it behind.
+      await raceAbortPut(writer.put({ cid, bytes } as never), signal)
     }
 
     const codec = await getCodec(cid.code)
