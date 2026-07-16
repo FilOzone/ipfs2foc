@@ -55,7 +55,18 @@ const DEFAULT_GATEWAY = 'https://trustless-gateway.link'
 // (63 KiB median root): 4 in flight ≈ 2 pieces/s, 16 ≈ 10/s, 32 ≈ 18/s, with
 // no added failures — the gateway round-trip, not bandwidth or CPU, is what
 // this hides.
-const CONCURRENCY = 8 * HASH_POOL_SIZE
+// `?concurrency=64` overrides the pool width for this tab — the lever for
+// measuring where throughput stops scaling with in-flight count. Clamped:
+// worst-case transient memory is the 4 MiB hash-handoff buffer per slot, so
+// 128 bounds a typo at ~512 MiB. Every origin in play speaks HTTP/2, so the
+// browser multiplexes these over one connection per host; the six-connection
+// ceiling only applies to HTTP/1.1 origins.
+const CONCURRENCY = (() => {
+  const dflt = 8 * HASH_POOL_SIZE
+  const raw = Number(new URLSearchParams(window.location.search).get('concurrency'))
+  if (!Number.isInteger(raw) || raw < 1) return dflt
+  return Math.min(raw, 128)
+})()
 // Don't re-render on every stream chunk — that starves the thread doing the
 // hashing. Emit progress at most this often.
 const PROGRESS_THROTTLE_MS = 250
