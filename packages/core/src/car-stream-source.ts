@@ -107,7 +107,23 @@ async function digestMatches(cid: CID, bytes: Uint8Array): Promise<boolean> {
   return bytesEqual(digest, cid.multihash.digest)
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+/** Resolve after `ms`, rejecting immediately when `signal` aborts first. */
+const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted === true) {
+      reject(abortError(signal))
+      return
+    }
+    const t = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(t)
+      reject(abortError(signal as AbortSignal))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 
 /** The abort reason, or a standard AbortError when none was given. */
 function abortError(signal: AbortSignal): unknown {
@@ -125,6 +141,13 @@ async function fetchOk(url: string, init: RequestInit): Promise<Response> {
     try {
       const res = await fetch(url, init)
       if (!res.ok) {
+        // Release the error body's stream now. An abandoned body holds its
+        // HTTP/2 stream (and connection window credit) until the runtime
+        // collects it, which at prepare concurrency starves every other
+        // request on the same connection.
+        res.body?.cancel().catch(() => {
+          // the stream may already be closed; either way it is released
+        })
         throw new Error(`gateway request for ${url} received ${res.status} ${res.statusText}`)
       }
       return res
@@ -132,7 +155,8 @@ async function fetchOk(url: string, init: RequestInit): Promise<Response> {
       if (attempt >= BLOCK_RETRY_DELAYS_MS.length || init.signal?.aborted === true || !isTransientBlockError(err)) {
         throw err
       }
-      await sleep(BLOCK_RETRY_DELAYS_MS[attempt])
+      // Abortable: a cancelled piece must not park its slot in a backoff.
+      await sleep(BLOCK_RETRY_DELAYS_MS[attempt], init.signal ?? undefined)
     }
   }
 }
@@ -150,9 +174,31 @@ export async function* openGatewayCarStream(
 ): AsyncIterable<{ cid: CID; bytes: Uint8Array }> {
   const res = await fetchOk(buildCarUrl(gateway, root.toString()), { headers: { accept: CAR_ACCEPT }, signal })
   if (res.body == null) throw new Error(`gateway ${gateway} returned no body for ${root}`)
-  const reader = await CarBlockIterator.fromIterable(res.body as unknown as AsyncIterable<Uint8Array>)
-  for await (const block of reader) {
-    yield { cid: block.cid as unknown as CID, bytes: block.bytes }
+  // Hold the body's reader here rather than handing the stream itself to the
+  // CAR parser: once the parser locks the stream, `body.cancel()` rejects and
+  // the HTTP stream would stay open. Cancelling through the reader works at
+  // any point.
+  const bodyReader = res.body.getReader()
+  const bodyChunks = async function* (): AsyncGenerator<Uint8Array> {
+    while (true) {
+      const { done, value } = await bodyReader.read()
+      if (done) return
+      yield value
+    }
+  }
+  try {
+    const reader = await CarBlockIterator.fromIterable(bodyChunks())
+    for await (const block of reader) {
+      yield { cid: block.cid as unknown as CID, bytes: block.bytes }
+    }
+  } finally {
+    // Runs on normal completion, error, AND `iter.return()` — a race loser
+    // whose generator is dropped mid-stream releases its HTTP/2 stream here
+    // instead of waiting on the runtime to notice the abort. Cancelling a
+    // fully-consumed body is a no-op.
+    await bodyReader.cancel().catch(() => {
+      // already closed or errored; the stream is released either way
+    })
   }
 }
 
