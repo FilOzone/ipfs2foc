@@ -577,10 +577,20 @@ export default function App({ caps }: { caps: Capabilities }) {
   // button abort through these (#43).
   const prepareControllers = useRef(new Map<string, AbortController>())
 
+  // Roots whose last attempt failed: their next lookup skips the learned
+  // routing answer, in case a stale source list is what failed them.
+  const discoveryBypass = useRef(new Set<string>())
+  const lookupSources = useCallback((cid: string) => {
+    const canonical = toCanonicalCidV1(cid)
+    if (canonical == null) return undefined
+    return discoverRootSources(canonical, undefined, discoveryBypass.current.delete(cid))
+  }, [])
+
   // Compute one CID's piece and patch its row through the phases. Shared by
   // the Prepare worker pool and the per-row Retry action (#34).
   const prepareOne = useCallback(
     async (cid: string, sources?: Promise<RootSources>) => {
+      sources ??= lookupSources(cid)
       const startedAt = performance.now()
       let lastEmit = 0
       store.markWorking(cid, 0, 0)
@@ -621,12 +631,13 @@ export default function App({ caps }: { caps: Capabilities }) {
       } catch (err) {
         const failure = describePrepareFailure(err)
         store.markError(cid, failure.headline, failure.detail)
+        discoveryBypass.current.add(cid)
       } finally {
         clearInterval(watchdog)
         prepareControllers.current.delete(cid)
       }
     },
-    [gateway, relayBase, schedulePersist, store]
+    [gateway, relayBase, schedulePersist, store, lookupSources]
   )
 
   const cancelOne = useCallback((cid: string) => {
@@ -665,9 +676,9 @@ export default function App({ caps }: { caps: Capabilities }) {
       const topUpDiscovery = () => {
         while (discoverNext < pending.length && discoverNext < next + CONCURRENCY) {
           const cid = pending[discoverNext++]
-          const canonical = toCanonicalCidV1(cid)
           // An invalid CID gets no lookup; prepareOne surfaces the error.
-          if (canonical != null) sourcesFor.set(cid, discoverRootSources(canonical))
+          const lookup = lookupSources(cid)
+          if (lookup != null) sourcesFor.set(cid, lookup)
         }
       }
       const worker = async () => {
@@ -687,7 +698,7 @@ export default function App({ caps }: { caps: Capabilities }) {
         flushPersist()
       }
     },
-    [prepareOne, flushPersist, store]
+    [prepareOne, flushPersist, store, lookupSources]
   )
 
   const run = useCallback(async () => {

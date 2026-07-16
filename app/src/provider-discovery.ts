@@ -64,12 +64,49 @@ function isBrowserDialable(addr: string): boolean {
 
 const EMPTY: RootSources = { carUrls: [], p2pAddrs: [] }
 
+// A migration inventory overwhelmingly lives on one provider set, so after
+// this many consecutive identical routing answers the answer is reused
+// instead of asked again — the reuse spares the routing endpoint millions of
+// lookups on a large run. Reuse can never be wrong in a way that matters:
+// every block is hash-verified regardless of source, and a source that lacks
+// a root fails fast into the next race tier. Roots that fail anyway come
+// back through a fresh lookup (`fresh`), and while the answer is learned
+// every LEARNED_REVALIDATE_EVERY-th call still asks for real, so a corpus
+// that shifts providers mid-run drops the learned answer within one stripe.
+const LEARN_AFTER = 20
+const LEARNED_REVALIDATE_EVERY = 50
+
+let learned: RootSources | null = null
+let lastKey: string | null = null
+let streak = 0
+let learnedUses = 0
+
+const copyOf = (s: RootSources): RootSources => ({ carUrls: [...s.carUrls], p2pAddrs: [...s.p2pAddrs] })
+
+/** Learn from a successful routing answer; one differing answer forgets. */
+function learn(result: RootSources): void {
+  const key = JSON.stringify([result.carUrls, result.p2pAddrs])
+  if (key === lastKey) {
+    streak++
+  } else {
+    lastKey = key
+    streak = 1
+    learned = null
+  }
+  if (streak >= LEARN_AFTER) learned = copyOf(result)
+}
+
 /**
  * Everything one routing lookup offers for this root: trustless-gateway base
  * URLs (at most MAX_CAR_SOURCES) and browser-dialable bitswap addrs (at most
- * MAX_P2P_ADDRS). Empty lists on any failure.
+ * MAX_P2P_ADDRS). Empty lists on any failure. Once the corpus has answered
+ * identically LEARN_AFTER times in a row the learned answer is returned
+ * without a lookup; `fresh` forces a real lookup for this root regardless.
  */
-export async function discoverRootSources(cid: string, signal?: AbortSignal): Promise<RootSources> {
+export async function discoverRootSources(cid: string, signal?: AbortSignal, fresh = false): Promise<RootSources> {
+  if (!fresh && learned != null && ++learnedUses % LEARNED_REVALIDATE_EVERY !== 0) {
+    return copyOf(learned)
+  }
   const timeout = AbortSignal.timeout(DISCOVERY_TIMEOUT_MS)
   const combined = signal == null ? timeout : AbortSignal.any([signal, timeout])
   try {
@@ -77,7 +114,10 @@ export async function discoverRootSources(cid: string, signal?: AbortSignal): Pr
       headers: { accept: 'application/json' },
       signal: combined,
     })
-    if (!res.ok) return EMPTY
+    // A non-OK or failed lookup teaches nothing: only a real routing answer
+    // (including a genuinely empty one) counts toward the learned streak, so
+    // an endpoint outage can neither build nor tear down confidence.
+    if (!res.ok) return learned != null && !fresh ? copyOf(learned) : EMPTY
     const body = (await res.json()) as { Providers?: RoutingProvider[] | null }
     const carUrls: string[] = []
     const p2pAddrs: string[] = []
@@ -99,8 +139,10 @@ export async function discoverRootSources(cid: string, signal?: AbortSignal): Pr
         if (p2pAddrs.length < MAX_P2P_ADDRS && !p2pAddrs.includes(full)) p2pAddrs.push(full)
       }
     }
-    return { carUrls, p2pAddrs }
+    const result = { carUrls, p2pAddrs }
+    learn(result)
+    return result
   } catch {
-    return EMPTY
+    return learned != null && !fresh ? copyOf(learned) : EMPTY
   }
 }
