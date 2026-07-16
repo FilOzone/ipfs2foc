@@ -49,6 +49,7 @@ import * as Digest from 'multiformats/hashes/digest'
 import * as Link from 'multiformats/link'
 import { fetchBlockViaBitswap } from './bitswap-fallback.ts'
 import { beginHash, type HashJob } from './hash-pool.ts'
+import { originLimiter } from './origin-limiter.ts'
 import { discoverRootSources, type RootSources } from './provider-discovery.ts'
 import { hedgeFetch, raceBlockStreams, type StreamCandidate } from './source-race.ts'
 
@@ -199,18 +200,48 @@ export async function computePiece(
   // One routing lookup serves the whole piece: the CAR race and the
   // per-block hedge below share it.
   const sources = prefetchedSources ?? discoverRootSources(canonical, signal)
+  // The origin the winning CAR stream came from; a stall gets attributed
+  // back to it so the limiter's breaker can demote a wedged host.
+  let winningOrigin: string | null = null
   const openCarStream = async function* (
     streamRoot: Parameters<typeof openGatewayCarStream>[1],
     streamSignal?: AbortSignal
   ) {
     const { carUrls, p2pAddrs } = await sources
+    // Every HTTP candidate goes through the per-origin limiter: at most a
+    // cap of concurrent CAR streams per host (all streams to a host share
+    // one HTTP/2 connection, and a saturated connection stalls them all at
+    // once), and an origin whose stall breaker tripped is skipped outright
+    // so the race promotes the next tier immediately.
+    const limitedCarStream = (base: string) =>
+      async function* (sig: AbortSignal) {
+        const origin = new URL(base).origin
+        if (!originLimiter.healthy(origin)) {
+          throw new Error(`origin ${origin} is cooling down after repeated stalls`)
+        }
+        const release = await originLimiter.acquire(origin, sig)
+        try {
+          for await (const block of openGatewayCarStream(base, streamRoot, sig)) {
+            originLimiter.noteProgress(origin)
+            yield block
+          }
+        } finally {
+          release()
+        }
+      }
     const candidates: Array<StreamCandidate<{ cid: CID; bytes: Uint8Array }>> = carUrls.map((base, i) => ({
       delayMs: i * RACE_STEP_MS,
-      start: (sig) => openGatewayCarStream(base, streamRoot, sig),
+      onWin: () => {
+        winningOrigin = new URL(base).origin
+      },
+      start: limitedCarStream(base),
     }))
     candidates.push({
       delayMs: candidates.length > 0 ? RACE_COMMUNITY_MS : 0,
-      start: (sig) => openGatewayCarStream(gateway, streamRoot, sig),
+      onWin: () => {
+        winningOrigin = new URL(gateway).origin
+      },
+      start: limitedCarStream(gateway),
     })
     if (p2pAddrs.length > 0) {
       // Strictly the last tier: a bitswap win flips the whole DAG into
@@ -292,6 +323,12 @@ export async function computePiece(
     // digest — multihash bytes come out via digestInto(bytes, 0, true).
     pieceCid = (Link.create(Raw.code, Digest.decode(await raceAbort(job.finish(), signal))) as CID).toString()
   } catch (err) {
+    // A watchdog stall counts against the origin that was serving this piece:
+    // enough consecutive stalls trip its breaker and new roots skip it while
+    // it cools down.
+    if (winningOrigin != null && messagesOf(err).some((m) => /stopped sending bytes/.test(m))) {
+      originLimiter.noteStall(winningOrigin)
+    }
     // A claim can still be in flight (abort or stream failure won the race);
     // cancel on arrival so the pool slot is replaced, not leaked.
     if (job == null) {
