@@ -108,9 +108,19 @@ export async function* raceBlockStreams<B>(
         errors.push(new Error('source ended without producing a block'))
         continue
       }
-      // Winner: everyone else stops spending requests now.
+      // Winner: everyone else stops spending requests now. Abort reaches a
+      // candidate blocked in an await (fetch, read); `return()` closes one
+      // suspended at a yield, which abort alone never resumes — that loser
+      // would otherwise hold its stream open until collected. Not awaited: a
+      // return() queued behind a pending await settles whenever the abort
+      // unblocks it, and the race must not wait on that.
       for (const e of started) {
-        if (e !== outcome.entry) e.ctrl.abort(new Error('another source answered first'))
+        if (e !== outcome.entry) {
+          e.ctrl.abort(new Error('another source answered first'))
+          void e.iter.return?.(undefined as never).catch(() => {
+            // the candidate already failed; there is nothing to close
+          })
+        }
       }
       outcome.entry.onWin?.()
       yield outcome.res.value
@@ -121,7 +131,12 @@ export async function* raceBlockStreams<B>(
       }
     }
   } finally {
-    for (const e of started) e.ctrl.abort(new Error('race torn down'))
+    for (const e of started) {
+      e.ctrl.abort(new Error('race torn down'))
+      void e.iter.return?.(undefined as never).catch(() => {
+        // already failed; nothing to close
+      })
+    }
   }
 }
 
