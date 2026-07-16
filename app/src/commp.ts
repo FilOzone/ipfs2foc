@@ -49,7 +49,7 @@ import * as Digest from 'multiformats/hashes/digest'
 import * as Link from 'multiformats/link'
 import { fetchBlockViaBitswap } from './bitswap-fallback.ts'
 import { beginHash, type HashJob } from './hash-pool.ts'
-import { discoverRootSources } from './provider-discovery.ts'
+import { discoverRootSources, type RootSources } from './provider-discovery.ts'
 import { hedgeFetch, raceBlockStreams, type StreamCandidate } from './source-race.ts'
 
 // A piece whose canonical CAR fits here is fetched entirely without holding a
@@ -161,13 +161,20 @@ function raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
  * Aborting `signal` tears down the gateway stream, releases (and replaces) the
  * hash-pool worker, and rejects with the abort reason — the stall watchdog and
  * the per-row cancel both come through here (#43).
+ *
+ * `prefetchedSources` lets the caller start the routing lookup before this
+ * piece reaches a worker slot: on cold roots the lookup costs ~40% of the
+ * median piece's wall-clock, and it serializes ahead of the first byte when
+ * it starts here. The pool prefetches a slot's width ahead so the answer is
+ * already resolved on pickup; the lookup itself is identical either way.
  */
 export async function computePiece(
   gateway: string,
   cidStr: string,
   relayBase: string,
   onProgress?: (bytes: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  prefetchedSources?: Promise<RootSources>
 ): Promise<PieceResult> {
   // Normalize to canonical CIDv1 (CIDv0 `Qm…` is converted automatically), then
   // export/commit/relay all under that one form so the commitment stays byte-safe.
@@ -191,7 +198,7 @@ export async function computePiece(
   //
   // One routing lookup serves the whole piece: the CAR race and the
   // per-block hedge below share it.
-  const sources = discoverRootSources(canonical, signal)
+  const sources = prefetchedSources ?? discoverRootSources(canonical, signal)
   const openCarStream = async function* (
     streamRoot: Parameters<typeof openGatewayCarStream>[1],
     streamSignal?: AbortSignal

@@ -1,3 +1,4 @@
+import { toCanonicalCidV1 } from 'ipfs2foc-core'
 import type { Capabilities } from 'ipfs2foc-core/capabilities'
 import { explorerDataSetUrl, explorerPieceUrl } from 'ipfs2foc-core/pdp-verifier'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -9,6 +10,7 @@ import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
 import { fmtToken, type PaymentsStatus, RPC_URLS, readPaymentsStatus, readyToSign } from './payments.ts'
 import { createPrepareStore, type RowFilter } from './prepare-store.ts'
+import { discoverRootSources, type RootSources } from './provider-discovery.ts'
 import { clearRun, clearSubmit, loadRun, loadSubmit, type SavedSubmit, saveRun, saveSubmit } from './run-store.ts'
 import {
   DEFAULT_SESSION_DURATION_SECONDS,
@@ -578,7 +580,7 @@ export default function App({ caps }: { caps: Capabilities }) {
   // Compute one CID's piece and patch its row through the phases. Shared by
   // the Prepare worker pool and the per-row Retry action (#34).
   const prepareOne = useCallback(
-    async (cid: string) => {
+    async (cid: string, sources?: Promise<RootSources>) => {
       const startedAt = performance.now()
       let lastEmit = 0
       store.markWorking(cid, 0, 0)
@@ -611,7 +613,8 @@ export default function App({ caps }: { caps: Capabilities }) {
             const secs = (now - startedAt) / 1000
             store.markWorking(cid, bytes, secs > 0 ? bytes / 1048576 / secs : 0)
           },
-          controller.signal
+          controller.signal,
+          sources
         )
         store.markDone(cid, result)
         schedulePersist()
@@ -646,9 +649,34 @@ export default function App({ caps }: { caps: Capabilities }) {
       setRowFilter('working')
       setRowPage(0)
       let next = 0
+      // Keep the routing lookup off every root's critical path: discovery for
+      // the next pool-width of roots runs while the current ones fetch, so a
+      // worker picks up an answered (or answering) lookup instead of starting
+      // one. Cold-slice timing put the lookup at ~40% of a median root's
+      // wall-clock when it starts on pickup. The map holds at most
+      // CONCURRENCY in-flight lookups (entries are deleted on pickup), each a
+      // single small routing GET that resolves to a handful of URLs, and
+      // `discoverRootSources` never rejects — a failed or timed-out lookup is
+      // an empty answer, exactly as if the worker had asked itself. A lookup
+      // for a root that later gets cancelled just resolves unused inside its
+      // own 5s timeout.
+      const sourcesFor = new Map<string, Promise<RootSources>>()
+      let discoverNext = 0
+      const topUpDiscovery = () => {
+        while (discoverNext < pending.length && discoverNext < next + CONCURRENCY) {
+          const cid = pending[discoverNext++]
+          const canonical = toCanonicalCidV1(cid)
+          // An invalid CID gets no lookup; prepareOne surfaces the error.
+          if (canonical != null) sourcesFor.set(cid, discoverRootSources(canonical))
+        }
+      }
       const worker = async () => {
         while (next < pending.length) {
-          await prepareOne(pending[next++])
+          const cid = pending[next++]
+          topUpDiscovery()
+          const sources = sourcesFor.get(cid)
+          sourcesFor.delete(cid)
+          await prepareOne(cid, sources)
         }
       }
       try {
