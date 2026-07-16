@@ -24,6 +24,7 @@ import {
 } from './session.ts'
 import {
   findResumableSubmit,
+  partitionSubmittable,
   requeueDeferred,
   runSubmit,
   SubmitBlockedError,
@@ -461,13 +462,17 @@ export default function App({ caps }: { caps: Capabilities }) {
   // A previous submit run for exactly this wallet+network+piece set resumes
   // instead of restarting — its presigns and any submitted commits are bound
   // to all three. Shown read-only until the operator presses Submit again.
+  // The same partition submit uses: a saved submit is keyed to its piece
+  // list, so the resume check must see exactly what Submit would send.
+  const submittable = useMemo(() => partitionSubmittable(results), [results])
+
   useEffect(() => {
     setResumable(null)
     // Not while preparing: results grows all run long, and re-checking the
     // saved submit against a million-piece list on every batch is pure churn.
-    if (wallet == null || results.length === 0 || !onTargetNetwork || running) return
+    if (wallet == null || submittable.eligible.length === 0 || !onTargetNetwork || running) return
     let stale = false
-    findResumableSubmit(wallet, targetNetwork, results).then((saved) => {
+    findResumableSubmit(wallet, targetNetwork, submittable.eligible).then((saved) => {
       if (stale || saved == null) return
       setResumable(saved)
       setCopies(saved.copies)
@@ -476,12 +481,18 @@ export default function App({ caps }: { caps: Capabilities }) {
     return () => {
       stale = true
     }
-  }, [wallet, onTargetNetwork, results, targetNetwork, running])
+  }, [wallet, onTargetNetwork, submittable, targetNetwork, running])
 
   const submitWith = useCallback(
     async (excludePieceCids: string[] | null) => {
       if (wallet == null || session == null || results.length === 0) return
-      const pieces = excludePieceCids == null ? results : results.filter((r) => !excludePieceCids.includes(r.pieceCid))
+      // Gap-filled pieces never ride into submit: the provider pulls the CAR
+      // URL, and a URL that served an incomplete CAR during prepare can fail
+      // the on-chain add. Retry clears a row once its stream comes back clean.
+      const { eligible } = submittable
+      if (eligible.length === 0) return
+      const pieces =
+        excludePieceCids == null ? eligible : eligible.filter((r) => !excludePieceCids.includes(r.pieceCid))
       if (pieces.length === 0) return
       setSubmitError(null)
       setSubmitBlocked(null)
@@ -508,7 +519,7 @@ export default function App({ caps }: { caps: Capabilities }) {
         setSubmitting(false)
       }
     },
-    [wallet, session, results, copies, targetNetwork]
+    [wallet, session, results, submittable, copies, targetNetwork]
   )
 
   const submit = useCallback(() => void submitWith(null), [submitWith])
@@ -1298,9 +1309,22 @@ export default function App({ caps }: { caps: Capabilities }) {
                   )}
                   <span className="num mono dim">{state.phase === 'done' ? fmtBytes(state.result.rawSize) : '—'}</span>
                   {state.phase === 'done' ? (
-                    <button className="copy" onClick={() => copy(state.result.sourceUrl, cid)} type="button">
-                      {copied === cid ? 'copied ✓' : 'copy'}
-                    </button>
+                    <>
+                      <button className="copy" onClick={() => copy(state.result.sourceUrl, cid)} type="button">
+                        {copied === cid ? 'copied ✓' : 'copy'}
+                      </button>
+                      {state.result.gapFillCount > 0 && (
+                        <button
+                          className="copy"
+                          disabled={running}
+                          onClick={() => void prepareOne(cid)}
+                          title="Refetch this root; a run with a complete stream clears the hold on submit."
+                          type="button"
+                        >
+                          retry
+                        </button>
+                      )}
+                    </>
                   ) : state.phase === 'error' ? (
                     <button className="copy" disabled={running} onClick={() => void prepareOne(cid)} type="button">
                       retry
@@ -1438,6 +1462,14 @@ export default function App({ caps }: { caps: Capabilities }) {
                 <p className="gate-note">
                   Providers pull and confirm on their own. Closing this tab only pauses new submissions. Progress is
                   saved, and Resume continues exactly where it stopped.
+                </p>
+              )}
+              {submittable.heldBack.length > 0 && (
+                <p className="gate-note">
+                  {submittable.heldBack.length.toLocaleString()} piece
+                  {submittable.heldBack.length === 1 ? '' : 's'} held back from submit: their gateway CAR was
+                  incomplete during prepare (blocks recovered one by one), and the provider pulls that same CAR URL.
+                  Retry those rows; they join the submit once the stream comes back complete.
                 </p>
               )}
               {submitError != null && (

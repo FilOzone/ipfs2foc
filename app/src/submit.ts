@@ -84,6 +84,21 @@ export class SubmitBlockedError extends Error {
   }
 }
 
+/**
+ * Split prepared pieces into submit-eligible and held-back. A gap-filled
+ * piece (gapFillCount > 0) computed its commitment over verified bytes, but
+ * the provider pulls the CAR URL — a URL that served an incomplete CAR
+ * during prepare may still be incomplete at pull time, and that failure
+ * lands on-chain as a failed AddPieces. Held-back pieces re-enter by being
+ * retried until the stream completes with no gap-fill.
+ */
+export function partitionSubmittable(pieces: PieceResult[]): { eligible: PieceResult[]; heldBack: PieceResult[] } {
+  const eligible: PieceResult[] = []
+  const heldBack: PieceResult[] = []
+  for (const p of pieces) (p.gapFillCount > 0 ? heldBack : eligible).push(p)
+  return { eligible, heldBack }
+}
+
 export interface SubmitOptions {
   wallet: WalletState
   network: NetworkKey
