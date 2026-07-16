@@ -18,7 +18,7 @@
 import { blockToBytes } from 'ipfs2foc-core/block-source'
 import type { CID } from 'multiformats/cid'
 
-interface BitswapNode {
+export interface BitswapNode {
   getBlock(cid: CID, signal?: AbortSignal): Promise<Uint8Array>
   dial(addr: string, signal?: AbortSignal): Promise<void>
   stop(): Promise<void>
@@ -27,8 +27,6 @@ interface BitswapNode {
 
 const DIAL_TIMEOUT_MS = 15_000
 const BLOCKSTORE_RECYCLE_BYTES = 128 * 1024 * 1024
-
-let handle: Promise<BitswapNode> | null = null
 
 async function buildNode(): Promise<BitswapNode> {
   const [
@@ -103,18 +101,92 @@ async function buildNode(): Promise<BitswapNode> {
   }
 }
 
-async function node(): Promise<BitswapNode> {
-  handle ??= buildNode()
-  const n = await handle
-  if (n.storedBytes() >= BLOCKSTORE_RECYCLE_BYTES) {
-    handle = buildNode()
-    void n.stop().catch(() => {
-      // best-effort teardown; the replacement node is already building
-    })
-    return await handle
-  }
-  return n
+export interface BitswapRescueOptions {
+  /** Node factory; the default builds the libp2p/helia node above. */
+  build?: () => Promise<BitswapNode>
+  /** Blockstore size that retires the node. */
+  recycleBytes?: number
 }
+
+export interface BitswapRescue {
+  fetchBlock(addrs: string[], cid: CID, signal?: AbortSignal): Promise<Uint8Array>
+}
+
+/**
+ * A recycling scope around the shared rescue node. Retirement is leased: a
+ * node past the threshold stops serving new fetches immediately, but its
+ * stop waits for the fetches already running on it — stopping libp2p
+ * mid-want fails rescues that were about to succeed.
+ */
+export function createBitswapRescue(opts: BitswapRescueOptions = {}): BitswapRescue {
+  const build = opts.build ?? buildNode
+  const recycleBytes = opts.recycleBytes ?? BLOCKSTORE_RECYCLE_BYTES
+
+  interface Entry {
+    handle: Promise<BitswapNode>
+    active: number
+    retired: boolean
+  }
+  let current: Entry | null = null
+
+  const maybeStop = (entry: Entry) => {
+    if (!entry.retired || entry.active > 0) return
+    void entry.handle.then(
+      (n) => n.stop(),
+      () => {
+        // the build failed; there is nothing to stop
+      }
+    )
+  }
+
+  const acquire = async (): Promise<{ node: BitswapNode; release: () => void }> => {
+    let entry = current
+    if (entry == null) {
+      entry = { handle: build(), active: 0, retired: false }
+      current = entry
+    }
+    entry.active++
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true
+      entry.active--
+      maybeStop(entry)
+    }
+    try {
+      const n = await entry.handle
+      if (n.storedBytes() >= recycleBytes && !entry.retired) {
+        // Future fetches build fresh; this one finishes on the retiree.
+        entry.retired = true
+        if (current === entry) current = null
+      }
+      return { node: n, release }
+    } catch (err) {
+      release()
+      if (current === entry) current = null
+      throw err
+    }
+  }
+
+  return {
+    async fetchBlock(addrs, cid, signal) {
+      if (addrs.length === 0) throw new Error('no browser-dialable peers advertised for this root')
+      const { node: n, release } = await acquire()
+      try {
+        const dials = await Promise.allSettled(addrs.map((a) => n.dial(a, signal)))
+        if (!dials.some((d) => d.status === 'fulfilled')) {
+          const first = dials.find((d): d is PromiseRejectedResult => d.status === 'rejected')
+          throw new Error(`no bitswap peer reachable for this root: ${String(first?.reason ?? 'dial failed')}`)
+        }
+        return await n.getBlock(cid, signal)
+      } finally {
+        release()
+      }
+    },
+  }
+}
+
+const defaultRescue = createBitswapRescue()
 
 /**
  * Fetch one block over bitswap from the root's own peers. `addrs` are the
@@ -124,12 +196,5 @@ async function node(): Promise<BitswapNode> {
  * verifies them again before serving.
  */
 export async function fetchBlockViaBitswap(addrs: string[], cid: CID, signal?: AbortSignal): Promise<Uint8Array> {
-  if (addrs.length === 0) throw new Error('no browser-dialable peers advertised for this root')
-  const n = await node()
-  const dials = await Promise.allSettled(addrs.map((a) => n.dial(a, signal)))
-  if (!dials.some((d) => d.status === 'fulfilled')) {
-    const first = dials.find((d): d is PromiseRejectedResult => d.status === 'rejected')
-    throw new Error(`no bitswap peer reachable for this root: ${String(first?.reason ?? 'dial failed')}`)
-  }
-  return await n.getBlock(cid, signal)
+  return defaultRescue.fetchBlock(addrs, cid, signal)
 }
