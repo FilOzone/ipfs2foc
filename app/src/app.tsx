@@ -1207,7 +1207,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                 announced rather than only painted. */}
             <span aria-live="polite" className="panel-note">
               {counts.done.toLocaleString()} ready{errors > 0 ? ` · ${errors.toLocaleString()} failed` : ''}
-              {eta != null ? ` · ${eta.rate.toFixed(1)}/s · ${eta.text} left` : ''}
+              {eta == null ? '' : ` · ${eta.rate.toFixed(1)}/s · ${eta.text} left`}
               {restored ? ' · restored from your last visit' : ''}
             </span>
           </div>
