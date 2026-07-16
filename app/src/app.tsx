@@ -55,12 +55,13 @@ const DEFAULT_GATEWAY = 'https://trustless-gateway.link'
 // (63 KiB median root): 4 in flight ≈ 2 pieces/s, 16 ≈ 10/s, 32 ≈ 18/s, with
 // no added failures — the gateway round-trip, not bandwidth or CPU, is what
 // this hides.
-// `?concurrency=64` overrides the pool width for this tab — the lever for
+// `?concurrency=64` overrides the pool width for this tab, the lever for
 // measuring where throughput stops scaling with in-flight count. Clamped:
 // worst-case transient memory is the 4 MiB hash-handoff buffer per slot, so
-// 128 bounds a typo at ~512 MiB. Every origin in play speaks HTTP/2, so the
-// browser multiplexes these over one connection per host; the six-connection
-// ceiling only applies to HTTP/1.1 origins.
+// 128 bounds a typo at ~512 MiB. The gateways and routing endpoint measured
+// against all speak HTTP/2, so the browser multiplexes these over one
+// connection per host; the six-connection ceiling only applies to HTTP/1.1
+// origins.
 const CONCURRENCY = (() => {
   const dflt = 8 * HASH_POOL_SIZE
   const raw = Number(new URLSearchParams(window.location.search).get('concurrency'))
@@ -677,8 +678,8 @@ export default function App({ caps }: { caps: Capabilities }) {
       // one. Cold-slice timing put the lookup at ~40% of a median root's
       // wall-clock when it starts on pickup. The map holds at most
       // CONCURRENCY in-flight lookups (entries are deleted on pickup), each a
-      // single small routing GET that resolves to a handful of URLs, and
-      // `discoverRootSources` never rejects — a failed or timed-out lookup is
+      // single small routing GET that resolves to a handful of URLs.
+      // `discoverRootSources` never rejects; a failed or timed-out lookup is
       // an empty answer, exactly as if the worker had asked itself. A lookup
       // for a root that later gets cancelled just resolves unused inside its
       // own 5s timeout.

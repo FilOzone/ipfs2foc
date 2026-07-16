@@ -64,23 +64,26 @@ function isBrowserDialable(addr: string): boolean {
 
 const EMPTY: RootSources = { carUrls: [], p2pAddrs: [] }
 
-// A migration inventory overwhelmingly lives on one provider set, so once a
-// gateway answer dominates the real lookups it is reused instead of asked
-// again — the reuse spares the routing endpoint millions of lookups on a
-// large run. Reuse can never be wrong in a way that matters: every block is
-// hash-verified regardless of source, and a source that lacks a root fails
-// fast into the next race tier. Roots that fail anyway come back through a
-// fresh lookup (`fresh`), and while an answer is learned every
-// LEARNED_REVALIDATE_EVERY-th call still asks for real, so a corpus that
-// shifts providers mid-run loses the learned answer within one stripe.
+// Once one gateway answer dominates the real lookups it is reused instead
+// of asked again, sparing the routing endpoint one lookup per root. This
+// only pays off on an inventory that lives on one provider set (true of
+// the 2M-CID corpus this was measured against, not of inventories in
+// general); a mixed-provider inventory never builds a majority and every
+// root keeps its real lookup. Reuse cannot change what gets committed:
+// every block is hash-verified regardless of source, and a source that
+// lacks a root fails fast into the next race tier. Roots that fail anyway
+// come back through a fresh lookup (`fresh`), and while an answer is
+// learned every LEARNED_REVALIDATE_EVERY-th call still asks for real, so a
+// provider shift mid-run drops the learned answer within one stripe.
 //
-// Only the gateway URLs are learned. Measured against this corpus, the peer
-// records jitter per root — address subsets and order from the same peer
-// vary, and an occasional answer drops the gateway record — so learning
-// keys on `carUrls` alone and tolerates a minority of divergent answers
-// (majority tally, not a consecutive streak). A cached answer carries no
-// p2p addrs; the rare root that needed the bitswap rescue fails its HTTP
-// tiers, and its retry does a fresh lookup that restores them.
+// Only the gateway URLs are learned. Against the 2M corpus the peer
+// records jitter per root: address subsets and order from the same peer
+// vary, and ~18% of sampled answers drop the gateway record while the
+// gateway still serves the root. So learning keys on `carUrls` alone,
+// counts only answers that name a gateway, and takes a majority tally
+// rather than a consecutive streak. A cached answer carries no p2p addrs;
+// the rare root that needed the bitswap rescue fails its HTTP tiers, and
+// its retry does a fresh lookup that restores them.
 const LEARN_AFTER = 20
 const LEARN_MAJORITY = 0.8
 const LEARNED_REVALIDATE_EVERY = 50
@@ -96,6 +99,7 @@ let answers = 0
 
 /** Learn from a successful routing answer's gateway URLs. */
 function learn(carUrls: string[]): void {
+  if (carUrls.length === 0) return
   const key = JSON.stringify(carUrls)
   const entry = tally.get(key) ?? { count: 0, carUrls: [...carUrls] }
   entry.count++
