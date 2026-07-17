@@ -92,9 +92,8 @@ test('fetchGatewayRawBlock cancels the error body before throwing', async () => 
   const { state, restore } = stubFetch(404, never)
   try {
     const cid = await rawCid(new TextEncoder().encode('x'))
-    await assert.rejects(
-      fetchGatewayRawBlock('https://gw.example', cid),
-      (err: Error) => /received 404/.test(err.message)
+    await assert.rejects(fetchGatewayRawBlock('https://gw.example', cid), (err: Error) =>
+      /received 404/.test(err.message)
     )
     assert.equal(state.cancelled, true, 'the 404 body must be cancelled, not abandoned')
   } finally {

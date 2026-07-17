@@ -8,8 +8,8 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { type BitswapNode, createBitswapRescue } from '../src/bitswap-fallback.ts'
 import type { CID } from 'multiformats/cid'
+import { type BitswapNode, createBitswapRescue } from '../src/bitswap-fallback.ts'
 
 const cidOf = (name: string) => ({ toString: () => name }) as unknown as CID
 const CID_A = cidOf('bafy-a')
