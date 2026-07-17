@@ -15,12 +15,15 @@ export type HashWorkerResponse =
   | { type: 'error'; message: string }
 
 /**
- * One worker per hashing core. The prepare concurrency in app.tsx runs
- * several fetches per worker: pieces claim a worker only when their bytes
- * are ready to hash (commp.ts), so the pool stays CPU-sized while the
- * network side fans out wider.
+ * One worker per hashing core, leaving two cores for the main thread and
+ * retrieval. The prepare concurrency in app.tsx runs several fetches per
+ * worker: pieces claim a worker only when their bytes are ready to hash
+ * (commp.ts), so the pool stays CPU-sized while the network side fans out
+ * wider. Pieces above the handoff cap hold their worker while the rest of
+ * their stream arrives, so an undersized pool wedges the claim queue behind
+ * a few slow origins.
  */
-export const HASH_POOL_SIZE = 4
+export const HASH_POOL_SIZE = Math.min(8, Math.max(2, (globalThis.navigator?.hardwareConcurrency ?? 4) - 2))
 
 export interface HashJob {
   /** Hash a chunk; resolves when the worker has consumed it. */

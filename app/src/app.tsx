@@ -80,6 +80,12 @@ const PROGRESS_THROTTLE_MS = 250
 // (PULL_STALL_TIMEOUT_MS, 15 min) guards whole-piece pulls; this guards a
 // per-chunk stream, so it can be much tighter.
 const STALL_TIMEOUT_MS = 120_000
+// A piece waiting for a hash worker is backpressure, not a stall: its byte
+// counter is frozen by design (the download already finished), and the wait
+// is bounded by how long the pieces holding workers keep streaming. Give the
+// claim its own budget so a busy pool queues rows instead of failing them;
+// only a pool that stays saturated this long is actually wedged.
+const CLAIM_STALL_TIMEOUT_MS = 600_000
 const STALL_POLL_MS = 5_000
 // The pieces table shows one page at a time (#57): a million-CID run must
 // never put a million rows in the DOM. One page fits on a screen or two, and
@@ -238,6 +244,10 @@ export default function App({ caps }: { caps: Capabilities }) {
   const [rowPage, setRowPage] = useState(0)
   const [running, setRunning] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
+  // Failed row whose full error chain is expanded inline. The headline is
+  // deliberately short; the chain is where the phase-specific stall message
+  // and the underlying cause live.
+  const [errOpen, setErrOpen] = useState<string | null>(null)
   const [copies, setCopies] = useState(2)
   const [submitState, setSubmitState] = useState<SubmitState | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -629,8 +639,9 @@ export default function App({ caps }: { caps: Capabilities }) {
       // origin breaker) chase the right side.
       let phase: PreparePhase = 'retrieve'
       const watchdog = setInterval(() => {
-        if (performance.now() - lastAdvanceAt > STALL_TIMEOUT_MS) {
-          controller.abort(new Error(stallMessage(phase, Math.round(STALL_TIMEOUT_MS / 1000))))
+        const budget = phase === 'hash-claim' ? CLAIM_STALL_TIMEOUT_MS : STALL_TIMEOUT_MS
+        if (performance.now() - lastAdvanceAt > budget) {
+          controller.abort(new Error(stallMessage(phase, Math.round(budget / 1000))))
         }
       }, STALL_POLL_MS)
       try {
@@ -650,6 +661,10 @@ export default function App({ caps }: { caps: Capabilities }) {
           sources,
           (p) => {
             phase = p
+            // A phase transition is progress: without this, a piece leaving a
+            // long (in-budget) hash-claim wait carries a stale byte clock into
+            // hash-write's tighter budget and dies on the next poll.
+            lastAdvanceAt = performance.now()
           }
         )
         store.markDone(cid, result)
@@ -1288,8 +1303,15 @@ export default function App({ caps }: { caps: Capabilities }) {
                       )}
                     </span>
                   ) : state.phase === 'error' ? (
-                    <span className="err-text" title={state.detail}>
-                      {short(state.message, 44, 0)}{' '}
+                    <span className="err-text">
+                      <button
+                        className="err-toggle"
+                        onClick={() => setErrOpen(errOpen === cid ? null : cid)}
+                        title={errOpen === cid ? 'hide the full error' : 'show the full error'}
+                        type="button"
+                      >
+                        {short(state.message, 44, 0)}
+                      </button>{' '}
                       <a
                         href={`https://check.ipfs.network/?cid=${cid}`}
                         rel="noreferrer"
@@ -1298,6 +1320,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                       >
                         check availability
                       </a>
+                      {errOpen === cid && <span className="err-detail mono">{state.detail}</span>}
                     </span>
                   ) : state.phase === 'working' ? (
                     <span className="working">
@@ -1467,9 +1490,9 @@ export default function App({ caps }: { caps: Capabilities }) {
               {submittable.heldBack.length > 0 && (
                 <p className="gate-note">
                   {submittable.heldBack.length.toLocaleString()} piece
-                  {submittable.heldBack.length === 1 ? '' : 's'} held back from submit: their gateway CAR was
-                  incomplete during prepare (blocks recovered one by one), and the provider pulls that same CAR URL.
-                  Retry those rows; they join the submit once the stream comes back complete.
+                  {submittable.heldBack.length === 1 ? '' : 's'} held back from submit: their gateway CAR was incomplete
+                  during prepare (blocks recovered one by one), and the provider pulls that same CAR URL. Retry those
+                  rows; they join the submit once the stream comes back complete.
                 </p>
               )}
               {submitError != null && (

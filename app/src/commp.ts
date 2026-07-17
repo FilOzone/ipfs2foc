@@ -113,7 +113,10 @@ export function stallMessage(phase: PreparePhase, timeoutSeconds: number): strin
         'The network is not serving this CID right now. Retry later, or check availability.'
       )
     case 'hash-claim':
-      return `waited ${timeoutSeconds}s for a hash worker. The hashing pool is stuck; reload the page and retry.`
+      return (
+        `waited ${timeoutSeconds}s for a hash worker while every worker stayed busy on other pieces. ` +
+        'Retry the failed rows; if this repeats, reload the page.'
+      )
     case 'hash-write':
       return `the hash worker stopped accepting bytes (${timeoutSeconds}s). Reload the page and retry.`
     case 'hash-finish':
