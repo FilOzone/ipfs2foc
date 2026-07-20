@@ -14,7 +14,8 @@
     "./manifest": "./src/manifest.ts",
     "./min-piece-guard": "./src/min-piece-guard.ts",
     "./pdp-verifier": "./src/pdp-verifier.ts",
-    "./piece-aggregate": "./src/piece-aggregate.ts"
+    "./piece-aggregate": "./src/piece-aggregate.ts",
+    "./indexed-aggregate": "./src/indexed-aggregate.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

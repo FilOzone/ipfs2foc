@@ -103,6 +103,12 @@ export interface AggregateRow {
   /** Aggregate root PieceCID v2 — the parent CID added on-chain for the aggregate. */
   rootPieceCid: string
   pieceSizeBytes: string
+  /**
+   * True when the aggregate embeds a data segment index (single-piece add;
+   * the provider pulls one assembled stream). False is the bare layout whose
+   * sub-pieces are pulled individually.
+   */
+  indexed: boolean
   status: AggregateStatus
   /** Synthetic per-aggregate pull marker, set when submission begins. */
   pullId: string | null
@@ -162,6 +168,7 @@ export class MigrationDB {
         idx              INTEGER PRIMARY KEY,
         root_piece_cid   TEXT NOT NULL,
         piece_size_bytes TEXT NOT NULL,
+        indexed          INTEGER NOT NULL DEFAULT 0,
         status           TEXT NOT NULL DEFAULT 'planned',
         pull_id          TEXT,
         data_set_id      TEXT,
@@ -366,10 +373,10 @@ export class MigrationDB {
    * a sub-piece — single-asset source CIDs become 1-member passthrough
    * sub-pieces at plan time, so the pull/add path has one canonical shape.
    */
-  saveAggregate(idx: number, rootPieceCid: string, pieceSizeBytes: bigint, members: string[]): void {
+  saveAggregate(idx: number, rootPieceCid: string, pieceSizeBytes: bigint, members: string[], indexed = false): void {
     const aggregateStmt = this.#db.prepare(
-      `INSERT INTO aggregates (idx, root_piece_cid, piece_size_bytes, status, created_at)
-       VALUES (?, ?, ?, 'planned', ?)`
+      `INSERT INTO aggregates (idx, root_piece_cid, piece_size_bytes, indexed, status, created_at)
+       VALUES (?, ?, ?, ?, 'planned', ?)`
     )
     const memberStmt = this.#db.prepare(
       `INSERT INTO aggregate_members (aggregate_idx, segment_index, sub_piece_cid)
@@ -381,7 +388,7 @@ export class MigrationDB {
     // recordBuiltSubPiece / recordPassthroughSubPiece writers.
     this.#db.exec('BEGIN')
     try {
-      aggregateStmt.run(idx, rootPieceCid, pieceSizeBytes.toString(), new Date().toISOString())
+      aggregateStmt.run(idx, rootPieceCid, pieceSizeBytes.toString(), indexed ? 1 : 0, new Date().toISOString())
       members.forEach((subPieceCid, segmentIndex) => {
         memberStmt.run(idx, segmentIndex, subPieceCid)
       })
@@ -392,13 +399,25 @@ export class MigrationDB {
     }
   }
 
+  /**
+   * The indexed aggregate whose root is `rootPieceCid`, if any. Serves the
+   * `/piece/{pcidv2}` route's aggregate dispatch: an indexed root answers
+   * with the assembled stream, not a sub-piece redirect.
+   */
+  indexedAggregateByRoot(rootPieceCid: string): { idx: number } | null {
+    const row = this.#db
+      .prepare(`SELECT idx FROM aggregates WHERE root_piece_cid = ? AND indexed = 1`)
+      .get(rootPieceCid) as { idx: number | bigint } | undefined
+    return row == null ? null : { idx: Number(row.idx) }
+  }
+
   aggregates(): AggregateRow[] {
     // `member_count` is the *source-CID* count, expanding packed sub-pieces
     // through `sub_piece_members`. A 48-CID packed aggregate reports 48, not
     // 1, so operator-facing counters (report, status) reflect input shape.
     const rows = this.#db
       .prepare(
-        `SELECT a.idx, a.root_piece_cid, a.piece_size_bytes, a.status, a.pull_id,
+        `SELECT a.idx, a.root_piece_cid, a.piece_size_bytes, a.indexed, a.status, a.pull_id,
                 a.data_set_id, a.piece_id, a.tx_hash, a.committed_block, a.error,
                 a.submitted_at, a.parked_at, a.committed_at,
                 (
@@ -417,6 +436,7 @@ export class MigrationDB {
         idx: Number(row.idx),
         rootPieceCid: String(row.root_piece_cid),
         pieceSizeBytes: String(row.piece_size_bytes),
+        indexed: Number(row.indexed) === 1,
         status: row.status as AggregateStatus,
         pullId: str(row.pull_id),
         dataSetId: str(row.data_set_id),

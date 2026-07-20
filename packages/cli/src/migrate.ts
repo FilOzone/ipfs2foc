@@ -10,7 +10,7 @@
  * aggregates without touching prior state.
  */
 
-import { packAggregates } from './aggregate.ts'
+import { packAggregates, packIndexedAggregates } from './aggregate.ts'
 import type { MigrationDB } from './db.ts'
 import { formatStageSummary, StageStats, Timer } from './metrics.ts'
 import { categoryOf, fetchAndComputePiece, recordPieceOutcome } from './piece.ts'
@@ -29,6 +29,13 @@ export interface PlanOptions {
    * sub-piece is intended.
    */
   autoPack?: boolean
+  /**
+   * Pack indexed (data segment) aggregates instead of the bare layout: one
+   * pulled stream and one added piece per aggregate, self-describing so the
+   * provider can index every sub-piece from the bytes alone. Requires a
+   * provider whose indexing understands the embedded index.
+   */
+  indexedAggregates?: boolean
 }
 
 export interface PlanSummary {
@@ -79,7 +86,7 @@ export async function runPlan(
   let oversized: string[] = []
   if (autoPack) {
     wrapDonePiecesAsPassthroughSubPieces(db)
-    oversized = appendAggregatesFromFreeSubPieces(db, opts.aggregateSizeBytes)
+    oversized = appendAggregatesFromFreeSubPieces(db, opts.aggregateSizeBytes, opts.indexedAggregates === true)
   }
 
   const counts = db.counts()
@@ -134,7 +141,11 @@ export function wrapDonePiecesAsPassthroughSubPieces(db: MigrationDB): void {
  * part of an aggregate. Existing aggregates are never deleted — composition
  * is set at INSERT and frozen for the row's lifetime.
  */
-export function appendAggregatesFromFreeSubPieces(db: MigrationDB, aggregateSizeBytes: bigint): string[] {
+export function appendAggregatesFromFreeSubPieces(
+  db: MigrationDB,
+  aggregateSizeBytes: bigint,
+  indexed = false
+): string[] {
   const aggregated = db.subPieceCidsAlreadyAggregated()
   const subPieces = db.subPiecesByStatus('built').filter((sp) => !aggregated.has(sp.subPieceCid))
   if (subPieces.length === 0) return []
@@ -147,7 +158,8 @@ export function appendAggregatesFromFreeSubPieces(db: MigrationDB, aggregateSize
     url: sp.url ?? '',
   }))
 
-  const { aggregates, oversized } = packAggregates(units, aggregateSizeBytes)
+  const pack = indexed ? packIndexedAggregates : packAggregates
+  const { aggregates, oversized } = pack(units, aggregateSizeBytes)
 
   const base = db.nextAggregateIndex()
   aggregates.forEach((agg, i) => {
@@ -155,7 +167,8 @@ export function appendAggregatesFromFreeSubPieces(db: MigrationDB, aggregateSize
       base + i,
       agg.rootPieceCid,
       aggregateSizeBytes,
-      agg.members.map((m) => m.cid)
+      agg.members.map((m) => m.cid),
+      agg.indexed
     )
   })
 

@@ -19,6 +19,7 @@
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { serveIndexedAggregate } from './aggregate-stream.ts'
 import type { MigrationDB } from './db.ts'
 import { CAR_ACCEPT } from './gateway.ts'
 import { log } from './util.ts'
@@ -48,6 +49,16 @@ export async function handlePieceRequest(
   req: IncomingMessage,
   res: ServerResponse
 ): Promise<void> {
+  // An indexed aggregate root answers with the assembled aggregate stream:
+  // sub-piece CARs at their layout offsets plus the embedded data segment
+  // index. Sub-piece lookups below never match an indexed root (the root is
+  // not a sub-piece row), so this dispatch is unambiguous.
+  const indexedAggregate = db.indexedAggregateByRoot(pieceCid)
+  if (indexedAggregate != null) {
+    await serveIndexedAggregate(db, indexedAggregate.idx, pieceCid, res, req.method === 'HEAD')
+    return
+  }
+
   // One lookup. Every piece commitment in the schema is a sub-piece —
   // passthrough sub-pieces carry the gateway URL, assembled sub-pieces
   // carry the CAR file path. The branch picks the response shape.

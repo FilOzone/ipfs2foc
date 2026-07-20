@@ -19,12 +19,13 @@
 import { unlink } from 'node:fs/promises'
 import { calibration, mainnet, Synapse } from '@filoz/synapse-sdk'
 import { canonicalCid, relayPullUrl } from 'ipfs2foc-core'
+import { buildIndexedAggregate } from 'ipfs2foc-core/indexed-aggregate'
 import { checkMinPieceSize } from 'ipfs2foc-core/min-piece-guard'
 import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { CID } from 'multiformats/cid'
 import { type Hex, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import type { MigrationDB } from './db.ts'
+import type { AggregateRow, MigrationDB } from './db.ts'
 import { classifyBaseFee, getBaseFee, resolveRpcUrl } from './gas.ts'
 import { formatBytes, formatDuration, formatRate, Timer } from './metrics.ts'
 import { type AddStatusResult, PdpClient, PullBackpressure, type PullResponse } from './pdp.ts'
@@ -91,6 +92,39 @@ export interface SubmitPdpOptions {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * What one aggregate row pulls and adds, in either layout.
+ *
+ * Bare: every sub-piece is pulled from its own source URL and the add lists
+ * them under the recomputed aggregate root.
+ *
+ * Indexed: the provider pulls ONE stream — the assembled aggregate served by
+ * redirect-serve at `/piece/{root}` — and the add lists the root as its own
+ * (only) sub-piece, the 1:1 shape Curio's v0 add requires
+ * (`pdp/handlers_add.go transformAddPiecesRequest` rejects zero subPieces).
+ * The embedded data segment index carries the sub-piece structure instead of
+ * the request body.
+ */
+function aggregateShapeFor(
+  agg: Pick<AggregateRow, 'indexed'>,
+  members: Array<{ pieceCid: string; url: string; rawSize: number }>
+): {
+  rootPieceCid: string
+  subPieceCids: string[]
+  pullUnits: Array<{ pieceCid: string; url: string; rawSize: number }>
+} {
+  if (agg.indexed) {
+    const layout = buildIndexedAggregate(members.map((m) => ({ pieceCid: m.pieceCid, rawSize: m.rawSize })))
+    return {
+      rootPieceCid: layout.rootPieceCid,
+      subPieceCids: [layout.rootPieceCid],
+      pullUnits: [{ pieceCid: layout.rootPieceCid, url: '', rawSize: layout.streamLength }],
+    }
+  }
+  const aggregate = pieceAggregateCommP(members.map((m) => ({ pieceCid: m.pieceCid, rawSize: m.rawSize })))
+  return { rootPieceCid: aggregate.rootPieceCid, subPieceCids: aggregate.orderedSubPieceCids, pullUnits: members }
+}
 
 /**
  * The pull `sourceUrl` the provider is handed for one sub-piece. Either the
@@ -253,6 +287,16 @@ export async function runSubmitPdp(
 
     const members = db.aggregateManifest(agg.idx)
     const aggBytesPlanned = members.reduce((sum, m) => sum + m.rawSize, 0)
+    const shape = aggregateShapeFor(agg, members)
+    // An indexed aggregate's one pull URL is the operator's redirect server
+    // streaming the assembled bytes; the stateless relay has no way to build
+    // that stream.
+    if (agg.indexed && opts.sourceRelay != null && opts.sourceRelay !== '') {
+      log(
+        `aggregate ${agg.idx}: indexed aggregates need --source-base (redirect-serve); --source-relay cannot serve them`
+      )
+      break
+    }
 
     // The provider's advertised min piece size is advisory in practice: pull
     // admission accepted and the chain committed sub-floor pieces in live
@@ -287,7 +331,7 @@ export async function runSubmitPdp(
     // receipt parse landed. Skip pull + add and jump straight to receipt
     // validation using the persisted tx_hash.
     if (agg.txHash != null) {
-      const aggregate = pieceAggregateCommP(members.map((m) => ({ pieceCid: m.pieceCid, rawSize: m.rawSize })))
+      const aggregate = shape
       log(`aggregate ${agg.idx}: resuming receipt validation for tx ${agg.txHash} (root ${aggregate.rootPieceCid})`)
       const onChain = await deps.activePieceCids(rpcUrl, opts.network, opts.dataSetId)
       if (onChain.has(aggregate.rootPieceCid)) {
@@ -329,7 +373,7 @@ export async function runSubmitPdp(
     // landed, otherwise leave the row for the operator to verify and reset
     // (`--retry-unconfirmed`). Never blindly re-add.
     if (agg.status === 'add_unconfirmed') {
-      const aggregate = pieceAggregateCommP(members.map((m) => ({ pieceCid: m.pieceCid, rawSize: m.rawSize })))
+      const aggregate = shape
       const onChain = await deps.activePieceCids(rpcUrl, opts.network, opts.dataSetId)
       if (onChain.has(aggregate.rootPieceCid)) {
         db.markCommitted(agg.idx, { dataSetId: String(opts.dataSetId) })
@@ -356,9 +400,10 @@ export async function runSubmitPdp(
     // exceeded the max size"). Each batch carries its own FWSS extraData
     // (presigned over that batch). The on-chain aggregate-add below stays a
     // single top-level piece regardless, so its event is unaffected.
-    const aggBytes = members.reduce((sum, m) => sum + m.rawSize, 0)
+    const pullUnits = shape.pullUnits
+    const aggBytes = pullUnits.reduce((sum, m) => sum + m.rawSize, 0)
     log(
-      `aggregate ${agg.idx}: pulling ${members.length} sub-piece(s), ${formatBytes(aggBytes)} ` +
+      `aggregate ${agg.idx}: pulling ${pullUnits.length} piece(s), ${formatBytes(aggBytes)} ` +
         `in batches of ${opts.pullBatch}`
     )
     db.markSubmitted(agg.idx, `pull-${agg.idx}`)
@@ -369,8 +414,8 @@ export async function runSubmitPdp(
     // have no on-chain effect and are idempotent, so a failed aggregate is safe
     // to reset and re-pull.
     let pullErrored: string | null = null
-    for (let start = 0; start < members.length && pullErrored == null; start += opts.pullBatch) {
-      const batch = members.slice(start, start + opts.pullBatch)
+    for (let start = 0; start < pullUnits.length && pullErrored == null; start += opts.pullBatch) {
+      const batch = pullUnits.slice(start, start + opts.pullBatch)
       const batchCids = batch.map((m) => m.pieceCid)
       const attemptId = db.recordPullBatchStart(agg.idx, batchCids)
       const pullExtra = (await ctx.presignForCommit(
@@ -424,14 +469,15 @@ export async function runSubmitPdp(
     db.markParked(agg.idx)
     totalPullMs += pullMs
     log(
-      `aggregate ${agg.idx}: parked ${members.length} sub-piece(s) in ${formatDuration(pullMs)} ` +
+      `aggregate ${agg.idx}: parked ${pullUnits.length} piece(s) in ${formatDuration(pullMs)} ` +
         `(provider pull ${formatRate(aggBytes, pullMs)})`
     )
 
-    // 2. Add the aggregate over the parked sub-pieces. The provider computes the
-    // aggregate piece commitment (commputils.PieceAggregateCommP), so compute it
-    // the same way and order sub-pieces largest-padded-first.
-    const aggregate = pieceAggregateCommP(members.map((m) => ({ pieceCid: m.pieceCid, rawSize: m.rawSize })))
+    // 2. Add the aggregate over the parked pieces. Bare: the provider
+    // recomputes the aggregate piece commitment over the listed sub-pieces.
+    // Indexed: the parked piece IS the aggregate (already verified byte-for-
+    // byte on pull) and it is added 1:1 as its own sub-piece.
+    const aggregate = shape
 
     // The provider can land the on-chain AddPieces and then fail a later
     // bookkeeping step, returning an error without a tx hash. Reconcile against
@@ -455,12 +501,7 @@ export async function runSubmitPdp(
     db.markAggregateAddUnconfirmed(agg.idx, 'AddPieces submitted; awaiting on-chain confirmation')
     let txHash: string
     try {
-      ;({ txHash } = await pdp.addAggregate(
-        opts.dataSetId,
-        aggregate.rootPieceCid,
-        aggregate.orderedSubPieceCids,
-        addExtra
-      ))
+      ;({ txHash } = await pdp.addAggregate(opts.dataSetId, aggregate.rootPieceCid, aggregate.subPieceCids, addExtra))
       // Persist the tx hash as soon as we have it so resume can poll the receipt
       // (`aggregatesAwaitingReceipt`) rather than re-adding.
       db.markAggregateTxSubmitted(agg.idx, txHash)

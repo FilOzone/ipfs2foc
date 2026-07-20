@@ -56,6 +56,9 @@ Usage:
   ipfs2foc commp  <cid> [--gateway URL]...
   ipfs2foc plan   --cids <file> [--db <file>] [--gateway URL]... [--piece-size 32GiB]
                      [--concurrency 8]
+                     [--indexed-aggregates]  (experimental: embed a data segment index so each
+                     aggregate is pulled as one stream and added as one self-describing piece;
+                     requires a provider whose indexing understands embedded indexes)
   ipfs2foc import-manifest <manifest.json> [--db <file>] [--network mainnet|calibration]
   ipfs2foc export [--db <file>] [--out <file>] [--network mainnet|calibration] [--source-relay <https-url>]
                      [--piece-size 32GiB] [--no-auto-pack]
@@ -262,6 +265,7 @@ async function cmdPlan(argv: string[]): Promise<void> {
       'ipfs-fallback-mode': { type: 'string' },
       'ipfs-fallback-timeout-seconds': { type: 'string' },
       'no-auto-pack': { type: 'boolean', default: false },
+      'indexed-aggregates': { type: 'boolean', default: false },
     },
   })
   if (values.cids == null) {
@@ -283,6 +287,7 @@ async function cmdPlan(argv: string[]): Promise<void> {
       ipfsFallback: fallback.ipfsFallback,
       fallbackTimeoutMs: fallback.fallbackTimeoutMs,
       autoPack: values['no-auto-pack'] !== true,
+      indexedAggregates: values['indexed-aggregates'] === true,
     })
 
     log('')
