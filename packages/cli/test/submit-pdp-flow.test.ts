@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { buildIndexedAggregate } from 'ipfs2foc-core/indexed-aggregate'
 import { pieceAggregateCommP } from 'ipfs2foc-core/piece-aggregate'
 import { MigrationDB } from '../src/db.ts'
 import type { AddStatusResult, PullResponse } from '../src/pdp.ts'
@@ -256,5 +257,61 @@ test('MED-1: a pull that never progresses trips the stall watchdog and fails the
     assert.equal(agg.status, 'failed')
     assert.match(agg.error ?? '', /stall/)
     assert.equal(calls.addAggregate, 0)
+  })
+})
+
+test('indexed aggregate: one pull for the assembled stream, add lists the root 1:1', async () => {
+  await withDb('flow-indexed', async (db) => {
+    db.addCids(['bafSrcA', 'bafSrcB'])
+    db.recordPieceSuccess('bafSrcA', M1.pcid, M1.raw, 'g', 'https://gw/ipfs/bafSrcA?format=car', 'sha-a')
+    db.recordPieceSuccess('bafSrcB', M2.pcid, M2.raw, 'g', 'https://gw/ipfs/bafSrcB?format=car', 'sha-b')
+    db.recordPassthroughSubPiece({
+      subPieceCid: M1.pcid,
+      sourceCid: 'bafSrcA',
+      url: 'https://gw/ipfs/bafSrcA?format=car',
+      rawSize: M1.raw,
+      memberSha256: null,
+    })
+    db.recordPassthroughSubPiece({
+      subPieceCid: M2.pcid,
+      sourceCid: 'bafSrcB',
+      url: 'https://gw/ipfs/bafSrcB?format=car',
+      rawSize: M2.raw,
+      memberSha256: null,
+    })
+    const layout = buildIndexedAggregate([
+      { pieceCid: M1.pcid, rawSize: M1.raw },
+      { pieceCid: M2.pcid, rawSize: M2.raw },
+    ])
+    db.saveAggregate(0, layout.rootPieceCid, 32n * 1024n * 1024n * 1024n, [M1.pcid, M2.pcid], true)
+
+    const pulled: Array<{ pieceCid: string; sourceUrl: string }> = []
+    const added: Array<{ root: string; subPieceCids: string[] }> = []
+    const { deps } = fakeDeps({
+      event: { blockNumber: 100n, pieceIds: [7n], pieceCids: [layout.rootPieceCid] },
+    })
+    const setup = deps.setup
+    deps.setup = async (...args: Parameters<typeof setup>) => {
+      const s = await setup(...args)
+      const pull = s.pdp.pull.bind(s.pdp)
+      s.pdp.pull = async (body) => {
+        pulled.push(...(body.pieces as Array<{ pieceCid: string; sourceUrl: string }>))
+        return pull(body)
+      }
+      const addAggregate = s.pdp.addAggregate.bind(s.pdp)
+      s.pdp.addAggregate = async (dataSetId, root, subPieceCids, extraData) => {
+        added.push({ root, subPieceCids })
+        return addAggregate(dataSetId, root, subPieceCids, extraData)
+      }
+      return s
+    }
+
+    await runSubmitPdp(db, baseOpts, deps)
+
+    assert.deepEqual(pulled, [
+      { pieceCid: layout.rootPieceCid, sourceUrl: `http://redirect.local/piece/${layout.rootPieceCid}` },
+    ])
+    assert.deepEqual(added, [{ root: layout.rootPieceCid, subPieceCids: [layout.rootPieceCid] }])
+    assert.equal(db.aggregates()[0]?.status, 'committed')
   })
 })
