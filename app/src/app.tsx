@@ -12,6 +12,7 @@ import { buildManifest, downloadManifest } from './manifest.ts'
 import { fmtToken, type PaymentsStatus, RPC_URLS, readPaymentsStatus, readyToSign } from './payments.ts'
 import { createPrepareStore, type RowFilter } from './prepare-store.ts'
 import { discoverRootSources, type RootSources } from './provider-discovery.ts'
+import { chunkEtaSeconds, overByteCap, overCidCap, runLimits } from './run-limits.ts'
 import { clearRun, clearSubmit, loadRun, loadSubmit, type SavedSubmit, saveRun, saveSubmit } from './run-store.ts'
 import {
   DEFAULT_SESSION_DURATION_SECONDS,
@@ -244,6 +245,9 @@ export default function App({ caps }: { caps: Capabilities }) {
   const [rowFilter, setRowFilter] = useState<RowFilter>('all')
   const [rowPage, setRowPage] = useState(0)
   const [running, setRunning] = useState(false)
+  // Prepared bytes crossed the hosted run ceiling mid-run: the pool stopped
+  // admitting new roots and the rest of the list stayed queued.
+  const [byteCapHit, setByteCapHit] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   // Failed row whose full error chain is expanded inline. The headline is
   // deliberately short; the chain is where the phase-specific stall message
@@ -371,6 +375,11 @@ export default function App({ caps }: { caps: Capabilities }) {
       ),
     [cidsText, cidFile]
   )
+
+  // The hosted console caps a run; a `serve` daemon runs uncapped. The count
+  // cap binds here at intake, the byte cap inside the pool once sizes exist.
+  const limits = useMemo(() => runLimits(caps), [caps])
+  const cidCapExceeded = overCidCap(cids.length, limits)
 
   const counts = store.counts()
   // Stable between completions: the store rebuilds this only when a row
@@ -693,6 +702,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     async (pending: string[]) => {
       ranRef.current = true
       setRunning(true)
+      setByteCapHit(false)
       // While the run is live the in-flight rows are the progress view, so
       // the table follows them. When it ends that filter would show nothing;
       // land on the failures if there are any, since those carry the run's
@@ -721,8 +731,23 @@ export default function App({ caps }: { caps: Capabilities }) {
           if (lookup != null) sourcesFor.set(cid, lookup)
         }
       }
+      // Hosted byte cap: sizes only exist once roots finish, so the pool
+      // checks the prepared total before admitting each next root. Roots
+      // already in flight finish; the rest stay queued and the notice below
+      // the run points larger sets at the CLI.
+      let capStopped = false
+      const admitNext = () => {
+        if (limits == null) return true
+        if (capStopped) return false
+        const prepared = store.resultsList().reduce((sum, r) => sum + r.rawSize, 0)
+        if (!overByteCap(prepared, limits)) return true
+        capStopped = true
+        setByteCapHit(true)
+        return false
+      }
       const worker = async () => {
         while (next < pending.length) {
+          if (!admitNext()) break
           const cid = pending[next++]
           topUpDiscovery()
           const sources = sourcesFor.get(cid)
@@ -738,7 +763,7 @@ export default function App({ caps }: { caps: Capabilities }) {
         flushPersist()
       }
     },
-    [prepareOne, flushPersist, store, lookupSources]
+    [prepareOne, flushPersist, store, lookupSources, limits]
   )
 
   const run = useCallback(async () => {
@@ -792,6 +817,7 @@ export default function App({ caps }: { caps: Capabilities }) {
     store.clear()
     setRowFilter('all')
     setRowPage(0)
+    setByteCapHit(false)
     setCidsText('')
     setCidFile(null)
     setCidFileError(null)
@@ -940,6 +966,32 @@ export default function App({ caps }: { caps: Capabilities }) {
     const remaining = counts.queued + counts.working
     return remaining > 0 ? { rate, text: fmtEta(remaining / rate) } : null
   })()
+
+  // Submit ETA: committed chunks over time → time left for the rest. Chunks
+  // land about a minute apart, so an estimate exists only after the second
+  // commit and follows the observed pace rather than an assumed one.
+  const submitEtaSamples = useRef<Map<string, Array<{ t: number; n: number }>>>(new Map())
+  useEffect(() => {
+    if (submitState == null) {
+      submitEtaSamples.current.clear()
+      return
+    }
+    const now = performance.now()
+    for (const c of submitState.contexts) {
+      const n = c.chunks.filter((ch) => ch.committed === true).length
+      const samples = submitEtaSamples.current.get(c.providerId) ?? []
+      if (samples.length === 0 || samples[samples.length - 1].n !== n) {
+        samples.push({ t: now, n })
+        submitEtaSamples.current.set(c.providerId, samples)
+      }
+    }
+  }, [submitState])
+  const submitEtaFor = (c: SubmitContextStatus): string => {
+    if (c.phase === 'done' || c.phase === 'failed' || c.chunks.length < 2) return ''
+    const remaining = c.chunks.filter((ch) => ch.committed !== true).length
+    const secs = chunkEtaSeconds(submitEtaSamples.current.get(c.providerId) ?? [], remaining)
+    return secs == null ? '' : ` · ${fmtEta(secs)} left`
+  }
 
   return (
     <div className="shell">
@@ -1195,7 +1247,12 @@ export default function App({ caps }: { caps: Capabilities }) {
           </label>
         </details>
         <div className="actions">
-          <button className="btn primary" disabled={running || cids.length === 0} onClick={run} type="button">
+          <button
+            className="btn primary"
+            disabled={running || cids.length === 0 || cidCapExceeded}
+            onClick={run}
+            type="button"
+          >
             {running
               ? 'Preparing…'
               : cids.length === 0
@@ -1208,6 +1265,13 @@ export default function App({ caps }: { caps: Capabilities }) {
             </button>
           )}
         </div>
+        {cidCapExceeded && limits != null && (
+          <p className="err-text">
+            This hosted console handles up to {limits.maxCids.toLocaleString()} items per run; your list has{' '}
+            {cids.length.toLocaleString()}. For larger sets, run the same migration from your machine with the CLI:{' '}
+            <code className="mono">npm i -g ipfs2foc</code>
+          </p>
+        )}
       </section>
 
       {counts.total > 0 && (
@@ -1225,6 +1289,13 @@ export default function App({ caps }: { caps: Capabilities }) {
               {restored ? ' · restored from your last visit' : ''}
             </span>
           </div>
+          {byteCapHit && limits != null && (
+            <p aria-live="polite" className="err-text">
+              Prepared items reached this console&apos;s {Math.round(limits.maxBytes / (1024 * 1024))} MiB per-run
+              limit, so the rest of the list stayed queued. Migrate what is prepared, or run the full list from your
+              machine with the CLI: <code className="mono">npm i -g ipfs2foc</code>
+            </p>
+          )}
           {/* The newest finished item only: one worked example, not a second
               table. Rendering it per row would double the table's width and
               its cost at the CID counts this tool targets. */}
@@ -1533,7 +1604,10 @@ export default function App({ caps }: { caps: Capabilities }) {
                       {short(c.error ?? 'failed', 36, 0)}
                     </span>
                   ) : (
-                    <span className={c.phase === 'done' ? 'ok-text' : 'working'}>{describeSubmitPhase(c)}</span>
+                    <span className={c.phase === 'done' ? 'ok-text' : 'working'}>
+                      {describeSubmitPhase(c)}
+                      {submitEtaFor(c)}
+                    </span>
                   )}
                   <span className="mono dim">
                     {(() => {
