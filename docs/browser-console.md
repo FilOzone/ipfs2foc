@@ -1,7 +1,7 @@
 # Migrate in the browser
 
 The hosted console at
-[sgtpooki.github.io/ipfs2foc](https://sgtpooki.github.io/ipfs2foc/) runs a
+[filozone.github.io/ipfs2foc](https://filozone.github.io/ipfs2foc/) runs a
 passthrough migration entirely in the tab: paste CIDs, get back each one's
 PieceCID v2, then submit them to storage providers and watch each copy commit
 on chain. Nothing to install, and no wallet key material ever enters the
@@ -48,7 +48,7 @@ ipfs2foc export --db migrate.db --network calibration --out manifest.json
 ```
 
 Both directions speak one versioned schema (the single source of truth is
-[`ipfs2foc-core/manifest`](https://github.com/SgtPooki/ipfs2foc/blob/main/packages/core/src/manifest.ts),
+[`ipfs2foc-core/manifest`](https://github.com/FilOzone/ipfs2foc/blob/main/packages/core/src/manifest.ts),
 where the v1 fields are documented). The manifest is prepare-level — commitments
 and pull URLs, not live submit state (transaction hashes, data-set id) — so it
 re-imports into a fresh DB and re-derives the same plan; the local `.db` file
