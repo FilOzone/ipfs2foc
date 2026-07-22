@@ -4,6 +4,7 @@ import { explorerDataSetUrl, explorerPieceUrl } from 'ipfs2foc-core/pdp-verifier
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
+import { dedupeCanonical } from './cid-union.ts'
 import { computePiece, describePrepareFailure, type PreparePhase, stallMessage } from './commp.ts'
 import { FocMark } from './foc-mark.tsx'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
@@ -361,14 +362,12 @@ export default function App({ caps }: { caps: Capabilities }) {
 
   const cids = useMemo(
     () =>
-      Array.from(
-        new Set(
-          cidsText
-            .split(/\s+/)
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0)
-            .concat(cidFile?.intake.cids ?? [])
-        )
+      dedupeCanonical(
+        cidsText
+          .split(/\s+/)
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+          .concat(cidFile?.intake.cids ?? [])
       ),
     [cidsText, cidFile]
   )
