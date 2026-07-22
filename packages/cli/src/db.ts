@@ -678,6 +678,68 @@ export class MigrationDB {
   }
 
   /**
+   * Per-aggregate rollup of recorded pull-batch attempts. This is the local
+   * record of what pdp-submit asked the provider to pull, not chain state;
+   * `report` reads the chain. Rolled up in SQL so row count stays flat at
+   * operator scale.
+   */
+  pullSummary(): Array<{
+    aggregateIdx: number
+    attempts: number
+    okCount: number
+    failedCount: number
+    lastFinishedAt: string | null
+    lastError: string | null
+  }> {
+    const rows = this.#db
+      .prepare(
+        `SELECT aggregate_idx,
+                COUNT(*)                    AS attempts,
+                COALESCE(SUM(ok_count), 0)  AS ok_count,
+                COALESCE(SUM(failed_count), 0) AS failed_count,
+                MAX(finished_at)            AS last_finished_at,
+                (SELECT error FROM pull_batch_attempts p2
+                  WHERE p2.aggregate_idx = p.aggregate_idx AND p2.error IS NOT NULL
+                  ORDER BY p2.id DESC LIMIT 1) AS last_error
+           FROM pull_batch_attempts p
+          GROUP BY aggregate_idx
+          ORDER BY aggregate_idx`
+      )
+      .all()
+    return rows.map((r) => {
+      const row = r as Record<string, unknown>
+      return {
+        aggregateIdx: Number(row.aggregate_idx),
+        attempts: Number(row.attempts),
+        okCount: Number(row.ok_count),
+        failedCount: Number(row.failed_count),
+        lastFinishedAt: row.last_finished_at == null ? null : String(row.last_finished_at),
+        lastError: row.last_error == null ? null : String(row.last_error),
+      }
+    })
+  }
+
+  /** Count of sub-pieces whose pull or build failed. */
+  failedSubPieceCount(): number {
+    const row = this.#db.prepare(`SELECT COUNT(*) AS n FROM sub_pieces WHERE status='failed'`).get() as { n: number }
+    return Number(row.n)
+  }
+
+  /** Bounded listing of failed sub-pieces; the count comes from `failedSubPieceCount`. */
+  failedSubPieces(limit: number): Array<{ subPieceCid: string; error: string | null }> {
+    const rows = this.#db
+      .prepare(`SELECT sub_piece_cid, error FROM sub_pieces WHERE status='failed' ORDER BY sub_piece_cid LIMIT ?`)
+      .all(limit)
+    return rows.map((r) => {
+      const row = r as Record<string, unknown>
+      return {
+        subPieceCid: String(row.sub_piece_cid),
+        error: row.error == null ? null : String(row.error),
+      }
+    })
+  }
+
+  /**
    * Aggregates submitted or parked but not yet committed. Submission backpressure
    * uses this so a run does not park more than maxParkedUncommitted at a time.
    */

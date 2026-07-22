@@ -8,7 +8,7 @@
  *   plan    --cids FILE [--db FILE] [opts]  Compute commitments + pack aggregates into the DB (resumable).
  *   import-manifest FILE [--db FILE] [opts] Load a browser-console run manifest as done pieces (recomputes nothing).
  *   export  [--db FILE] [--out FILE] [opts] Write the DB's prepared pieces as a run manifest (round-trips to the browser).
- *   status  [--db FILE]                     Report progress and the aggregate plan.
+ *   status  [--db FILE]                     Report progress, the aggregate plan, and recorded pulls.
  *   serve   [--db FILE] [opts]              Background commP runner + browser console + /piece origin.
  *   gas     [--network N] [opts]            Current network base fee and whether to pause.
  *   redirect-serve [--db FILE] [--port N] [--ingress funnel|cloudflared]   GET /piece/{pcidv2} -> 302 gateway CAR.
@@ -408,6 +408,9 @@ async function cmdExport(argv: string[]): Promise<void> {
 /** Schema version emitted in `status --json` so downstream scripts can detect breaking changes. */
 const STATUS_JSON_SCHEMA_VERSION = 1
 
+/** Failed sub-pieces listed by `status` before the listing truncates to a count. */
+const FAILED_SUB_PIECE_LISTING_LIMIT = 20
+
 async function cmdStatus(argv: string[]): Promise<void> {
   const { values } = parseArgs({
     args: argv,
@@ -423,6 +426,9 @@ async function cmdStatus(argv: string[]): Promise<void> {
     const failures = db.failures()
     const failuresByCategory = db.failuresByCategory()
     const aggregatesByStatus = db.aggregatesByStatus()
+    const pulls = db.pullSummary()
+    const failedSubPieceCount = db.failedSubPieceCount()
+    const failedSubPieces = failedSubPieceCount > 0 ? db.failedSubPieces(FAILED_SUB_PIECE_LISTING_LIMIT) : []
 
     if (values.json === true) {
       // Pure machine-readable mode: stdout = JSON only, no human log lines.
@@ -433,6 +439,11 @@ async function cmdStatus(argv: string[]): Promise<void> {
         failuresByCategory,
         aggregates,
         failures,
+        pulls: {
+          byAggregate: pulls,
+          failedSubPieceCount,
+          failedSubPieces,
+        },
       }
       console.log(JSON.stringify(payload, null, 2))
       return
@@ -442,6 +453,22 @@ async function cmdStatus(argv: string[]): Promise<void> {
     for (const agg of aggregates) {
       const errSuffix = agg.error == null ? '' : ` — ${agg.error.split('\n')[0]}`
       log(`  aggregate ${agg.idx} [${agg.status}] ${agg.memberCount} member(s) root=${agg.rootPieceCid}${errSuffix}`)
+    }
+    if (pulls.length > 0) {
+      log(`Pulls (local record of pdp-submit; the chain is authoritative, use report):`)
+      for (const p of pulls) {
+        const errSuffix = p.lastError == null ? '' : ` — last error: ${p.lastError.split('\n')[0]}`
+        log(
+          `  aggregate ${p.aggregateIdx}: ${p.attempts} batch(es), ${p.okCount} ok, ${p.failedCount} failed${errSuffix}`
+        )
+      }
+    }
+    if (failedSubPieceCount > 0) {
+      log(`Failed sub-pieces (showing ${failedSubPieces.length} of ${failedSubPieceCount}):`)
+      for (const sp of failedSubPieces) {
+        const reason = sp.error == null ? '' : `: ${sp.error.split('\n')[0]}`
+        log(`  ${sp.subPieceCid}${reason}`)
+      }
     }
     if (Object.keys(failuresByCategory).length > 0) {
       const summary = Object.entries(failuresByCategory)
