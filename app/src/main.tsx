@@ -9,6 +9,7 @@ import '@fontsource/ibm-plex-mono/400.css'
 import '@fontsource/ibm-plex-mono/500.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { initAnalytics } from './analytics.ts'
 import App from './app.tsx'
 import { loadCapabilities } from './capabilities.ts'
 import LocalDashboard from './local-dashboard.tsx'
@@ -19,6 +20,7 @@ import './styles.css'
 // hosted static site) the fetch fails fast and the in-browser prepare +
 // signing flow renders with hosted defaults.
 const caps = await loadCapabilities()
+initAnalytics(caps)
 
 // The two backends get different surfaces from one stylesheet: the scope class
 // on <body> selects which set of design tokens resolves. See styles.css.

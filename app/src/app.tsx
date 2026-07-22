@@ -2,6 +2,7 @@ import { toCanonicalCidV1 } from 'ipfs2foc-core'
 import type { Capabilities } from 'ipfs2foc-core/capabilities'
 import { explorerDataSetUrl, explorerPieceUrl } from 'ipfs2foc-core/pdp-verifier'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { trackOnce } from './analytics.ts'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
 import { dedupeCanonical } from './cid-union.ts'
@@ -397,6 +398,15 @@ export default function App({ caps }: { caps: Capabilities }) {
   const netLocked = caps.backend === 'local' || running || submitting || session != null || submitState != null
   const allCommitted =
     submitState != null && submitState.contexts.length > 0 && submitState.contexts.every((c) => c.phase === 'done')
+
+  // Funnel signals: who finishes a run, who gets pointed at the CLI. Both
+  // no-op everywhere except the hosted production site (see analytics.ts).
+  useEffect(() => {
+    if (allCommitted) trackOnce('run-completed')
+  }, [allCommitted])
+  useEffect(() => {
+    if (cidCapExceeded || byteCapHit) trackOnce('cli-steer')
+  }, [cidCapExceeded, byteCapHit])
 
   // Long runs: keep the screen awake and confirm accidental closes while
   // prepare or submit is in flight. Closing stays safe — both resume.
