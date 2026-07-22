@@ -41,6 +41,7 @@
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@filoz/synapse-core": "^0.5.2",
     "@filoz/synapse-sdk": "^0.41.0",
+    "@scarf/scarf": "^1.4.0",
     "@helia/block-brokers": "^5.2.4",
     "@helia/car": "^5.4.2",
     "@helia/http": "^3.1.4",

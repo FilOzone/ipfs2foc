@@ -156,6 +156,9 @@ importers:
       '@libp2p/yamux':
         specifier: ^8.0.1
         version: 8.0.1
+      '@scarf/scarf':
+        specifier: ^1.4.0
+        version: 1.4.0
       '@web3-storage/data-segment':
         specifier: ^5.3.0
         version: 5.3.0
@@ -1447,6 +1450,9 @@ packages:
     resolution: {integrity: sha512-X+zaP2x+j4RXGfbp/seSoRHWnPxzApilDszisZxbYH5C/jTxFhCtDNdPGZb9lJyYPs24wGxruPF7Y+sIXt9Gzw==}
     cpu: [x64]
     os: [win32]
+
+  '@scarf/scarf@1.4.0':
+    resolution: {integrity: sha512-xxeapPiUXdZAE3che6f3xogoJPeZgig6omHEy1rIY5WVsB3H2BHNnZH+gHG6x91SCWyQCzWGsuL2Hh3ClO5/qQ==}
 
   '@scure/base@1.2.6':
     resolution: {integrity: sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==}
@@ -5438,6 +5444,8 @@ snapshots:
 
   '@rollup/rollup-win32-x64-msvc@4.61.1':
     optional: true
+
+  '@scarf/scarf@1.4.0': {}
 
   '@scure/base@1.2.6': {}
 

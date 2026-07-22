@@ -50,6 +50,13 @@ npm install -g ipfs2foc      # the `ipfs2foc` command
 npx ipfs2foc --help
 ```
 
+Installs report coarse, anonymized package-usage data (operating system,
+package version; no stored IP or personal data) through
+[@scarf/scarf](https://www.npmjs.com/package/@scarf/scarf) to help us see
+whether the tool is reaching people. Opt out with `SCARF_ANALYTICS=false` or
+`DO_NOT_TRACK=1` in your environment, or `npm install --ignore-scripts`; the
+report happens at install time only, never when the CLI runs.
+
 From source (development uses [pnpm](https://pnpm.io)):
 
 ```bash
