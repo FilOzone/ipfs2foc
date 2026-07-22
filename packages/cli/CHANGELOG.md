@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.5.0](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.4.0...ipfs2foc-v0.5.0) (2026-07-17)
+
+
+### Features
+
+* **app:** apply the FilOz brand to the console ([92a09df](https://github.com/FilOzone/ipfs2foc/commit/92a09df4a1ef481b51ac1858a0d6b20bc16d9eac))
+* **app:** bitswap rescue over browser websockets ([840d536](https://github.com/FilOzone/ipfs2foc/commit/840d53688c55b740744dd76d124c5c8d226872d8))
+* **app:** carry the Filecoin Onchain Cloud brand ([df487db](https://github.com/FilOzone/ipfs2foc/commit/df487db7a51255f4fe963987ec53ddf72dfa0674))
+* **app:** follow in-flight rows, 50-row pages ([1707ed0](https://github.com/FilOzone/ipfs2foc/commit/1707ed047142fcf4592c6b1238d37a36001a428b))
+* **app:** hold gap-filled pieces out of submit ([f106e0a](https://github.com/FilOzone/ipfs2foc/commit/f106e0a52f0f7f52bd3090ab9774c62e460b78cf))
+* **app:** learned answers keep the bitswap rescue ([82b09e0](https://github.com/FilOzone/ipfs2foc/commit/82b09e016db15b40c5ee72cbb434156e66e48b2e))
+* **app:** make million-CID runs manageable ([8bd2b25](https://github.com/FilOzone/ipfs2foc/commit/8bd2b25a8de5c05d27dd9a5d9671bad2403df094))
+* **app:** name the stalled phase in watchdog kills ([388c06d](https://github.com/FilOzone/ipfs2foc/commit/388c06da978be3900ad42e8b83231c805b983f71))
+* **app:** page the working view, show a run ETA ([5ce1d65](https://github.com/FilOzone/ipfs2foc/commit/5ce1d65c2f9e2ce43f49b217877f99edb88ea98f))
+* **app:** per-origin stream cap and stall breaker ([75b459b](https://github.com/FilOzone/ipfs2foc/commit/75b459ba8a54bdefe130d18785cfafcc4e66b956))
+* **app:** pull each root from its own providers ([c4da0f9](https://github.com/FilOzone/ipfs2foc/commit/c4da0f923735102179693012bf777b53a6449e42))
+* **app:** tab-level prepare concurrency override ([b338d6e](https://github.com/FilOzone/ipfs2foc/commit/b338d6ec5efccb06c301abd4cdf1f913d100d82f))
+* console accepts a cids.txt file ([7079e40](https://github.com/FilOzone/ipfs2foc/commit/7079e409af83071a3ce5174acc75372b5794d633))
+* relay redirect mode for free-tier hosts ([456757d](https://github.com/FilOzone/ipfs2foc/commit/456757d3406e4d41e398cb41d1d98090884f36f8))
+
+
+### Bug Fixes
+
+* **app:** close losing race generators at win time ([1107ec5](https://github.com/FilOzone/ipfs2foc/commit/1107ec546f420c5468377d9887bc0b87ad9ffb99))
+* **app:** learn routing reuse from carUrls only ([407900c](https://github.com/FilOzone/ipfs2foc/commit/407900cc7e5524a8e5c7ca2df342aa3e02981af5))
+* **app:** recycle bitswap node without killing wants ([e50f877](https://github.com/FilOzone/ipfs2foc/commit/e50f87769bab9a173c29060cf4d22f1a17112f35))
+* **app:** skip empty answers when learning reuse ([a30747d](https://github.com/FilOzone/ipfs2foc/commit/a30747d095789f1c3ff2e033aac0c4fe70aa9aef))
+* **app:** stop gating submit on the unenforced piece floor ([8eb5e92](https://github.com/FilOzone/ipfs2foc/commit/8eb5e92054cf3e367817627c16e71135c78d0a4a))
+* **app:** stop killing pieces queued for a hash worker ([549812e](https://github.com/FilOzone/ipfs2foc/commit/549812e58aaa181b8027633f7c4a77b2e0503471))
+* **core:** release gateway bodies on early teardown ([4424256](https://github.com/FilOzone/ipfs2foc/commit/44242566d7d7a227f4aed67395cabd1d5e5463c6))
+* **core:** stop the walk when an export consumer leaves ([4326b5f](https://github.com/FilOzone/ipfs2foc/commit/4326b5fafff45b59a2aae6c9a3f759af4494804d))
+
+
+### Performance Improvements
+
+* **app:** fetch many pieces per hashing core ([bfab621](https://github.com/FilOzone/ipfs2foc/commit/bfab621d9f4ccdd2aac99c30b51c39c4dd5713e2))
+* **app:** prefetch discovery ahead of the pool ([5ea5837](https://github.com/FilOzone/ipfs2foc/commit/5ea58370368e0d667e2537696ccf39f4ce3c9c3f))
+* **app:** race a root's sources, staggered starts ([8e2c849](https://github.com/FilOzone/ipfs2foc/commit/8e2c849580ec7fd32c9a47b359803ebb15f7a585))
+* **app:** reuse a learned routing answer per corpus ([167428f](https://github.com/FilOzone/ipfs2foc/commit/167428f0f5745099984f1a567aac8109c4f20325))
+
 ## [0.4.0](https://github.com/SgtPooki/ipfs2foc/compare/ipfs2foc-v0.3.0...ipfs2foc-v0.4.0) (2026-06-11)
 
 
