@@ -37,7 +37,11 @@ jobs:
       # (packages/core) with the exact multiformats / data-segment versions the
       # commitments are computed over.
       - run: pnpm install --frozen-lockfile
+      # A custom domain serves from the root; the PAGES_BASE repo variable
+      # flips the asset base at cutover with no commit (set it to /).
       - run: pnpm --filter ipfs2foc-app build
+        env:
+          VITE_BASE: ${{ vars.PAGES_BASE || '/ipfs2foc/' }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: app/dist
