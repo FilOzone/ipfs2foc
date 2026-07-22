@@ -1,8 +1,14 @@
 # ipfs2foc documentation
 
 Organized by [Diátaxis](https://diataxis.fr/) — four kinds of documentation,
-each answering a different need. Start with the tutorial if you are new; reach
-for how-to guides and reference once you are running real migrations.
+each answering a different need. New? The [user guide](user-guide.md) picks a
+path for your inventory and walks a migration end to end; the tutorial
+rehearses the CLI flow on the testnet. Reach for how-to guides and reference
+once you are running real migrations.
+
+- [User guide](user-guide.md) — hosted console, local console, or CLI: which
+  path fits, a hosted run start to finish, moving up when the inventory
+  outgrows the tab, and verifying the end state on chain.
 
 ## Tutorials — learning by doing
 

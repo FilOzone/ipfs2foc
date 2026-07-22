@@ -12,9 +12,12 @@ each object's bytes directly from a [trustless IPFS
 gateway](docs/glossary.md#trustless-gateway); your machine streams each object
 once to compute its piece commitment and stores none of the payload.
 
+New here? Start with the [user guide](docs/user-guide.md) — it picks the
+right path for your inventory and walks a migration end to end.
+
 To run a passthrough migration with nothing installed — prepare and submit —
-use the [browser console](docs/browser-console.md) —
-[sgtpooki.github.io/ipfs2foc](https://sgtpooki.github.io/ipfs2foc/). When a
+use the [browser console](docs/browser-console.md) at
+[filozone.github.io/ipfs2foc](https://filozone.github.io/ipfs2foc/). When a
 run outgrows the tab, `ipfs2foc serve` runs the same console against a
 [local daemon](docs/local-console.md); headless automation uses the
 [CLI commands](#commands) directly.
@@ -50,7 +53,7 @@ npx ipfs2foc --help
 From source (development uses [pnpm](https://pnpm.io)):
 
 ```bash
-git clone https://github.com/SgtPooki/ipfs2foc
+git clone https://github.com/FilOzone/ipfs2foc
 cd ipfs2foc
 pnpm install
 node packages/cli/src/index.ts --help   # run directly; Node 26 strips the TypeScript types
@@ -464,6 +467,8 @@ Tables: `pieces`, `sub_pieces`, `sub_piece_members`, `aggregates`,
 
 The [`docs/`](docs/README.md) folder is organized by [Diátaxis](https://diataxis.fr/):
 
+- **[User guide](docs/user-guide.md)** — pick a path (hosted console, local
+  console, CLI) and walk a migration end to end.
 - **Tutorial** — [your first migration on calibration](docs/tutorial-first-migration.md),
   one CID end-to-end with a checkpoint at every step.
 - **How-to** — [the hosted console](docs/browser-console.md),
@@ -491,7 +496,7 @@ The [`docs/`](docs/README.md) folder is organized by [Diátaxis](https://diataxi
 ## Contributing
 
 Issues and pull requests welcome at
-[github.com/SgtPooki/ipfs2foc](https://github.com/SgtPooki/ipfs2foc). See
+[github.com/FilOzone/ipfs2foc](https://github.com/FilOzone/ipfs2foc). See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev loop and conventions, and
 [`SECURITY.md`](SECURITY.md) for key-handling and on-chain-spend guidance.
 
