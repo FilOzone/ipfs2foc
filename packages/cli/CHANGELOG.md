@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.0](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.5.0...ipfs2foc-v0.6.0) (2026-07-22)
+
+
+### Features
+
+* **app:** hosted run caps and submit ETA ([55b8198](https://github.com/FilOzone/ipfs2foc/commit/55b8198ff3c8245e6c0c729c834a219f8c3e1f85))
+* **app:** plausible funnel events on hosted site ([d65f978](https://github.com/FilOzone/ipfs2foc/commit/d65f978fb60f04a1542376c021876c8e40612432))
+* **cli:** scarf install metrics with opt-out note ([fc076bd](https://github.com/FilOzone/ipfs2foc/commit/fc076bd65021c6e680d0a2ae7b864b2631e02170))
+* recorded pull status in the status command ([128577f](https://github.com/FilOzone/ipfs2foc/commit/128577f7f2c91ef38a9cd9636448a7dabcf0ba85))
+
+
+### Bug Fixes
+
+* **app:** dedupe console union on canonical CID ([1fd26ec](https://github.com/FilOzone/ipfs2foc/commit/1fd26ec077d509347b714f92202b4280878c9380))
+
 ## [0.5.0](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.4.0...ipfs2foc-v0.5.0) (2026-07-17)
 
 
