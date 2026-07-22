@@ -9,11 +9,11 @@
     "cli",
     "migration"
   ],
-  "homepage": "https://github.com/SgtPooki/ipfs2foc#readme",
-  "bugs": "https://github.com/SgtPooki/ipfs2foc/issues",
+  "homepage": "https://github.com/FilOzone/ipfs2foc#readme",
+  "bugs": "https://github.com/FilOzone/ipfs2foc/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SgtPooki/ipfs2foc.git",
+    "url": "git+https://github.com/FilOzone/ipfs2foc.git",
     "directory": "packages/cli"
   },
   "type": "module",
