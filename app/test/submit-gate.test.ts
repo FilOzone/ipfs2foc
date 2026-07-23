@@ -17,7 +17,7 @@ const piece = (cid: string, gapFillCount: number): PieceResult => ({
   pieceCid: `piece-${cid}`,
   rawSize: 1024,
   gatewayHost: 'gw.example',
-  sourceUrl: `https://relay.example/pull/${cid}`,
+  sourceUrl: `https://gw.example/ipfs/${cid}?format=car`,
   gapFillCount,
 })
 

@@ -1,7 +1,7 @@
 // Submit driver for the signing flow (#23): hand each selected provider the
-// relay pull URLs for the prepared pieces, then confirm ONE on-chain commit
+// gateway pull URLs for the prepared pieces, then confirm ONE on-chain commit
 // per provider. The browser never moves payload bytes — the primary provider
-// fetches the canonical CAR through the relay, secondaries copy
+// fetches the canonical CAR from the gateway, secondaries copy
 // provider-to-provider from the primary — and the wallet signs nothing here:
 // every authorization is an EIP-712 presign by the session key, applied
 // in-page without a prompt.

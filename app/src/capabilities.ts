@@ -10,8 +10,6 @@
 
 import { CAPABILITIES_SCHEMA_VERSION, type Capabilities } from 'ipfs2foc-core/capabilities'
 
-export const DEFAULT_RELAY = 'https://ipfs2foc-relay.russell-3c4.workers.dev'
-
 /**
  * The network the hosted console starts on. A `serve` daemon declares its own
  * and the console follows it; on the hosted site the operator picks, starting
@@ -25,7 +23,10 @@ export const HOSTED_DEFAULTS: Capabilities = {
   backend: 'hosted',
   network: DEFAULT_NETWORK,
   apiBase: null,
-  pieceBase: DEFAULT_RELAY,
+  // Providers pull gateway CAR URLs directly (any HTTPS URL is a valid pull
+  // source; the provider recomputes commP over the bytes). pieceBase is a
+  // serve daemon's own /piece origin — the hosted site has none.
+  pieceBase: null,
   supportsAssembledPieces: false,
   supportsServerCommp: false,
   supportsBrowserSigning: true,

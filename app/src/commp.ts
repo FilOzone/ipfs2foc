@@ -33,8 +33,8 @@
 // `lookahead` blocks in flight, and the CAR-stream reorder buffer is a hard cap
 // so retrieved blocks are not retained after they are written to the CAR.
 // Reuse the single source of truth (ipfs2foc-core) — never re-template these, or
-// the relay redirect would drift from the bytes commP is computed over.
-import { relayPullUrl, toCanonicalCidV1 } from 'ipfs2foc-core'
+// the provider's pull URL would drift from the bytes commP is computed over.
+import { buildCarUrl, toCanonicalCidV1 } from 'ipfs2foc-core'
 import { messagesOf } from 'ipfs2foc-core/block-source'
 import { exportCanonicalCar } from 'ipfs2foc-core/car-export'
 import {
@@ -78,7 +78,12 @@ export interface PieceResult {
   pieceCid: string
   rawSize: number
   gatewayHost: string
-  /** The pull URL a provider would be handed via the stateless relay. */
+  /**
+   * The gateway CAR URL the provider pulls — the exact URL this commitment was
+   * computed over. Any HTTPS URL is a valid pull source; the provider verifies
+   * the bytes by recomputing commP (curio pdp/pull_types.go
+   * ValidatePullSourceURL).
+   */
   sourceUrl: string
   /**
    * Blocks the gateway's CAR stream did not cover, recovered per-block. A
@@ -194,8 +199,8 @@ function raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
 /**
  * Retrieve a CID's DAG from the gateway as one streaming CAR request per root
  * (hash-verified, per-block gap-fill on the side), stream the canonical CAR
- * through a pooled piece hasher, and return the PieceCID v2 plus the relay pull
- * URL. Streaming, constant-memory — the CAR is never fully buffered. The
+ * through a pooled piece hasher, and return the PieceCID v2 plus the provider
+ * pull URL. Streaming, constant-memory — the CAR is never fully buffered. The
  * `CarStreamSource` owns and closes its own stream, so there is no persistent
  * node to carry across calls.
  *
@@ -212,7 +217,6 @@ function raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
 export async function computePiece(
   gateway: string,
   cidStr: string,
-  relayBase: string,
   onProgress?: (bytes: number) => void,
   signal?: AbortSignal,
   prefetchedSources?: Promise<RootSources>,
@@ -225,7 +229,7 @@ export async function computePiece(
     onPhase?.(p)
   }
   // Normalize to canonical CIDv1 (CIDv0 `Qm…` is converted automatically), then
-  // export/commit/relay all under that one form so the commitment stays byte-safe.
+  // export, commit, and pull all under that one form so the commitment stays byte-safe.
   const canonical = toCanonicalCidV1(cidStr)
   if (canonical == null) {
     throw new Error('not a valid CID')
@@ -399,7 +403,9 @@ export async function computePiece(
     source.close()
   }
   const gatewayHost = new URL(gateway).hostname
-  const sourceUrl = relayPullUrl(relayBase, gatewayHost, canonical, pieceCid)
+  // The provider pulls the same gateway CAR URL the commitment was computed
+  // over — byte-identity by construction, no indirection in between.
+  const sourceUrl = buildCarUrl(gateway, canonical)
 
   return { cid: canonical, pieceCid, rawSize, gatewayHost, sourceUrl, gapFillCount: source.gapFillCount }
 }

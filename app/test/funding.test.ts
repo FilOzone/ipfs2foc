@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { deriveFundingState, FIL_GAS_FLOOR, fundingChecklist, type FundingInputs } from '../src/funding.ts'
+import { deriveFundingState, FIL_GAS_FLOOR, type FundingInputs, fundingChecklist } from '../src/funding.ts'
 import type { PaymentsStatus } from '../src/payments.ts'
 
 const funded: PaymentsStatus = {

@@ -3,7 +3,6 @@ import type { Capabilities } from 'ipfs2foc-core/capabilities'
 import { explorerDataSetUrl, explorerPieceUrl } from 'ipfs2foc-core/pdp-verifier'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { trackOnce } from './analytics.ts'
-import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
 import { dedupeCanonical, invalidCidStrings } from './cid-union.ts'
 import { computePiece, describePrepareFailure, type PreparePhase, stallMessage } from './commp.ts'
@@ -190,7 +189,6 @@ export default function App({ caps }: { caps: Capabilities }) {
   const [cidFile, setCidFile] = useState<{ name: string; intake: CidIntake } | null>(null)
   const [cidFileBusy, setCidFileBusy] = useState(false)
   const [cidFileError, setCidFileError] = useState<string | null>(null)
-  const [relayBase, setRelayBase] = useState(caps.pieceBase ?? DEFAULT_RELAY)
   const [gateway, setGateway] = useState(DEFAULT_GATEWAY)
   // Row state lives in the store, not in a useState array: the input list can
   // run to millions and per-row state churn must not re-render (or rebuild)
@@ -249,7 +247,6 @@ export default function App({ caps }: { caps: Capabilities }) {
       // saved snapshot over them would clobber its progress (#42).
       if (ranRef.current) return
       setCidsText(saved.cidsText)
-      setRelayBase(saved.relayBase)
       setGateway(saved.gateway)
       if (saved.fileCids != null && saved.fileCids.length > 0) {
         setCidFile({
@@ -282,12 +279,11 @@ export default function App({ caps }: { caps: Capabilities }) {
         fileCids: cidFile?.intake.cids,
         fileInvalidCount: cidFile?.intake.invalidCount,
         gateway,
-        relayBase,
         results: store.resultsRecord(),
         updatedAt: new Date().toISOString(),
       })
     },
-    [gateway, relayBase, cidFile, store]
+    [gateway, cidFile, store]
   )
 
   // Coalesce per-completion saves into one every PERSIST_INTERVAL_MS. The
@@ -750,7 +746,6 @@ export default function App({ caps }: { caps: Capabilities }) {
         const result = await computePiece(
           gateway,
           cid,
-          relayBase,
           (bytes) => {
             const now = performance.now()
             lastAdvanceAt = now
@@ -782,7 +777,7 @@ export default function App({ caps }: { caps: Capabilities }) {
         prepareControllers.current.delete(cid)
       }
     },
-    [gateway, relayBase, schedulePersist, store, lookupSources, noteStall, clearStall]
+    [gateway, schedulePersist, store, lookupSources, noteStall, clearStall]
   )
 
   const cancelOne = useCallback((cid: string) => {
@@ -944,12 +939,12 @@ export default function App({ caps }: { caps: Capabilities }) {
       buildManifest(results, {
         tool: 'ipfs2foc-app',
         network: targetNetwork,
-        relayBase,
+        relayBase: null,
         gateway,
         now: new Date().toISOString(),
       })
     )
-  }, [results, relayBase, gateway, targetNetwork])
+  }, [results, gateway, targetNetwork])
 
   // Pieces no provider could fetch this run (deduped across copies) — the
   // committable rest already landed; these get a retry and a remainder.
@@ -963,10 +958,10 @@ export default function App({ caps }: { caps: Capabilities }) {
     downloadManifest(
       buildManifest(
         results.filter((r) => set.has(r.pieceCid)),
-        { tool: 'ipfs2foc-app', network: targetNetwork, relayBase, gateway, now: new Date().toISOString() }
+        { tool: 'ipfs2foc-app', network: targetNetwork, relayBase: null, gateway, now: new Date().toISOString() }
       )
     )
-  }, [deferredCids, results, relayBase, gateway, targetNetwork])
+  }, [deferredCids, results, gateway, targetNetwork])
 
   const retryDeferred = useCallback(async () => {
     if (wallet == null) return
@@ -1353,10 +1348,6 @@ export default function App({ caps }: { caps: Capabilities }) {
                   <span>Gateway</span>
                   <input onChange={(e) => setGateway(e.target.value)} spellCheck={false} value={gateway} />
                 </label>
-                <label className="field">
-                  <span>Redirect relay</span>
-                  <input onChange={(e) => setRelayBase(e.target.value)} spellCheck={false} value={relayBase} />
-                </label>
               </details>
               <div className="actions">
                 <button
@@ -1456,7 +1447,7 @@ export default function App({ caps }: { caps: Capabilities }) {
                 {pageCids.map((cid) => {
                   const state = store.getState(cid)
                   // Show the canonical CIDv1 once computed (a `Qm…` input is converted),
-                  // so the row reflects exactly what gets committed and relayed.
+                  // so the row reflects exactly what gets committed and pulled.
                   const view =
                     state.phase === 'done'
                       ? {

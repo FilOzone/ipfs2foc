@@ -24,7 +24,6 @@ export interface SavedRun {
   /** Rejected-line count from the file parse, restored for the intake summary. */
   fileInvalidCount?: number
   gateway: string
-  relayBase: string
   /** Completed pieces keyed by the CID string as the user entered it. */
   results: Record<string, PieceResult>
   updatedAt: string
