@@ -1,5 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { ByteCapNotice, CidCapNotice, FailureSummary, InvalidCidNote } from '../src/components/notices.tsx'
+import {
+  ByteCapNotice,
+  CidCapNotice,
+  FailureSummary,
+  InvalidCidNote,
+  LongRunAdvisory,
+} from '../src/components/notices.tsx'
 import { NO_WALLET_MESSAGE } from '../src/wallet.ts'
 import { HOSTED_LIMITS } from './fixtures.ts'
 
@@ -20,8 +26,12 @@ function BoundariesGallery() {
         <CidCapNotice count={2_159_085} limits={HOSTED_LIMITS} />
       </div>
       <div>
-        <p className="panel-note">Prepare: byte budget reached</p>
+        <p className="panel-note">Prepare: byte ceiling reached</p>
         <ByteCapNotice limits={HOSTED_LIMITS} />
+      </div>
+      <div>
+        <p className="panel-note">Prepare: long-run projection</p>
+        <LongRunAdvisory minutes={40} />
       </div>
       <div>
         <p className="panel-note">Prepare: failure rollup</p>

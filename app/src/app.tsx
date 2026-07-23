@@ -3,24 +3,23 @@ import type { Capabilities } from 'ipfs2foc-core/capabilities'
 import { explorerDataSetUrl, explorerPieceUrl } from 'ipfs2foc-core/pdp-verifier'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { trackOnce } from './analytics.ts'
-import { reportFunnelState } from './telemetry.ts'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
 import { dedupeCanonical, invalidCidStrings } from './cid-union.ts'
+import { computePiece, describePrepareFailure, type PreparePhase, stallMessage } from './commp.ts'
 import { Continuity, Led } from './components/continuity.tsx'
 import { fmtBytes, fmtEta, fmtExpiry, short } from './components/format.ts'
 import { Lede } from './components/lede.tsx'
-import { ByteCapNotice, CidCapNotice, FailureSummary, InvalidCidNote } from './components/notices.tsx'
+import { ByteCapNotice, CidCapNotice, FailureSummary, InvalidCidNote, LongRunAdvisory } from './components/notices.tsx'
 import { PieceRow } from './components/piece-row.tsx'
 import { SessionExpiryNote, SessionGrantExplainer } from './components/session-notes.tsx'
-import { computePiece, describePrepareFailure, type PreparePhase, stallMessage } from './commp.ts'
 import { FocMark } from './foc-mark.tsx'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
 import { fmtToken, type PaymentsStatus, RPC_URLS, readPaymentsStatus, readyToSign } from './payments.ts'
 import { createPrepareStore, type RowFilter } from './prepare-store.ts'
 import { discoverRootSources, type RootSources } from './provider-discovery.ts'
-import { chunkEtaSeconds, overByteCap, overCidCap, runLimits } from './run-limits.ts'
+import { chunkEtaSeconds, latchLongRun, overByteCap, overCidCap, runLimits } from './run-limits.ts'
 import { clearRun, clearSubmit, loadRun, loadSubmit, type SavedSubmit, saveRun, saveSubmit } from './run-store.ts'
 import {
   DEFAULT_SESSION_DURATION_SECONDS,
@@ -43,6 +42,7 @@ import {
   submitStateFromSaved,
 } from './submit.ts'
 import { useTabLifetime } from './tab-guard.ts'
+import { reportFunnelState } from './telemetry.ts'
 import { type VerifyResult, verifyDataSet } from './verify.ts'
 import {
   connectWallet,
@@ -902,9 +902,11 @@ export default function App({ caps }: { caps: Capabilities }) {
   // frozen one. Held back until there is enough signal to mean something.
   const processed = counts.done + counts.error
   const etaSamples = useRef<Array<{ t: number; n: number }>>([])
+  const longRunLatch = useRef(false)
   useEffect(() => {
     if (!running) {
       etaSamples.current = []
+      longRunLatch.current = false
       return
     }
     const now = performance.now()
@@ -922,8 +924,18 @@ export default function App({ caps }: { caps: Capabilities }) {
     if (elapsed < 15 || gained < 5) return null
     const rate = gained / elapsed
     const remaining = counts.queued + counts.working
-    return remaining > 0 ? { rate, text: fmtEta(remaining / rate) } : null
+    if (remaining <= 0) return null
+    const seconds = remaining / rate
+    return { rate, seconds, text: fmtEta(seconds) }
   })()
+  // Long-run note: latches the first time the projection crosses the
+  // threshold and stays for the rest of the run (see latchLongRun). The
+  // minutes figure keeps tracking the live estimate.
+  longRunLatch.current = latchLongRun(longRunLatch.current, eta?.seconds ?? null)
+  const longRun = running && longRunLatch.current
+  useEffect(() => {
+    if (longRun) trackOnce('cli-steer')
+  }, [longRun])
 
   // Submit ETA: committed chunks over time → time left for the rest. Chunks
   // land about a minute apart, so an estimate exists only after the second
@@ -1222,6 +1234,9 @@ export default function App({ caps }: { caps: Capabilities }) {
             </span>
           </div>
           {byteCapHit && limits != null && <ByteCapNotice limits={limits} />}
+          {longRun && limits != null && (
+            <LongRunAdvisory minutes={eta == null ? null : Math.max(1, Math.round(eta.seconds / 60))} />
+          )}
           {!running && errors > 0 && <FailureSummary errors={errors} total={counts.total} />}
           {/* The newest finished item only: one worked example, not a second
               table. Rendering it per row would double the table's width and
@@ -1590,7 +1605,8 @@ export default function App({ caps }: { caps: Capabilities }) {
                 >
                   local path
                 </a>
-                . Already migrated them elsewhere? Verify on chain above clears the ones the chain has.
+                . If any of these were already stored in this data set (an earlier run, another tool), click Verify on
+                chain in the provider row above: anything the chain already holds is removed from this list.
               </p>
               <div className="actions">
                 {session != null && (

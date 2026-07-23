@@ -1,9 +1,11 @@
 /**
- * Run ceilings for the hosted console, sized so a run finishes in under ten
- * minutes. Measured on the corpus behind #62: chunk commits are sequential
- * 32-piece AddPieces transactions at about a minute each including
- * confirmation, and the one measured provider pull ran 0.18 MiB/s. Re-measure
- * pull throughput before treating these as protocol facts.
+ * Run ceilings for the hosted console. The count cap protects the provider:
+ * every item is a proving-set entry the SP carries for the life of the data
+ * set. The byte ceiling sits at the piece/upload unit, one aggregate's worth;
+ * Curio parks a piece of at most about 1 GiB, so a run past this cannot ship
+ * as a single piece anyway. Wall-clock is not capped: the live estimate
+ * carries that instead, and a run projected past LONG_RUN_ADVISORY_SECONDS
+ * gets a non-blocking long-run note.
  *
  * A `serve` daemon (capabilities backend `local`) runs uncapped; the limits
  * bind only on the static hosted deployment. Larger sets belong on the CLI.
@@ -12,7 +14,7 @@
 import type { Capabilities } from 'ipfs2foc-core/capabilities'
 
 export const HOSTED_MAX_CIDS = 500
-export const HOSTED_MAX_RUN_BYTES = 100 * 1024 * 1024
+export const HOSTED_MAX_RUN_BYTES = 1024 * 1024 * 1024
 
 export interface RunLimits {
   maxCids: number
@@ -31,6 +33,19 @@ export function overCidCap(count: number, limits: RunLimits | null): boolean {
 
 export function overByteCap(preparedBytes: number, limits: RunLimits | null): boolean {
   return limits != null && preparedBytes > limits.maxBytes
+}
+
+/** A hosted run projected past this many seconds gets the long-run note. */
+export const LONG_RUN_ADVISORY_SECONDS = 10 * 60
+
+/**
+ * Latch for the long-run note: once a run's projection crosses the threshold
+ * the note stays up for the rest of the run, even if the estimate later dips
+ * back under it. A note that blinks in and out with the rate reads as a
+ * glitch, not advice.
+ */
+export function latchLongRun(latched: boolean, projectedSecondsLeft: number | null): boolean {
+  return latched || (projectedSecondsLeft != null && projectedSecondsLeft > LONG_RUN_ADVISORY_SECONDS)
 }
 
 /**

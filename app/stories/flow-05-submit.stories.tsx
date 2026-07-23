@@ -12,7 +12,9 @@ function SubmitPanel({ children, rows }: { children?: React.ReactNode; rows?: Re
       <div className="panel-head">
         <span className="panel-no is-current">04</span>
         <h2>Submit</h2>
-        <span className="panel-note">One on-chain commit per copy, signed by the session key without further prompts.</span>
+        <span className="panel-note">
+          One on-chain commit per copy, signed by the session key without further prompts.
+        </span>
       </div>
       {children}
       {rows != null && (
@@ -70,7 +72,9 @@ export const Committing: Story = {
 export const Done: Story = {
   args: {
     children: (
-      <p className="gate-note">Every copy is committed. Revoke the signing session above once you are done migrating.</p>
+      <p className="gate-note">
+        Every copy is committed. Revoke the signing session above once you are done migrating.
+      </p>
     ),
     rows: (
       <>
@@ -79,7 +83,10 @@ export const Done: Story = {
           <span className="mono dim">ezpdpz</span>
           <span className="ok-text">committed</span>
           <span className="mono dim">
-            #412 · 128 pieces <button className="btn small" type="button">Verify on chain</button>
+            #412 · 128 pieces{' '}
+            <button className="btn small" type="button">
+              Verify on chain
+            </button>
           </span>
         </div>
         <div className="trow submit-row">
@@ -87,7 +94,10 @@ export const Done: Story = {
           <span className="mono dim">#88</span>
           <span className="ok-text">committed</span>
           <span className="mono dim">
-            #97 · 128 pieces <button className="btn small" type="button">Verify on chain</button>
+            #97 · 128 pieces{' '}
+            <button className="btn small" type="button">
+              Verify on chain
+            </button>
           </span>
         </div>
       </>
@@ -117,8 +127,9 @@ export const DeferredHandoff: Story = {
         <p>
           3 pieces were skipped: the provider could not fetch them from their source after retries (the "check
           availability" links above show why). Everything else committed. If the source recovers, or you host the bytes
-          another way, retry here; otherwise the remainder manifest carries them to the local path. Already migrated
-          them elsewhere? Verify on chain above clears the ones the chain has.
+          another way, retry here; otherwise the remainder manifest carries them to the local path. If any of these were
+          already stored in this data set (an earlier run, another tool), click Verify on chain in the provider row
+          above: anything the chain already holds is removed from this list.
         </p>
         <div className="actions">
           <button className="btn small" type="button">

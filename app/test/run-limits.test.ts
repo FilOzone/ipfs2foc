@@ -12,6 +12,8 @@ import {
   chunkEtaSeconds,
   HOSTED_MAX_CIDS,
   HOSTED_MAX_RUN_BYTES,
+  LONG_RUN_ADVISORY_SECONDS,
+  latchLongRun,
   overByteCap,
   overCidCap,
   runLimits,
@@ -37,6 +39,23 @@ test('byte cap binds strictly above the ceiling', () => {
   assert.equal(overByteCap(HOSTED_MAX_RUN_BYTES, limits), false)
   assert.equal(overByteCap(HOSTED_MAX_RUN_BYTES + 1, limits), true)
   assert.equal(overByteCap(Number.MAX_SAFE_INTEGER, null), false)
+})
+
+test('byte ceiling sits at the piece/upload unit', () => {
+  // One aggregate's worth: Curio parks a piece of at most about 1 GiB.
+  assert.equal(HOSTED_MAX_RUN_BYTES, 1024 * 1024 * 1024)
+})
+
+test('long-run note latches at the threshold and never unlatches mid-run', () => {
+  // No estimate yet: nothing to latch on.
+  assert.equal(latchLongRun(false, null), false)
+  // At the threshold exactly: still under, no note.
+  assert.equal(latchLongRun(false, LONG_RUN_ADVISORY_SECONDS), false)
+  // Past it: latches.
+  assert.equal(latchLongRun(false, LONG_RUN_ADVISORY_SECONDS + 1), true)
+  // Once latched, a dip back under the threshold or a lost estimate keeps it.
+  assert.equal(latchLongRun(true, 30), true)
+  assert.equal(latchLongRun(true, null), true)
 })
 
 test('chunk ETA needs two samples and a commit between them', () => {

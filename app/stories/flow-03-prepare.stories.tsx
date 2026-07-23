@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { Continuity } from '../src/components/continuity.tsx'
-import { ByteCapNotice, FailureSummary } from '../src/components/notices.tsx'
+import { ByteCapNotice, FailureSummary, LongRunAdvisory } from '../src/components/notices.tsx'
 import { PieceRow, type PieceRowView } from '../src/components/piece-row.tsx'
 import {
   CIDS,
@@ -42,9 +42,7 @@ function PiecesPanel({
         <span className="panel-note">{note}</span>
       </div>
       {children}
-      {continuity && (
-        <Continuity cid={CIDS[0]} drawn={running} pieceCid={PIECE_CIDS[0]} size="4.44 MiB" />
-      )}
+      {continuity && <Continuity cid={CIDS[0]} drawn={running} pieceCid={PIECE_CIDS[0]} size="4.44 MiB" />}
       <div className="table">
         <div className="trow thead">
           <span>Your CID</span>
@@ -114,11 +112,20 @@ export const WithFailureSummary: Story = {
   },
 }
 
-/** The run hit the hosted byte budget; the remainder stays queued. */
+/** The run hit the hosted byte ceiling; the remainder stays queued. */
 export const ByteCapReached: Story = {
   args: {
     note: '312 ready',
     rows: [ROW_DONE, ROW_QUEUED],
     children: <ByteCapNotice limits={HOSTED_LIMITS} />,
+  },
+}
+
+/** The live estimate projects past ten minutes; the run keeps going. */
+export const LongRunProjected: Story = {
+  args: {
+    note: '38 ready · 0.8/s · about 40 minutes left',
+    rows: [ROW_DONE, ROW_WORKING, ROW_QUEUED],
+    children: <LongRunAdvisory minutes={40} />,
   },
 }

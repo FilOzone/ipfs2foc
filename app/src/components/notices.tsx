@@ -6,7 +6,7 @@
  */
 
 import type { RunLimits } from '../run-limits.ts'
-import { short } from './format.ts'
+import { fmtLimitBytes, short } from './format.ts'
 
 /** Pasted lines that do not parse as CIDs, called out at intake time. */
 export function InvalidCidNote({ invalid }: { invalid: string[] }) {
@@ -35,13 +35,30 @@ export function CidCapNotice({ limits, count }: { limits: RunLimits; count: numb
   )
 }
 
-/** The byte-cap notice during prepare: the run filled its size budget. */
+/** The byte-ceiling notice during prepare: the run filled one piece's worth. */
 export function ByteCapNotice({ limits }: { limits: RunLimits }) {
   return (
     <p aria-live="polite" className="err-text">
-      Prepared items reached this console&apos;s {Math.round(limits.maxBytes / (1024 * 1024))} MiB per-run limit, so the
-      rest of the list stayed queued. Migrate what is prepared, or run the full list from your machine with the CLI:{' '}
-      <code className="mono">npm i -g ipfs2foc</code>
+      Prepared items reached this console&apos;s {fmtLimitBytes(limits.maxBytes)} per-run ceiling (the most one run can
+      ship), so the rest of the list stayed queued. Migrate what is prepared, or run the full list from your machine
+      with the CLI: <code className="mono">npm i -g ipfs2foc</code>
+    </p>
+  )
+}
+
+/**
+ * The long-run note: the live estimate projects past the advisory threshold.
+ * Non-blocking; the run keeps going. `minutes` is the current projection, or
+ * null when the estimate has gone quiet since the note latched.
+ */
+export function LongRunAdvisory({ minutes }: { minutes: number | null }) {
+  return (
+    <p aria-live="polite" className="gate-note">
+      {minutes == null
+        ? 'This run is pacing past ten minutes here.'
+        : `This run looks like about ${minutes.toLocaleString()} minutes here.`}{' '}
+      Leaving it open is fine, and it resumes if the tab closes. The CLI handles long migrations better, with more
+      sources and longer retries: <code className="mono">npm i -g ipfs2foc</code>
     </p>
   )
 }

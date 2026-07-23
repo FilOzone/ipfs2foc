@@ -26,6 +26,13 @@ export function fmtBytes(n: number): string {
   return `${v.toFixed(2)} ${units[i]}`
 }
 
+/** A configured ceiling reads as a round figure: "1 GiB", "100 MiB". */
+export function fmtLimitBytes(n: number): string {
+  const gib = 1024 * 1024 * 1024
+  if (n % gib === 0) return `${n / gib} GiB`
+  return `${Math.round(n / (1024 * 1024))} MiB`
+}
+
 export function short(s: string, head = 10, tail = 6): string {
   return s.length <= head + tail + 1 ? s : `${s.slice(0, head)}…${s.slice(-tail)}`
 }
