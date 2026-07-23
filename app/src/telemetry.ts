@@ -19,6 +19,7 @@
  */
 
 import { analyticsEnabled, beaconOnce, trackOnce } from './analytics.ts'
+import type { FundingState } from './funding.ts'
 
 /** Coarse funnel position, ordered. Derived, not stored — the app reports
  * its state and the step falls out. */
@@ -115,6 +116,45 @@ export function reportFunnelState(s: FunnelSnapshot): void {
     lastStep = step
     if (step !== 'landed') recordStepMetric(step)
   }
+}
+
+const fundingSent = new Set<string>()
+
+/**
+ * Wallet-step blocker funnel: one event per funding state the operator
+ * reaches (which of wallet / FIL / USDFC / approval / signing stops people).
+ * Same transports as the step funnel — a Plausible event once per state per
+ * page load, and a BetterStack counter per transition.
+ */
+export function reportFundingState(state: FundingState | null): void {
+  if (state == null || !analyticsEnabled() || fundingSent.has(state)) return
+  fundingSent.add(state)
+  trackOnce(`funding-${state}`)
+  recordFundingMetric(state)
+}
+
+/** A grant was offered and the wallet interaction failed or was rejected. */
+export function reportSigningDeclined(): void {
+  if (!analyticsEnabled() || fundingSent.has('signing-declined')) return
+  fundingSent.add('signing-declined')
+  trackOnce('funding-signing-declined')
+  recordFundingMetric('signing-declined')
+}
+
+function recordFundingMetric(state: string): void {
+  if (METRICS_ENDPOINT == null || METRICS_TOKEN == null) return
+  const body = JSON.stringify([
+    { name: 'consoleFundingStep', counter: { value: 1 }, dt: new Date().toISOString(), tags: { state } },
+  ])
+  void fetch(METRICS_ENDPOINT, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${METRICS_TOKEN}`, 'Content-Type': 'application/json' },
+    body,
+    keepalive: true,
+    signal: AbortSignal.timeout(10_000),
+  }).catch(() => {
+    // Best effort: telemetry never surfaces to the operator.
+  })
 }
 
 /**
