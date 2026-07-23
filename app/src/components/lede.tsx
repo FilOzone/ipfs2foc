@@ -27,8 +27,9 @@ export function Lede({ limits }: { limits: RunLimits | null }) {
       <p className="lede-sub">
         {limits != null &&
           `A run here handles up to ${limits.maxCids.toLocaleString()} items, ${fmtLimitBytes(limits.maxBytes)} total. `}
-        You need a browser wallet extension holding USDFC (pays for storage) and a little FIL (pays gas). Bigger sets
-        run from your machine with the CLI: <code className="mono">npm i -g ipfs2foc</code>
+        You need a browser wallet extension holding USDFC (pays for storage) and a little FIL (pays gas). Preparation is
+        free. You see the cost before connecting anything. Bigger sets run from your machine with the CLI:{' '}
+        <code className="mono">npm i -g ipfs2foc</code>
       </p>
     </>
   )

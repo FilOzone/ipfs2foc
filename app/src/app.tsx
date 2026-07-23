@@ -9,6 +9,7 @@ import { dedupeCanonical, invalidCidStrings } from './cid-union.ts'
 import { computePiece, describePrepareFailure, type PreparePhase, stallMessage } from './commp.ts'
 import { Continuity, Led } from './components/continuity.tsx'
 import { fmtBytes, fmtEta, fmtExpiry, short } from './components/format.ts'
+import { HistoryChrome } from './components/history-chrome.tsx'
 import { Lede } from './components/lede.tsx'
 import {
   ByteCapNotice,
@@ -20,10 +21,18 @@ import {
 } from './components/notices.tsx'
 import { PieceRow } from './components/piece-row.tsx'
 import { SessionExpiryNote, SessionGrantExplainer } from './components/session-notes.tsx'
+import { deriveStage, estimateCostUsdfc, historyEntries, type Stage } from './flow.ts'
 import { FocMark } from './foc-mark.tsx'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
-import { fmtToken, type PaymentsStatus, RPC_URLS, readPaymentsStatus, readyToSign } from './payments.ts'
+import {
+  fmtToken,
+  type PaymentsStatus,
+  RPC_URLS,
+  readPaymentsStatus,
+  readStorageRate,
+  readyToSign,
+} from './payments.ts'
 import { createPrepareStore, type RowFilter } from './prepare-store.ts'
 import { discoverRootSources, type RootSources } from './provider-discovery.ts'
 import { chunkEtaSeconds, latchLongRun, overByteCap, overCidCap, runLimits } from './run-limits.ts'
@@ -201,6 +210,14 @@ export default function App({ caps }: { caps: Capabilities }) {
   const [submitBlocked, setSubmitBlocked] = useState<SubmitBlockedError['reason'] | null>(null)
   const [resumable, setResumable] = useState<SavedSubmit | null>(null)
   const [restored, setRestored] = useState(false)
+  // The one-active-step flow: the operator's two consent clicks, and which
+  // completed step (if any) the history chrome is peeking at.
+  const [reviewedPrepare, setReviewedPrepare] = useState(false)
+  const [costAccepted, setCostAccepted] = useState(false)
+  const [peek, setPeek] = useState<Stage | null>(null)
+  // The storage rate the cost gate estimates against; read lazily on entry.
+  const [rate, setRate] = useState<import('./flow.ts').StorageRate | null>(null)
+  const [rateError, setRateError] = useState<string | null>(null)
   // Writes are blocked until the restore attempt settles, so an early debounced
   // persist of the empty textarea cannot clobber a saved run.
   const hydrated = useRef(false)
@@ -340,6 +357,60 @@ export default function App({ caps }: { caps: Capabilities }) {
   const allCommitted =
     submitState != null && submitState.contexts.length > 0 && submitState.contexts.every((c) => c.phase === 'done')
 
+  // Which step owns the main column. A submit run (live or restored) keeps a
+  // returner at the submit step; the consent flags are implied then.
+  const submitStarted = submitState != null || resumable != null
+  const effectiveReviewed = reviewedPrepare || submitStarted
+  const effectiveAccepted = costAccepted || submitStarted
+  const canSign = wallet != null && onTargetNetwork && payments != null && readyToSign(payments) && session != null
+  const stage = deriveStage({
+    prepareStarted: counts.total > 0,
+    running,
+    preparedCount: results.length,
+    reviewedPrepare: effectiveReviewed,
+    costAccepted: effectiveAccepted,
+    canSign,
+    submitStarted,
+    allCommitted,
+  })
+  // A peek is a look back at a completed step; any real advance ends it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies(stage): the deps ARE the trigger — a stage change or the wallet becoming ready ends a peek.
+  // biome-ignore lint/correctness/useExhaustiveDependencies(canSign): same trigger.
+  useEffect(() => setPeek(null), [stage, canSign])
+  const shown: Stage = peek ?? stage
+
+  // Cost estimate: prepared bytes x copies against the service's rate. The
+  // rate is a public contract read, fetched once per network on gate entry.
+  const totalBytes = useMemo(() => results.reduce((sum, r) => sum + r.rawSize, 0), [results])
+  // biome-ignore lint/correctness/useExhaustiveDependencies(targetNetwork): a network switch invalidates the read rate.
+  useEffect(() => {
+    setRate(null)
+    setRateError(null)
+  }, [targetNetwork])
+  useEffect(() => {
+    if (stage !== 'cost' || rate != null || rateError != null) return
+    let stale = false
+    readStorageRate(targetNetwork)
+      .then((r) => {
+        if (!stale) setRate(r)
+      })
+      .catch((err) => {
+        if (!stale) setRateError(err instanceof Error ? err.message : String(err))
+      })
+    return () => {
+      stale = true
+    }
+  }, [stage, targetNetwork, rate, rateError])
+  const estimate = rate == null ? null : estimateCostUsdfc(totalBytes, copies, rate)
+  const costLabel = estimate == null || estimate === 0n ? null : `≈${fmtToken(estimate, 'USDFC')} / month`
+  const entries = historyEntries(stage, {
+    cidCount: counts.total > 0 ? counts.total : cids.length,
+    preparedCount: results.length,
+    prepareTotal: counts.total,
+    costLabel,
+    dataSetCount: (submitState?.contexts ?? []).filter((c) => c.dataSetId != null).length,
+  })
+
   // Funnel signals: who finishes a run, who gets pointed at the CLI. Both
   // no-op everywhere except the hosted production site (see analytics.ts).
   useEffect(() => {
@@ -358,10 +429,21 @@ export default function App({ caps }: { caps: Capabilities }) {
       preparedDone: counts.done,
       prepareTotal: counts.total,
       prepareErrors: counts.error,
+      costAccepted: effectiveAccepted,
       submitting,
       runCompleted: allCommitted,
     })
-  }, [cids.length, wallet, running, counts.done, counts.total, counts.error, submitting, allCommitted])
+  }, [
+    cids.length,
+    wallet,
+    running,
+    counts.done,
+    counts.total,
+    counts.error,
+    effectiveAccepted,
+    submitting,
+    allCommitted,
+  ])
 
   // Long runs: keep the screen awake and confirm accidental closes while
   // prepare or submit is in flight. Closing stays safe — both resume.
@@ -733,6 +815,9 @@ export default function App({ caps }: { caps: Capabilities }) {
 
   const run = useCallback(async () => {
     ranRef.current = true
+    setReviewedPrepare(false)
+    setCostAccepted(false)
+    setPeek(null)
     // Prune saved results for CIDs no longer in the input, then seed done rows
     // from the saved run — pieces are deterministic, so a saved result is final
     // and only the pending/failed CIDs go back through a worker.
@@ -787,6 +872,9 @@ export default function App({ caps }: { caps: Capabilities }) {
     setCidFile(null)
     setCidFileError(null)
     setRestored(false)
+    setReviewedPrepare(false)
+    setCostAccepted(false)
+    setPeek(null)
     setSubmitState(null)
     setResumable(null)
     setSubmitError(null)
@@ -984,7 +1072,740 @@ export default function App({ caps }: { caps: Capabilities }) {
             <span className="sub">Filecoin Onchain Cloud</span>
           </span>
         </div>
-        <div className={`net-badge ${isTestnet ? 'is-test' : ''}`}>
+      </header>
+
+      {shown === 'intake' && <Lede limits={limits} />}
+
+      <div className={`flow${entries.length === 0 ? ' no-hist' : ''}`} id="start">
+        <HistoryChrome active={stage} entries={entries} onPeek={setPeek} peek={peek} />
+        <div className="flow-main">
+          {shown === 'wallet' && (
+            <section className="panel">
+              <div className="panel-head">
+                <span className={`panel-no ${canSign ? 'is-done' : 'is-current'}`}>04</span>
+                <h2>Wallet &amp; funds</h2>
+                <span className="panel-note">
+                  {costLabel == null
+                    ? 'Nothing is stored without your approval.'
+                    : `${costLabel} · nothing is stored without your approval.`}
+                </span>
+              </div>
+              <div className="wallet-row">
+                {wallet == null ? (
+                  <button className="btn primary" onClick={connect} type="button">
+                    Connect wallet
+                  </button>
+                ) : (
+                  <div className="wallet-on">
+                    <Led color={onTargetNetwork ? 'var(--ok)' : 'var(--warn)'} on />
+                    <code className="addr">{short(wallet.address, 8, 6)}</code>
+                    <span className={`chip ${onTargetNetwork ? 'chip-ok' : 'chip-warn'}`}>
+                      {walletNetwork ? NETWORKS[walletNetwork].label : `chain ${wallet.chainId}`}
+                    </span>
+                    {!onTargetNetwork && (
+                      <>
+                        <button className="btn small" onClick={switchNet} type="button">
+                          Switch to {NETWORKS[targetNetwork].label}
+                        </button>
+                        <span className="hint">Needed only to submit. Preparing pieces works on any network.</span>
+                      </>
+                    )}
+                  </div>
+                )}
+                {walletError && <span className="err-text">{walletError}</span>}
+              </div>
+              {wallet != null && walletNetwork != null && (
+                <div className="pay-status">
+                  {paymentsLoading ? (
+                    <span className="dim">reading payment status…</span>
+                  ) : paymentsError == null ? (
+                    payments == null ? null : (
+                      <>
+                        <span className="pay-label">wallet</span>
+                        <span className="pay-value">
+                          {fmtToken(payments.fil, walletNetwork === 'calibration' ? 'tFIL' : 'FIL')} ·{' '}
+                          {fmtToken(payments.walletUsdfc, 'USDFC')}
+                        </span>
+                        <span className="pay-label">deposited</span>
+                        <span className="pay-value">
+                          {fmtToken(payments.depositedUsdfc, 'USDFC')} ({fmtToken(payments.availableUsdfc, 'USDFC')}{' '}
+                          available)
+                        </span>
+                        <span className="pay-label">storage operator</span>
+                        <span className="pay-value">
+                          <Led color={payments.operatorApproved ? 'var(--ok)' : 'var(--warn)'} on />{' '}
+                          {payments.operatorApproved ? 'approved' : 'not approved'}
+                        </span>
+                        {!readyToSign(payments) && (
+                          <span className="pay-setup">
+                            Signing needs a one-time payment setup: deposit USDFC into Filecoin Pay and approve the
+                            storage service as a payments operator. See the{' '}
+                            <a
+                              href="https://github.com/FilOzone/ipfs2foc#network-gas-and-payments"
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              setup guide
+                            </a>
+                          </span>
+                        )}
+                        {readyToSign(payments) && onTargetNetwork && (
+                          <>
+                            <span className="pay-label">signing session</span>
+                            {session == null ? (
+                              <span className="pay-value session-controls">
+                                <select
+                                  disabled={sessionBusy != null}
+                                  onChange={(e) => setSessionDuration(BigInt(e.target.value))}
+                                  value={sessionDuration.toString()}
+                                >
+                                  {SESSION_DURATIONS.map((d) => (
+                                    <option key={d.label} value={d.seconds.toString()}>
+                                      {d.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  className="btn small"
+                                  disabled={sessionBusy != null}
+                                  onClick={grant}
+                                  type="button"
+                                >
+                                  {sessionBusy ?? 'Enable signing'}
+                                </button>
+                              </span>
+                            ) : (
+                              <span className="pay-value session-controls">
+                                <Led color={sessionCanPresign(session) ? 'var(--ok)' : 'var(--warn)'} on />
+                                <span>
+                                  until {fmtExpiry(session.expiresAt)} ·{' '}
+                                  <code>{short(session.sessionAddress, 6, 4)}</code>
+                                </span>
+                                <button
+                                  className="btn small"
+                                  disabled={sessionBusy != null}
+                                  onClick={extend}
+                                  type="button"
+                                >
+                                  Extend +24h
+                                </button>
+                                <button
+                                  className="btn small"
+                                  disabled={sessionBusy != null}
+                                  onClick={revoke}
+                                  type="button"
+                                >
+                                  Revoke
+                                </button>
+                                {sessionBusy != null && <span className="dim">{sessionBusy}</span>}
+                              </span>
+                            )}
+                            {session == null ? (
+                              <SessionGrantExplainer
+                                availableLabel={fmtToken(payments.availableUsdfc, 'USDFC')}
+                                longWindow={sessionDuration > 86_400n}
+                              />
+                            ) : sessionCanPresign(session) ? null : (
+                              <SessionExpiryNote />
+                            )}
+                          </>
+                        )}
+                      </>
+                    )
+                  ) : (
+                    <span className="err-text" title={paymentsError}>
+                      payment status unavailable: {short(paymentsError, 48, 0)}
+                    </span>
+                  )}
+                  {sessionError != null && (
+                    <span className="err-text" title={sessionError}>
+                      session: {short(sessionError, 64, 0)}
+                    </span>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+
+          {shown === 'intake' && (
+            <section className="panel">
+              <div className="panel-head">
+                <span className={`panel-no ${counts.total > 0 ? 'is-done' : cids.length > 0 ? 'is-current' : ''}`}>
+                  01
+                </span>
+                <h2>CIDs</h2>
+                <span aria-live="polite" className="panel-note">
+                  {cids.length === 0 ? '' : `${cids.length.toLocaleString()} unique`}
+                </span>
+              </div>
+              <label className="input-label" htmlFor="cids">
+                The CIDs you want on Filecoin
+              </label>
+              <textarea
+                className="cid-input"
+                id="cids"
+                onChange={(e) => setCidsText(e.target.value)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  const file = e.dataTransfer.files[0]
+                  if (file == null) return
+                  e.preventDefault()
+                  void loadCidFile(file)
+                }}
+                placeholder={'bafybei…\nQm…  (CIDv0 or CIDv1, one per line)\nor drop a cids.txt file here'}
+                spellCheck={false}
+                value={cidsText}
+              />
+              <InvalidCidNote invalid={invalidPasted} />
+              <div className="file-intake">
+                <label className="btn small">
+                  {cidFileBusy ? 'Reading…' : 'Load cids.txt'}
+                  <input
+                    accept=".txt,.csv,text/plain"
+                    disabled={cidFileBusy || running}
+                    hidden
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      e.target.value = ''
+                      if (file != null) void loadCidFile(file)
+                    }}
+                    type="file"
+                  />
+                </label>
+                {cidFile != null && (
+                  <>
+                    <span className="panel-note">
+                      {cidFile.intake.cids.length.toLocaleString()} CIDs from {cidFile.name}
+                      {cidFile.intake.invalidCount > 0 &&
+                        ` · ${cidFile.intake.invalidCount.toLocaleString()} invalid line(s) skipped` +
+                          (cidFile.intake.invalidSamples.length > 0
+                            ? ` (first: line ${cidFile.intake.invalidSamples[0].line} "${cidFile.intake.invalidSamples[0].text}")`
+                            : '')}
+                    </span>
+                    <button className="btn small" disabled={running} onClick={clearCidFile} type="button">
+                      Remove file
+                    </button>
+                  </>
+                )}
+                {cidFileError != null && <span className="err-text">{cidFileError}</span>}
+              </div>
+              <details className="advanced">
+                <summary>Sources</summary>
+                <label className="field">
+                  <span>Gateway</span>
+                  <input onChange={(e) => setGateway(e.target.value)} spellCheck={false} value={gateway} />
+                </label>
+                <label className="field">
+                  <span>Redirect relay</span>
+                  <input onChange={(e) => setRelayBase(e.target.value)} spellCheck={false} value={relayBase} />
+                </label>
+              </details>
+              <div className="actions">
+                <button
+                  className="btn primary"
+                  disabled={running || cids.length === 0 || cidCapExceeded}
+                  onClick={run}
+                  type="button"
+                >
+                  {running
+                    ? 'Preparing…'
+                    : cids.length === 0
+                      ? 'Prepare'
+                      : `Prepare ${cids.length.toLocaleString()} item${cids.length === 1 ? '' : 's'}`}
+                </button>
+                {(cids.length > 0 || counts.total > 0) && (
+                  <button className="btn small" disabled={running} onClick={reset} type="button">
+                    Clear
+                  </button>
+                )}
+              </div>
+              {cidCapExceeded && limits != null && <CidCapNotice count={cids.length} limits={limits} />}
+            </section>
+          )}
+
+          {shown === 'prepare' && counts.total > 0 && (
+            <section className="panel">
+              <div className="panel-head">
+                <span className={`panel-no ${counts.done > 0 && !running ? 'is-done' : running ? 'is-current' : ''}`}>
+                  02
+                </span>
+                <h2>Pieces</h2>
+                {/* A prepare run reports for minutes to hours, so its counts are
+                announced rather than only painted. */}
+                <span aria-live="polite" className="panel-note">
+                  {counts.done.toLocaleString()} ready{errors > 0 ? ` · ${errors.toLocaleString()} failed` : ''}
+                  {eta == null ? '' : ` · ${eta.rate.toFixed(1)}/s · ${eta.text} left`}
+                  {restored ? ' · restored from your last visit' : ''}
+                </span>
+              </div>
+              {byteCapHit && limits != null && <ByteCapNotice limits={limits} />}
+              {longRun && limits != null && (
+                <LongRunAdvisory minutes={eta == null ? null : Math.max(1, Math.round(eta.seconds / 60))} />
+              )}
+              {!running && errors > 0 && <FailureSummary errors={errors} total={counts.total} />}
+              {/* The newest finished item only: one worked example, not a second
+              table. Rendering it per row would double the table's width and
+              its cost at the CID counts this tool targets. */}
+              {latest != null && (
+                <Continuity
+                  cid={latest.cid}
+                  drawn={running}
+                  key={latest.cid}
+                  pieceCid={latest.pieceCid}
+                  size={fmtBytes(latest.rawSize)}
+                />
+              )}
+              {/* The run at a glance, and the way to the rows that matter: each
+              count filters the table to its state. On a large run the
+              failures are the only rows anyone reads. */}
+              <fieldset aria-label="Filter the table by state" className="state-filter">
+                {ROW_FILTERS.map(({ key, label }) => {
+                  const count = key === 'all' ? counts.total : counts[key]
+                  return (
+                    <button
+                      aria-pressed={rowFilter === key}
+                      className={`btn small filter-chip ${rowFilter === key ? 'is-on' : ''} ${key === 'error' && count > 0 ? 'is-alert' : ''}`}
+                      disabled={key !== 'all' && count === 0 && rowFilter !== key}
+                      key={key}
+                      onClick={() => {
+                        setRowFilter(key)
+                        setRowPage(0)
+                      }}
+                      type="button"
+                    >
+                      {label} {count.toLocaleString()}
+                    </button>
+                  )
+                })}
+                {errors > 0 && !running && (
+                  <button className="btn small" onClick={() => void retryFailed()} type="button">
+                    Retry {errors.toLocaleString()} failed
+                  </button>
+                )}
+              </fieldset>
+              <div className="table">
+                <div className="trow thead">
+                  <span>Your CID</span>
+                  <span>Commitment</span>
+                  <span className="num">Size</span>
+                  <span>Source the provider reads</span>
+                </div>
+                {pageCids.length === 0 && (
+                  <div className="trow">
+                    <span className="dim">no items in this state right now</span>
+                  </div>
+                )}
+                {pageCids.map((cid) => {
+                  const state = store.getState(cid)
+                  // Show the canonical CIDv1 once computed (a `Qm…` input is converted),
+                  // so the row reflects exactly what gets committed and relayed.
+                  const view =
+                    state.phase === 'done'
+                      ? {
+                          phase: 'done' as const,
+                          cid: state.result.cid,
+                          pieceCid: state.result.pieceCid,
+                          rawSize: state.result.rawSize,
+                          sourceUrl: state.result.sourceUrl,
+                          gapFillCount: state.result.gapFillCount,
+                        }
+                      : state.phase === 'error'
+                        ? { phase: 'error' as const, cid, message: state.message, detail: state.detail }
+                        : state.phase === 'working'
+                          ? { phase: 'working' as const, cid, bytes: state.bytes, rate: state.rate }
+                          : { phase: 'queued' as const, cid }
+                  return (
+                    <PieceRow
+                      copied={copied === cid}
+                      errOpen={errOpen === cid}
+                      key={cid}
+                      onCancel={() => cancelOne(cid)}
+                      onCopy={() => {
+                        if (state.phase === 'done') copy(state.result.sourceUrl, cid)
+                      }}
+                      onRetry={() => void prepareOne(cid)}
+                      onToggleError={() => setErrOpen(errOpen === cid ? null : cid)}
+                      running={running}
+                      view={view}
+                    />
+                  )
+                })}
+              </div>
+              {filteredCids.length > pageSize && (
+                <div className="pager">
+                  <button
+                    className="btn small"
+                    disabled={page === 0}
+                    onClick={() => setRowPage(page - 1)}
+                    type="button"
+                  >
+                    ‹ Previous
+                  </button>
+                  <span className="panel-note">
+                    {(pageStart + 1).toLocaleString()}–{(pageStart + pageCids.length).toLocaleString()} of{' '}
+                    {filteredCids.length.toLocaleString()}
+                  </span>
+                  <button
+                    className="btn small"
+                    disabled={page >= pageCount - 1}
+                    onClick={() => setRowPage(page + 1)}
+                    type="button"
+                  >
+                    Next ›
+                  </button>
+                </div>
+              )}
+              {errors > 0 && (
+                <p className="gate-note">
+                  Finished rows are kept: Prepare and per-row retry recompute only what failed. Hover a failure for the
+                  full error; "check availability" shows whether the network can serve that CID at all.
+                </p>
+              )}
+              {!running && queuedCount > 0 && (
+                <p className="gate-note">
+                  {queuedCount.toLocaleString()} item{queuedCount === 1 ? '' : 's'} not prepared yet. Press Prepare to
+                  continue; it picks up exactly where the run stopped and never recomputes a finished row.
+                </p>
+              )}
+              {running && (
+                <p className="gate-note">
+                  Reloading is safe at any point: finished rows are restored from this browser and Prepare resumes the
+                  rest. A row that stops receiving bytes for {Math.round(STALL_TIMEOUT_MS / 60000)} minutes fails on its
+                  own and frees the worker; cancel does the same immediately.
+                </p>
+              )}
+              {results.length > 0 && (
+                <div className="actions">
+                  <button className="btn" onClick={saveManifest} type="button">
+                    Download run manifest ({results.length.toLocaleString()})
+                  </button>
+                  <span className="panel-note">
+                    The portable record of this run: pull URLs and commitments for the submit step.
+                  </span>
+                </div>
+              )}
+              {!running && !effectiveReviewed && submittable.eligible.length > 0 && (
+                <>
+                  <div className="actions">
+                    <button className="btn primary" onClick={() => setReviewedPrepare(true)} type="button">
+                      Review cost ({submittable.eligible.length.toLocaleString()} item
+                      {submittable.eligible.length === 1 ? '' : 's'})
+                    </button>
+                  </div>
+                  <p className="gate-note">Next: review cost, then approve in wallet.</p>
+                </>
+              )}
+            </section>
+          )}
+
+          {shown === 'cost' && (
+            <section className="panel">
+              <div className="panel-head">
+                <span className={`panel-no ${effectiveAccepted ? 'is-done' : 'is-current'}`}>03</span>
+                <h2>Cost</h2>
+                <span className="panel-note">Read from the storage service. Nothing is signed here.</span>
+              </div>
+              <p className="gate-note">
+                {results.length.toLocaleString()} of {counts.total.toLocaleString()} prepared
+                {errors > 0 ? ` · ${errors.toLocaleString()} need retry or the CLI` : ''}
+                {submittable.heldBack.length > 0
+                  ? ` · ${submittable.heldBack.length.toLocaleString()} held back until their stream reads complete`
+                  : ''}
+              </p>
+              <div className="actions">
+                <span className="session-controls">
+                  <span className="copies-label">Copies</span>
+                  <select
+                    disabled={submitting || resumable != null}
+                    onChange={(e) => setCopies(Number(e.target.value))}
+                    value={copies}
+                  >
+                    <option value={1}>1 (single provider)</option>
+                    <option value={2}>2 (primary + secondary)</option>
+                    <option value={3}>3 (primary + two secondaries)</option>
+                  </select>
+                </span>
+              </div>
+              {rate == null && rateError == null && <p className="gate-note">reading the current storage rate…</p>}
+              {rateError != null && (
+                <p className="err-text" title={rateError}>
+                  The rate read failed: {short(rateError, 64, 0)}. The wallet step shows balances before anything is
+                  signed.
+                </p>
+              )}
+              {estimate != null && (
+                <p className="gate-note">
+                  Estimated cost: ≈{fmtToken(estimate, 'USDFC')} per month for {copies} cop
+                  {copies === 1 ? 'y' : 'ies'} of {fmtBytes(totalBytes)}, billed while the data set stays funded. The
+                  exact rate is fixed when the data set is created.
+                </p>
+              )}
+              <div className="actions">
+                <button
+                  className="btn primary"
+                  disabled={submittable.eligible.length === 0}
+                  onClick={() => setCostAccepted(true)}
+                  type="button"
+                >
+                  Continue with {submittable.eligible.length.toLocaleString()} item
+                  {submittable.eligible.length === 1 ? '' : 's'}
+                </button>
+              </div>
+              <p className="gate-note">Next: approve in wallet.</p>
+            </section>
+          )}
+
+          {(shown === 'submit' || shown === 'receipt') && (results.length > 0 || submitState != null) && (
+            <section className="panel">
+              <div className="panel-head">
+                <span className={`panel-no ${allCommitted ? 'is-done' : submitting ? 'is-current' : ''}`}>05</span>
+                <h2>Submit</h2>
+                <span className="panel-note">
+                  One on-chain commit per copy, signed by the session key without further prompts.
+                </span>
+              </div>
+              {results.length === 0 ? (
+                <p className="gate-note">
+                  A previous run's submit state is shown below. Verify it against the chain at any time, or paste that
+                  run's CIDs above to resume submitting.
+                </p>
+              ) : canSign ? (
+                <>
+                  <div className="actions">
+                    <span className="panel-note">
+                      {copies} cop{copies === 1 ? 'y' : 'ies'}
+                      {costLabel == null ? '' : ` · ${costLabel}`}
+                    </span>
+                    <button
+                      className="btn primary"
+                      disabled={submitting || running || allCommitted}
+                      onClick={submit}
+                      type="button"
+                    >
+                      {submitting
+                        ? 'Submitting…'
+                        : allCommitted
+                          ? 'Submitted ✓'
+                          : resumable == null
+                            ? `Submit ${results.length.toLocaleString()} piece${results.length === 1 ? '' : 's'}`
+                            : 'Resume submit'}
+                    </button>
+                    {resumable != null && !submitting && (
+                      <button className="btn small" onClick={discardSubmit} type="button">
+                        Discard previous submit
+                      </button>
+                    )}
+                  </div>
+                  {resumable != null && !submitting && !allCommitted && (
+                    <p className="gate-note">
+                      A previous submit for these pieces is saved. Resume continues it without re-signing or
+                      re-submitting anything. Discard only forgets local progress; commits already submitted stay on
+                      chain.
+                    </p>
+                  )}
+                  {submitState != null && !submitState.persisted && (
+                    <p className="pay-setup">
+                      This browser is blocking storage, so progress cannot survive a reload. Keep this tab open until
+                      every copy reads committed.
+                    </p>
+                  )}
+                  {submitting && submitState?.persisted !== false && (
+                    <p className="gate-note">
+                      Providers pull and confirm on their own. Closing this tab only pauses new submissions. Progress is
+                      saved, and Resume continues exactly where it stopped.
+                    </p>
+                  )}
+                  {submittable.heldBack.length > 0 && (
+                    <p className="gate-note">
+                      {submittable.heldBack.length.toLocaleString()} piece
+                      {submittable.heldBack.length === 1 ? '' : 's'} held back from submit: their gateway CAR was
+                      incomplete during prepare (blocks recovered one by one), and the provider pulls that same CAR URL.
+                      Retry those rows; they join the submit once the stream comes back complete.
+                    </p>
+                  )}
+                  {submitError != null && (
+                    <p className="err-text" title={submitError}>
+                      {short(submitError, 120, 0)}
+                      {submitBlocked === 'session-margin' && (
+                        <>
+                          {' '}
+                          <button className="btn small" disabled={sessionBusy != null} onClick={extend} type="button">
+                            Extend session +24h
+                          </button>
+                        </>
+                      )}
+                    </p>
+                  )}
+                  {allCommitted && !submitting && (
+                    <p className="gate-note">
+                      Every copy is committed. Revoke the signing session above once you are done migrating.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="gate-note">
+                  Submitting needs the wallet step: a connected wallet on {NETWORKS[targetNetwork].label}, the one-time
+                  payment setup, and signing enabled.{' '}
+                  <button className="btn small" onClick={() => setPeek('wallet')} type="button">
+                    Open the wallet step
+                  </button>
+                </p>
+              )}
+              {submitState != null && submitState.contexts.length > 0 && (
+                <div className="table">
+                  <div className="trow thead submit-row">
+                    <span>Copy</span>
+                    <span>Provider</span>
+                    <span>Status</span>
+                    <span>Data set</span>
+                  </div>
+                  {submitState.contexts.map((c) => (
+                    <div className="trow submit-row" key={c.providerId}>
+                      <span className="dim">{c.role}</span>
+                      <span className="mono dim" title={c.serviceURL}>
+                        {c.providerName || `#${c.providerId}`}
+                      </span>
+                      {c.phase === 'failed' ? (
+                        <span className="err-text" title={c.error}>
+                          {short(c.error ?? 'failed', 36, 0)}
+                        </span>
+                      ) : (
+                        <span className={c.phase === 'done' ? 'ok-text' : 'working'}>
+                          {describeSubmitPhase(c)}
+                          {submitEtaFor(c)}
+                        </span>
+                      )}
+                      <span className="mono dim">
+                        {(() => {
+                          const txHash = [...c.chunks].reverse().find((ch) => ch.txHash != null)?.txHash
+                          return c.dataSetId == null
+                            ? txHash == null
+                              ? '—'
+                              : short(txHash, 10, 4)
+                            : `#${c.dataSetId} · ${c.pieceIds?.length ?? 0} piece${c.pieceIds?.length === 1 ? '' : 's'}`
+                        })()}
+                        {c.dataSetId != null && (
+                          <>
+                            {' '}
+                            <button
+                              className="btn small"
+                              disabled={submitting || verifying != null}
+                              onClick={() => void verifyContext(c.providerId)}
+                              type="button"
+                            >
+                              {verifying === c.providerId ? 'Verifying…' : 'Verify on chain'}
+                            </button>
+                          </>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {verifyError != null && <p className="err-text">{verifyError}</p>}
+              {submitState?.contexts.map((c) => {
+                const report = verifyReports[c.providerId]
+                if (report == null) return null
+                const { result, network, dataSetId, cleared } = report
+                const h = result.health
+                return (
+                  <div className="gate-note" key={`verify-${c.providerId}`}>
+                    <p>
+                      <a href={explorerDataSetUrl(network, dataSetId)} rel="noreferrer" target="_blank">
+                        Data set #{dataSetId}
+                      </a>{' '}
+                      on {network}, read from the chain just now: {h.live ? 'live' : 'DELETED'},{' '}
+                      {h.activePieceCount.toString()} active piece{h.activePieceCount === 1n ? '' : 's'} ·{' '}
+                      {result.found.size} of {result.found.size + result.missing.length} pieces from this run are on it.
+                      {cleared > 0 && (
+                        <>
+                          {' '}
+                          {cleared} previously-skipped piece{cleared === 1 ? ' is' : 's are'} actually committed, so the
+                          skipped state is cleared.
+                        </>
+                      )}
+                    </p>
+                    <p>
+                      {h.lastProvenEpoch == null
+                        ? 'The provider has not yet submitted a proof of possession for this data set.'
+                        : h.provenSinceAdd
+                          ? `Possession proven: the provider's last accepted proof (epoch ${h.lastProvenEpoch}) covers everything this run added.`
+                          : `The provider has proven possession (epoch ${h.lastProvenEpoch}), but not yet since this run's last add. The next proof will cover it.`}{' '}
+                      {h.inGoodStanding ? 'Proving deadline not missed.' : 'The next proving deadline has passed.'}
+                    </p>
+                    {result.missing.length > 0 && (
+                      <>
+                        <p>
+                          {result.missing.length} piece{result.missing.length === 1 ? '' : 's'} from this run{' '}
+                          {result.missing.length === 1 ? 'is' : 'are'} not on the data set under{' '}
+                          {result.missing.length === 1 ? 'its' : 'their'} own PieceCID. A piece migrated through the
+                          local packing path lives on chain under the packed piece's CID instead, which this page cannot
+                          match up. <code>ipfs2foc report</code> on the local database reconciles those.
+                        </p>
+                        <ul className="mono">
+                          {result.missing.slice(0, 8).map((p) => (
+                            <li key={p}>
+                              <a href={explorerPieceUrl(network, p)} rel="noreferrer" target="_blank">
+                                {short(p, 16, 8)}
+                              </a>
+                            </li>
+                          ))}
+                          {result.missing.length > 8 && <li>… and {result.missing.length - 8} more</li>}
+                        </ul>
+                      </>
+                    )}
+                    {result.unrecognized.length > 0 && (
+                      <p>
+                        The data set also holds {result.unrecognized.length} piece
+                        {result.unrecognized.length === 1 ? '' : 's'} this run did not prepare. Those are typically
+                        packed pieces committed from the local console against the same data set.
+                      </p>
+                    )}
+                  </div>
+                )
+              })}
+              {deferredCids.length > 0 && !submitting && (
+                <div className="gate-note">
+                  <p>
+                    {deferredCids.length} piece{deferredCids.length === 1 ? ' was' : 's were'} skipped: the provider
+                    could not fetch them from their source after retries (the "check availability" links above show
+                    why). Everything else committed. If the source recovers, or you host the bytes another way, retry
+                    here; otherwise the remainder manifest carries them to the{' '}
+                    <a
+                      href="https://github.com/FilOzone/ipfs2foc/blob/main/docs/local-console.md"
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      local path
+                    </a>
+                    . If any of these were already stored in this data set (an earlier run, another tool), click Verify
+                    on chain in the provider row above: anything the chain already holds is removed from this list.
+                  </p>
+                  <div className="actions">
+                    {session != null && (
+                      <button className="btn small" onClick={() => void retryDeferred()} type="button">
+                        Retry the skipped piece{deferredCids.length === 1 ? '' : 's'}
+                      </button>
+                    )}
+                    {results.length > 0 && (
+                      <button className="btn small" onClick={saveDeferredManifest} type="button">
+                        Download manifest of the skipped piece{deferredCids.length === 1 ? '' : 's'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+        </div>
+      </div>
+
+      <footer className="foot">
+        <span>
+          Every commitment is computed in this tab from blocks it hash-checks itself, so a gateway cannot hand you the
+          wrong bytes without the run failing.
+        </span>
+        <span className={`net-badge ${isTestnet ? 'is-test' : ''}`}>
           <Led color={isTestnet ? 'var(--alert)' : 'var(--accent)'} on />
           <label htmlFor="network">
             <span className="sr-only">Network</span>
@@ -1002,640 +1823,9 @@ export default function App({ caps }: { caps: Capabilities }) {
               </option>
             ))}
           </select>
-        </div>
-      </header>
-
-      <Lede limits={limits} />
-
-      <section className="panel" id="start">
-        <div className="panel-head">
-          <span className={`panel-no ${wallet == null ? 'is-current' : 'is-done'}`}>01</span>
-          <h2>Wallet</h2>
-          <span className="panel-note">Nothing is signed in this step.</span>
-        </div>
-        <div className="wallet-row">
-          {wallet == null ? (
-            <button className="btn primary" onClick={connect} type="button">
-              Connect wallet
-            </button>
-          ) : (
-            <div className="wallet-on">
-              <Led color={onTargetNetwork ? 'var(--ok)' : 'var(--warn)'} on />
-              <code className="addr">{short(wallet.address, 8, 6)}</code>
-              <span className={`chip ${onTargetNetwork ? 'chip-ok' : 'chip-warn'}`}>
-                {walletNetwork ? NETWORKS[walletNetwork].label : `chain ${wallet.chainId}`}
-              </span>
-              {!onTargetNetwork && (
-                <>
-                  <button className="btn small" onClick={switchNet} type="button">
-                    Switch to {NETWORKS[targetNetwork].label}
-                  </button>
-                  <span className="hint">Needed only to submit. Preparing pieces works on any network.</span>
-                </>
-              )}
-            </div>
-          )}
-          {walletError && <span className="err-text">{walletError}</span>}
-        </div>
-        {wallet != null && walletNetwork != null && (
-          <div className="pay-status">
-            {paymentsLoading ? (
-              <span className="dim">reading payment status…</span>
-            ) : paymentsError == null ? (
-              payments == null ? null : (
-                <>
-                  <span className="pay-label">wallet</span>
-                  <span className="pay-value">
-                    {fmtToken(payments.fil, walletNetwork === 'calibration' ? 'tFIL' : 'FIL')} ·{' '}
-                    {fmtToken(payments.walletUsdfc, 'USDFC')}
-                  </span>
-                  <span className="pay-label">deposited</span>
-                  <span className="pay-value">
-                    {fmtToken(payments.depositedUsdfc, 'USDFC')} ({fmtToken(payments.availableUsdfc, 'USDFC')}{' '}
-                    available)
-                  </span>
-                  <span className="pay-label">storage operator</span>
-                  <span className="pay-value">
-                    <Led color={payments.operatorApproved ? 'var(--ok)' : 'var(--warn)'} on />{' '}
-                    {payments.operatorApproved ? 'approved' : 'not approved'}
-                  </span>
-                  {!readyToSign(payments) && (
-                    <span className="pay-setup">
-                      Signing needs a one-time payment setup: deposit USDFC into Filecoin Pay and approve the storage
-                      service as a payments operator. See the{' '}
-                      <a
-                        href="https://github.com/FilOzone/ipfs2foc#network-gas-and-payments"
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        setup guide
-                      </a>
-                    </span>
-                  )}
-                  {readyToSign(payments) && onTargetNetwork && (
-                    <>
-                      <span className="pay-label">signing session</span>
-                      {session == null ? (
-                        <span className="pay-value session-controls">
-                          <select
-                            disabled={sessionBusy != null}
-                            onChange={(e) => setSessionDuration(BigInt(e.target.value))}
-                            value={sessionDuration.toString()}
-                          >
-                            {SESSION_DURATIONS.map((d) => (
-                              <option key={d.label} value={d.seconds.toString()}>
-                                {d.label}
-                              </option>
-                            ))}
-                          </select>
-                          <button className="btn small" disabled={sessionBusy != null} onClick={grant} type="button">
-                            {sessionBusy ?? 'Enable signing'}
-                          </button>
-                        </span>
-                      ) : (
-                        <span className="pay-value session-controls">
-                          <Led color={sessionCanPresign(session) ? 'var(--ok)' : 'var(--warn)'} on />
-                          <span>
-                            until {fmtExpiry(session.expiresAt)} · <code>{short(session.sessionAddress, 6, 4)}</code>
-                          </span>
-                          <button className="btn small" disabled={sessionBusy != null} onClick={extend} type="button">
-                            Extend +24h
-                          </button>
-                          <button className="btn small" disabled={sessionBusy != null} onClick={revoke} type="button">
-                            Revoke
-                          </button>
-                          {sessionBusy != null && <span className="dim">{sessionBusy}</span>}
-                        </span>
-                      )}
-                      {session == null ? (
-                        <SessionGrantExplainer
-                          availableLabel={fmtToken(payments.availableUsdfc, 'USDFC')}
-                          longWindow={sessionDuration > 86_400n}
-                        />
-                      ) : sessionCanPresign(session) ? null : (
-                        <SessionExpiryNote />
-                      )}
-                    </>
-                  )}
-                </>
-              )
-            ) : (
-              <span className="err-text" title={paymentsError}>
-                payment status unavailable: {short(paymentsError, 48, 0)}
-              </span>
-            )}
-            {sessionError != null && (
-              <span className="err-text" title={sessionError}>
-                session: {short(sessionError, 64, 0)}
-              </span>
-            )}
-          </div>
-        )}
-      </section>
-
-      <section className="panel">
-        <div className="panel-head">
-          <span className={`panel-no ${counts.total > 0 ? 'is-done' : cids.length > 0 ? 'is-current' : ''}`}>02</span>
-          <h2>CIDs</h2>
-          <span aria-live="polite" className="panel-note">
-            {cids.length === 0 ? '' : `${cids.length.toLocaleString()} unique`}
-          </span>
-        </div>
-        <label className="input-label" htmlFor="cids">
-          The CIDs you want on Filecoin
-        </label>
-        <textarea
-          className="cid-input"
-          id="cids"
-          onChange={(e) => setCidsText(e.target.value)}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            const file = e.dataTransfer.files[0]
-            if (file == null) return
-            e.preventDefault()
-            void loadCidFile(file)
-          }}
-          placeholder={'bafybei…\nQm…  (CIDv0 or CIDv1, one per line)\nor drop a cids.txt file here'}
-          spellCheck={false}
-          value={cidsText}
-        />
-        <InvalidCidNote invalid={invalidPasted} />
-        <div className="file-intake">
-          <label className="btn small">
-            {cidFileBusy ? 'Reading…' : 'Load cids.txt'}
-            <input
-              accept=".txt,.csv,text/plain"
-              disabled={cidFileBusy || running}
-              hidden
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                e.target.value = ''
-                if (file != null) void loadCidFile(file)
-              }}
-              type="file"
-            />
-          </label>
-          {cidFile != null && (
-            <>
-              <span className="panel-note">
-                {cidFile.intake.cids.length.toLocaleString()} CIDs from {cidFile.name}
-                {cidFile.intake.invalidCount > 0 &&
-                  ` · ${cidFile.intake.invalidCount.toLocaleString()} invalid line(s) skipped` +
-                    (cidFile.intake.invalidSamples.length > 0
-                      ? ` (first: line ${cidFile.intake.invalidSamples[0].line} "${cidFile.intake.invalidSamples[0].text}")`
-                      : '')}
-              </span>
-              <button className="btn small" disabled={running} onClick={clearCidFile} type="button">
-                Remove file
-              </button>
-            </>
-          )}
-          {cidFileError != null && <span className="err-text">{cidFileError}</span>}
-        </div>
-        <details className="advanced">
-          <summary>Sources</summary>
-          <label className="field">
-            <span>Gateway</span>
-            <input onChange={(e) => setGateway(e.target.value)} spellCheck={false} value={gateway} />
-          </label>
-          <label className="field">
-            <span>Redirect relay</span>
-            <input onChange={(e) => setRelayBase(e.target.value)} spellCheck={false} value={relayBase} />
-          </label>
-        </details>
-        <div className="actions">
-          <button
-            className="btn primary"
-            disabled={running || cids.length === 0 || cidCapExceeded}
-            onClick={run}
-            type="button"
-          >
-            {running
-              ? 'Preparing…'
-              : cids.length === 0
-                ? 'Prepare'
-                : `Prepare ${cids.length.toLocaleString()} item${cids.length === 1 ? '' : 's'}`}
-          </button>
-          {(cids.length > 0 || counts.total > 0) && (
-            <button className="btn small" disabled={running} onClick={reset} type="button">
-              Clear
-            </button>
-          )}
-        </div>
-        {cidCapExceeded && limits != null && <CidCapNotice count={cids.length} limits={limits} />}
-      </section>
-
-      {counts.total > 0 && (
-        <section className="panel">
-          <div className="panel-head">
-            <span className={`panel-no ${counts.done > 0 && !running ? 'is-done' : running ? 'is-current' : ''}`}>
-              03
-            </span>
-            <h2>Pieces</h2>
-            {/* A prepare run reports for minutes to hours, so its counts are
-                announced rather than only painted. */}
-            <span aria-live="polite" className="panel-note">
-              {counts.done.toLocaleString()} ready{errors > 0 ? ` · ${errors.toLocaleString()} failed` : ''}
-              {eta == null ? '' : ` · ${eta.rate.toFixed(1)}/s · ${eta.text} left`}
-              {restored ? ' · restored from your last visit' : ''}
-            </span>
-          </div>
-          {byteCapHit && limits != null && <ByteCapNotice limits={limits} />}
-          {longRun && limits != null && (
-            <LongRunAdvisory minutes={eta == null ? null : Math.max(1, Math.round(eta.seconds / 60))} />
-          )}
-          {!running && errors > 0 && <FailureSummary errors={errors} total={counts.total} />}
-          {/* The newest finished item only: one worked example, not a second
-              table. Rendering it per row would double the table's width and
-              its cost at the CID counts this tool targets. */}
-          {latest != null && (
-            <Continuity
-              cid={latest.cid}
-              drawn={running}
-              key={latest.cid}
-              pieceCid={latest.pieceCid}
-              size={fmtBytes(latest.rawSize)}
-            />
-          )}
-          {/* The run at a glance, and the way to the rows that matter: each
-              count filters the table to its state. On a large run the
-              failures are the only rows anyone reads. */}
-          <fieldset aria-label="Filter the table by state" className="state-filter">
-            {ROW_FILTERS.map(({ key, label }) => {
-              const count = key === 'all' ? counts.total : counts[key]
-              return (
-                <button
-                  aria-pressed={rowFilter === key}
-                  className={`btn small filter-chip ${rowFilter === key ? 'is-on' : ''} ${key === 'error' && count > 0 ? 'is-alert' : ''}`}
-                  disabled={key !== 'all' && count === 0 && rowFilter !== key}
-                  key={key}
-                  onClick={() => {
-                    setRowFilter(key)
-                    setRowPage(0)
-                  }}
-                  type="button"
-                >
-                  {label} {count.toLocaleString()}
-                </button>
-              )
-            })}
-            {errors > 0 && !running && (
-              <button className="btn small" onClick={() => void retryFailed()} type="button">
-                Retry {errors.toLocaleString()} failed
-              </button>
-            )}
-          </fieldset>
-          <div className="table">
-            <div className="trow thead">
-              <span>Your CID</span>
-              <span>Commitment</span>
-              <span className="num">Size</span>
-              <span>Source the provider reads</span>
-            </div>
-            {pageCids.length === 0 && (
-              <div className="trow">
-                <span className="dim">no items in this state right now</span>
-              </div>
-            )}
-            {pageCids.map((cid) => {
-              const state = store.getState(cid)
-              // Show the canonical CIDv1 once computed (a `Qm…` input is converted),
-              // so the row reflects exactly what gets committed and relayed.
-              const view =
-                state.phase === 'done'
-                  ? {
-                      phase: 'done' as const,
-                      cid: state.result.cid,
-                      pieceCid: state.result.pieceCid,
-                      rawSize: state.result.rawSize,
-                      sourceUrl: state.result.sourceUrl,
-                      gapFillCount: state.result.gapFillCount,
-                    }
-                  : state.phase === 'error'
-                    ? { phase: 'error' as const, cid, message: state.message, detail: state.detail }
-                    : state.phase === 'working'
-                      ? { phase: 'working' as const, cid, bytes: state.bytes, rate: state.rate }
-                      : { phase: 'queued' as const, cid }
-              return (
-                <PieceRow
-                  copied={copied === cid}
-                  errOpen={errOpen === cid}
-                  key={cid}
-                  onCancel={() => cancelOne(cid)}
-                  onCopy={() => {
-                    if (state.phase === 'done') copy(state.result.sourceUrl, cid)
-                  }}
-                  onRetry={() => void prepareOne(cid)}
-                  onToggleError={() => setErrOpen(errOpen === cid ? null : cid)}
-                  running={running}
-                  view={view}
-                />
-              )
-            })}
-          </div>
-          {filteredCids.length > pageSize && (
-            <div className="pager">
-              <button className="btn small" disabled={page === 0} onClick={() => setRowPage(page - 1)} type="button">
-                ‹ Previous
-              </button>
-              <span className="panel-note">
-                {(pageStart + 1).toLocaleString()}–{(pageStart + pageCids.length).toLocaleString()} of{' '}
-                {filteredCids.length.toLocaleString()}
-              </span>
-              <button
-                className="btn small"
-                disabled={page >= pageCount - 1}
-                onClick={() => setRowPage(page + 1)}
-                type="button"
-              >
-                Next ›
-              </button>
-            </div>
-          )}
-          {errors > 0 && (
-            <p className="gate-note">
-              Finished rows are kept: Prepare and per-row retry recompute only what failed. Hover a failure for the full
-              error; "check availability" shows whether the network can serve that CID at all.
-            </p>
-          )}
-          {!running && queuedCount > 0 && (
-            <p className="gate-note">
-              {queuedCount.toLocaleString()} item{queuedCount === 1 ? '' : 's'} not prepared yet. Press Prepare to
-              continue; it picks up exactly where the run stopped and never recomputes a finished row.
-            </p>
-          )}
-          {running && (
-            <p className="gate-note">
-              Reloading is safe at any point: finished rows are restored from this browser and Prepare resumes the rest.
-              A row that stops receiving bytes for {Math.round(STALL_TIMEOUT_MS / 60000)} minutes fails on its own and
-              frees the worker; cancel does the same immediately.
-            </p>
-          )}
-          {results.length > 0 && (
-            <div className="actions">
-              <button className="btn" onClick={saveManifest} type="button">
-                Download run manifest ({results.length.toLocaleString()})
-              </button>
-              <span className="panel-note">
-                The portable record of this run: pull URLs and commitments for the submit step.
-              </span>
-            </div>
-          )}
-        </section>
-      )}
-
-      {(results.length > 0 || submitState != null) && (
-        <section className="panel">
-          <div className="panel-head">
-            <span className={`panel-no ${allCommitted ? 'is-done' : submitting ? 'is-current' : ''}`}>04</span>
-            <h2>Submit</h2>
-            <span className="panel-note">
-              One on-chain commit per copy, signed by the session key without further prompts.
-            </span>
-          </div>
-          {results.length === 0 ? (
-            <p className="gate-note">
-              A previous run's submit state is shown below. Verify it against the chain at any time, or paste that run's
-              CIDs above to resume submitting.
-            </p>
-          ) : wallet == null || !onTargetNetwork ? (
-            <p className="gate-note">Connect a wallet on {NETWORKS[targetNetwork].label} above to submit.</p>
-          ) : payments == null || !readyToSign(payments) ? (
-            <p className="gate-note">Finish the one-time payment setup above to submit.</p>
-          ) : session == null ? (
-            <p className="gate-note">Enable signing above to submit.</p>
-          ) : (
-            <>
-              <div className="actions">
-                <span className="session-controls">
-                  <span className="copies-label">Copies</span>
-                  <select
-                    disabled={submitting || resumable != null}
-                    onChange={(e) => setCopies(Number(e.target.value))}
-                    value={copies}
-                  >
-                    <option value={1}>1 (single provider)</option>
-                    <option value={2}>2 (primary + secondary)</option>
-                    <option value={3}>3 (primary + two secondaries)</option>
-                  </select>
-                </span>
-                <button
-                  className="btn primary"
-                  disabled={submitting || running || allCommitted}
-                  onClick={submit}
-                  type="button"
-                >
-                  {submitting
-                    ? 'Submitting…'
-                    : allCommitted
-                      ? 'Submitted ✓'
-                      : resumable == null
-                        ? `Submit ${results.length.toLocaleString()} piece${results.length === 1 ? '' : 's'}`
-                        : 'Resume submit'}
-                </button>
-                {resumable != null && !submitting && (
-                  <button className="btn small" onClick={discardSubmit} type="button">
-                    Discard previous submit
-                  </button>
-                )}
-              </div>
-              {resumable != null && !submitting && !allCommitted && (
-                <p className="gate-note">
-                  A previous submit for these pieces is saved. Resume continues it without re-signing or re-submitting
-                  anything. Discard only forgets local progress; commits already submitted stay on chain.
-                </p>
-              )}
-              {submitState != null && !submitState.persisted && (
-                <p className="pay-setup">
-                  This browser is blocking storage, so progress cannot survive a reload. Keep this tab open until every
-                  copy reads committed.
-                </p>
-              )}
-              {submitting && submitState?.persisted !== false && (
-                <p className="gate-note">
-                  Providers pull and confirm on their own. Closing this tab only pauses new submissions. Progress is
-                  saved, and Resume continues exactly where it stopped.
-                </p>
-              )}
-              {submittable.heldBack.length > 0 && (
-                <p className="gate-note">
-                  {submittable.heldBack.length.toLocaleString()} piece
-                  {submittable.heldBack.length === 1 ? '' : 's'} held back from submit: their gateway CAR was incomplete
-                  during prepare (blocks recovered one by one), and the provider pulls that same CAR URL. Retry those
-                  rows; they join the submit once the stream comes back complete.
-                </p>
-              )}
-              {submitError != null && (
-                <p className="err-text" title={submitError}>
-                  {short(submitError, 120, 0)}
-                  {submitBlocked === 'session-margin' && (
-                    <>
-                      {' '}
-                      <button className="btn small" disabled={sessionBusy != null} onClick={extend} type="button">
-                        Extend session +24h
-                      </button>
-                    </>
-                  )}
-                </p>
-              )}
-              {allCommitted && !submitting && (
-                <p className="gate-note">
-                  Every copy is committed. Revoke the signing session above once you are done migrating.
-                </p>
-              )}
-            </>
-          )}
-          {submitState != null && submitState.contexts.length > 0 && (
-            <div className="table">
-              <div className="trow thead submit-row">
-                <span>Copy</span>
-                <span>Provider</span>
-                <span>Status</span>
-                <span>Data set</span>
-              </div>
-              {submitState.contexts.map((c) => (
-                <div className="trow submit-row" key={c.providerId}>
-                  <span className="dim">{c.role}</span>
-                  <span className="mono dim" title={c.serviceURL}>
-                    {c.providerName || `#${c.providerId}`}
-                  </span>
-                  {c.phase === 'failed' ? (
-                    <span className="err-text" title={c.error}>
-                      {short(c.error ?? 'failed', 36, 0)}
-                    </span>
-                  ) : (
-                    <span className={c.phase === 'done' ? 'ok-text' : 'working'}>
-                      {describeSubmitPhase(c)}
-                      {submitEtaFor(c)}
-                    </span>
-                  )}
-                  <span className="mono dim">
-                    {(() => {
-                      const txHash = [...c.chunks].reverse().find((ch) => ch.txHash != null)?.txHash
-                      return c.dataSetId == null
-                        ? txHash == null
-                          ? '—'
-                          : short(txHash, 10, 4)
-                        : `#${c.dataSetId} · ${c.pieceIds?.length ?? 0} piece${c.pieceIds?.length === 1 ? '' : 's'}`
-                    })()}
-                    {c.dataSetId != null && (
-                      <>
-                        {' '}
-                        <button
-                          className="btn small"
-                          disabled={submitting || verifying != null}
-                          onClick={() => void verifyContext(c.providerId)}
-                          type="button"
-                        >
-                          {verifying === c.providerId ? 'Verifying…' : 'Verify on chain'}
-                        </button>
-                      </>
-                    )}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          {verifyError != null && <p className="err-text">{verifyError}</p>}
-          {submitState?.contexts.map((c) => {
-            const report = verifyReports[c.providerId]
-            if (report == null) return null
-            const { result, network, dataSetId, cleared } = report
-            const h = result.health
-            return (
-              <div className="gate-note" key={`verify-${c.providerId}`}>
-                <p>
-                  <a href={explorerDataSetUrl(network, dataSetId)} rel="noreferrer" target="_blank">
-                    Data set #{dataSetId}
-                  </a>{' '}
-                  on {network}, read from the chain just now: {h.live ? 'live' : 'DELETED'},{' '}
-                  {h.activePieceCount.toString()} active piece{h.activePieceCount === 1n ? '' : 's'} ·{' '}
-                  {result.found.size} of {result.found.size + result.missing.length} pieces from this run are on it.
-                  {cleared > 0 && (
-                    <>
-                      {' '}
-                      {cleared} previously-skipped piece{cleared === 1 ? ' is' : 's are'} actually committed, so the
-                      skipped state is cleared.
-                    </>
-                  )}
-                </p>
-                <p>
-                  {h.lastProvenEpoch == null
-                    ? 'The provider has not yet submitted a proof of possession for this data set.'
-                    : h.provenSinceAdd
-                      ? `Possession proven: the provider's last accepted proof (epoch ${h.lastProvenEpoch}) covers everything this run added.`
-                      : `The provider has proven possession (epoch ${h.lastProvenEpoch}), but not yet since this run's last add. The next proof will cover it.`}{' '}
-                  {h.inGoodStanding ? 'Proving deadline not missed.' : 'The next proving deadline has passed.'}
-                </p>
-                {result.missing.length > 0 && (
-                  <>
-                    <p>
-                      {result.missing.length} piece{result.missing.length === 1 ? '' : 's'} from this run{' '}
-                      {result.missing.length === 1 ? 'is' : 'are'} not on the data set under{' '}
-                      {result.missing.length === 1 ? 'its' : 'their'} own PieceCID. A piece migrated through the local
-                      packing path lives on chain under the packed piece's CID instead, which this page cannot match up.{' '}
-                      <code>ipfs2foc report</code> on the local database reconciles those.
-                    </p>
-                    <ul className="mono">
-                      {result.missing.slice(0, 8).map((p) => (
-                        <li key={p}>
-                          <a href={explorerPieceUrl(network, p)} rel="noreferrer" target="_blank">
-                            {short(p, 16, 8)}
-                          </a>
-                        </li>
-                      ))}
-                      {result.missing.length > 8 && <li>… and {result.missing.length - 8} more</li>}
-                    </ul>
-                  </>
-                )}
-                {result.unrecognized.length > 0 && (
-                  <p>
-                    The data set also holds {result.unrecognized.length} piece
-                    {result.unrecognized.length === 1 ? '' : 's'} this run did not prepare. Those are typically packed
-                    pieces committed from the local console against the same data set.
-                  </p>
-                )}
-              </div>
-            )
-          })}
-          {deferredCids.length > 0 && !submitting && (
-            <div className="gate-note">
-              <p>
-                {deferredCids.length} piece{deferredCids.length === 1 ? ' was' : 's were'} skipped: the provider could
-                not fetch them from their source after retries (the "check availability" links above show why).
-                Everything else committed. If the source recovers, or you host the bytes another way, retry here;
-                otherwise the remainder manifest carries them to the{' '}
-                <a
-                  href="https://github.com/FilOzone/ipfs2foc/blob/main/docs/local-console.md"
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  local path
-                </a>
-                . If any of these were already stored in this data set (an earlier run, another tool), click Verify on
-                chain in the provider row above: anything the chain already holds is removed from this list.
-              </p>
-              <div className="actions">
-                {session != null && (
-                  <button className="btn small" onClick={() => void retryDeferred()} type="button">
-                    Retry the skipped piece{deferredCids.length === 1 ? '' : 's'}
-                  </button>
-                )}
-                {results.length > 0 && (
-                  <button className="btn small" onClick={saveDeferredManifest} type="button">
-                    Download manifest of the skipped piece{deferredCids.length === 1 ? '' : 's'}
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-        </section>
-      )}
-
-      <footer className="foot">
+        </span>
         <span>
-          Every commitment is computed in this tab from blocks it hash-checks itself, so a gateway cannot hand you the
-          wrong bytes without the run failing.
+          CLI: <code className="mono">npm i -g ipfs2foc</code>
         </span>
         <a href="https://github.com/FilOzone/ipfs2foc" rel="noreferrer" target="_blank">
           FilOzone/ipfs2foc

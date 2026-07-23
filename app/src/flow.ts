@@ -89,7 +89,8 @@ export function historyEntries(stage: Stage, x: HistoryInputs): HistoryEntry[] {
       label: `Prepared ${x.preparedCount.toLocaleString()} of ${x.prepareTotal.toLocaleString()}`,
     })
   }
-  if (i > stageIndex('cost')) out.push({ stage: 'cost', label: x.costLabel == null ? 'Cost reviewed' : `Cost ${x.costLabel}` })
+  if (i > stageIndex('cost'))
+    out.push({ stage: 'cost', label: x.costLabel == null ? 'Cost reviewed' : `Cost ${x.costLabel}` })
   if (i > stageIndex('wallet')) out.push({ stage: 'wallet', label: 'Signing enabled' })
   if (i > stageIndex('submit')) {
     out.push({

@@ -63,6 +63,25 @@ export async function readPaymentsStatus(address: `0x${string}`, network: Networ
   }
 }
 
+/**
+ * The service's storage rate, read from the contract over the public RPC —
+ * no wallet involved, so the cost gate can price a run before any connect.
+ */
+export async function readStorageRate(network: NetworkKey): Promise<import('./flow.ts').StorageRate> {
+  const [{ getServicePrice }, { calibration, mainnet }, { createClient, http }] = await Promise.all([
+    import('@filoz/synapse-core/warm-storage'),
+    import('@filoz/synapse-sdk'),
+    import('viem'),
+  ])
+  const chain = network === 'mainnet' ? mainnet : calibration
+  const client = createClient({ chain, transport: http(RPC_URLS[network]) })
+  const price = await getServicePrice(client)
+  return {
+    pricePerTiBPerMonth: price.pricePerTiBPerMonthNoCDN,
+    minimumPricePerMonth: price.minimumPricePerMonth,
+  }
+}
+
 /** Format a 18-decimal token amount for the panel: trimmed, 4 fractional digits. */
 export function fmtToken(amount: bigint, symbol: string): string {
   const whole = amount / 10n ** 18n
