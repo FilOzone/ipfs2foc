@@ -463,6 +463,33 @@ body.local-app .lede {
   gap: 6px 18px;
   align-items: center;
 }
+
+/* The wallet checklist: one row per prerequisite, single-column layout so
+   each row reads state, balance detail, and its one action left to right. */
+.pay-status.fund-list {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.fund-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.fund-row.is-waiting {
+  opacity: 0.55;
+}
+.fund-title {
+  font-size: var(--t-sm);
+}
+.fund-detail {
+  font-size: var(--t-xs);
+  font-family: var(--mono);
+}
+.fund-action {
+  font-size: var(--t-sm);
+  margin-left: auto;
+}
 .pay-status .pay-label {
   font-size: var(--t-xs);
   text-transform: none;

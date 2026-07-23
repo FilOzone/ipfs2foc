@@ -23,6 +23,7 @@ import { PieceRow } from './components/piece-row.tsx'
 import { SessionExpiryNote, SessionGrantExplainer } from './components/session-notes.tsx'
 import { deriveStage, estimateCostUsdfc, historyEntries, type Stage } from './flow.ts'
 import { FocMark } from './foc-mark.tsx'
+import { deriveFundingState, fundingChecklist } from './funding.ts'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
 import { buildManifest, downloadManifest } from './manifest.ts'
 import {
@@ -58,10 +59,11 @@ import {
   submitStateFromSaved,
 } from './submit.ts'
 import { useTabLifetime } from './tab-guard.ts'
-import { reportFunnelState } from './telemetry.ts'
+import { reportFundingState, reportFunnelState, reportSigningDeclined } from './telemetry.ts'
 import { type VerifyResult, verifyDataSet } from './verify.ts'
 import {
   connectWallet,
+  injectedProvider,
   NETWORKS,
   type NetworkKey,
   networkOf,
@@ -204,6 +206,7 @@ export default function App({ caps }: { caps: Capabilities }) {
   // and the underlying cause live.
   const [errOpen, setErrOpen] = useState<string | null>(null)
   const [copies, setCopies] = useState(2)
+  const [months, setMonths] = useState(1)
   const [submitState, setSubmitState] = useState<SubmitState | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -363,6 +366,7 @@ export default function App({ caps }: { caps: Capabilities }) {
   const effectiveReviewed = reviewedPrepare || submitStarted
   const effectiveAccepted = costAccepted || submitStarted
   const canSign = wallet != null && onTargetNetwork && payments != null && readyToSign(payments) && session != null
+  const filSymbol = (walletNetwork ?? targetNetwork) === 'calibration' ? 'tFIL' : 'FIL'
   const stage = deriveStage({
     prepareStarted: counts.total > 0,
     running,
@@ -401,8 +405,11 @@ export default function App({ caps }: { caps: Capabilities }) {
       stale = true
     }
   }, [stage, targetNetwork, rate, rateError])
-  const estimate = rate == null ? null : estimateCostUsdfc(totalBytes, copies, rate)
-  const costLabel = estimate == null || estimate === 0n ? null : `≈${fmtToken(estimate, 'USDFC')} / month`
+  const estimate = rate == null ? null : estimateCostUsdfc(totalBytes, copies, rate, months)
+  const costLabel =
+    estimate == null || estimate === 0n
+      ? null
+      : `≈${fmtToken(estimate, 'USDFC')} / ${months === 1 ? 'month' : `${months} months`}`
   const entries = historyEntries(stage, {
     cidCount: counts.total > 0 ? counts.total : cids.length,
     preparedCount: results.length,
@@ -410,6 +417,24 @@ export default function App({ caps }: { caps: Capabilities }) {
     costLabel,
     dataSetCount: (submitState?.contexts ?? []).filter((c) => c.dataSetId != null).length,
   })
+
+  const fundingInputs = useMemo(
+    () => ({
+      providerDetected: injectedProvider() != null,
+      connected: wallet != null,
+      onTargetNetwork,
+      networkLabel: NETWORKS[targetNetwork].label,
+      payments,
+      requiredUsdfc: estimate,
+      signingEnabled: session != null && sessionCanPresign(session),
+      filSymbol,
+    }),
+    [wallet, onTargetNetwork, targetNetwork, payments, estimate, session, filSymbol]
+  )
+  const checklist = fundingChecklist(fundingInputs)
+  useEffect(() => {
+    if (stage === 'wallet') reportFundingState(deriveFundingState(fundingInputs))
+  }, [stage, fundingInputs])
 
   // Funnel signals: who finishes a run, who gets pointed at the CLI. Both
   // no-op everywhere except the hosted production site (see analytics.ts).
@@ -622,6 +647,7 @@ export default function App({ caps }: { caps: Capabilities }) {
       const s = await grantSession(wallet, targetNetwork, sessionDuration, () => setSessionBusy('confirming…'))
       setSession(s)
     } catch (err) {
+      reportSigningDeclined()
       setSessionError(err instanceof Error ? err.message : String(err))
     } finally {
       setSessionBusy(null)
@@ -1109,140 +1135,130 @@ export default function App({ caps }: { caps: Capabilities }) {
                     : `${costLabel} · nothing is stored without your approval.`}
                 </span>
               </div>
-              <div className="wallet-row">
-                {wallet == null ? (
-                  <button className="btn primary" onClick={connect} type="button">
-                    Connect wallet
-                  </button>
-                ) : (
+              {wallet != null && (
+                <div className="wallet-row">
                   <div className="wallet-on">
-                    <Led color={onTargetNetwork ? 'var(--ok)' : 'var(--warn)'} on />
                     <code className="addr">{short(wallet.address, 8, 6)}</code>
                     <span className={`chip ${onTargetNetwork ? 'chip-ok' : 'chip-warn'}`}>
                       {walletNetwork ? NETWORKS[walletNetwork].label : `chain ${wallet.chainId}`}
                     </span>
-                    {!onTargetNetwork && (
-                      <>
-                        <button className="btn small" onClick={switchNet} type="button">
-                          Switch to {NETWORKS[targetNetwork].label}
-                        </button>
-                        <span className="hint">Needed only to submit. Preparing pieces works on any network.</span>
-                      </>
-                    )}
                   </div>
-                )}
-                {walletError && <span className="err-text">{walletError}</span>}
-              </div>
-              {wallet != null && walletNetwork != null && (
-                <div className="pay-status">
-                  {paymentsLoading ? (
-                    <span className="dim">reading payment status…</span>
-                  ) : paymentsError == null ? (
-                    payments == null ? null : (
-                      <>
-                        <span className="pay-label">wallet</span>
-                        <span className="pay-value">
-                          {fmtToken(payments.fil, walletNetwork === 'calibration' ? 'tFIL' : 'FIL')} ·{' '}
-                          {fmtToken(payments.walletUsdfc, 'USDFC')}
-                        </span>
-                        <span className="pay-label">deposited</span>
-                        <span className="pay-value">
-                          {fmtToken(payments.depositedUsdfc, 'USDFC')} ({fmtToken(payments.availableUsdfc, 'USDFC')}{' '}
-                          available)
-                        </span>
-                        <span className="pay-label">storage operator</span>
-                        <span className="pay-value">
-                          <Led color={payments.operatorApproved ? 'var(--ok)' : 'var(--warn)'} on />{' '}
-                          {payments.operatorApproved ? 'approved' : 'not approved'}
-                        </span>
-                        {!readyToSign(payments) && (
-                          <span className="pay-setup">
-                            Signing needs a one-time payment setup: deposit USDFC into Filecoin Pay and approve the
-                            storage service as a payments operator. See the{' '}
-                            <a
-                              href="https://github.com/FilOzone/ipfs2foc#network-gas-and-payments"
-                              rel="noreferrer"
-                              target="_blank"
-                            >
-                              setup guide
-                            </a>
-                          </span>
-                        )}
-                        {readyToSign(payments) && onTargetNetwork && (
-                          <>
-                            <span className="pay-label">signing session</span>
-                            {session == null ? (
-                              <span className="pay-value session-controls">
-                                <select
-                                  disabled={sessionBusy != null}
-                                  onChange={(e) => setSessionDuration(BigInt(e.target.value))}
-                                  value={sessionDuration.toString()}
-                                >
-                                  {SESSION_DURATIONS.map((d) => (
-                                    <option key={d.label} value={d.seconds.toString()}>
-                                      {d.label}
-                                    </option>
-                                  ))}
-                                </select>
-                                <button
-                                  className="btn small"
-                                  disabled={sessionBusy != null}
-                                  onClick={grant}
-                                  type="button"
-                                >
-                                  {sessionBusy ?? 'Enable signing'}
-                                </button>
-                              </span>
-                            ) : (
-                              <span className="pay-value session-controls">
-                                <Led color={sessionCanPresign(session) ? 'var(--ok)' : 'var(--warn)'} on />
-                                <span>
-                                  until {fmtExpiry(session.expiresAt)} ·{' '}
-                                  <code>{short(session.sessionAddress, 6, 4)}</code>
-                                </span>
-                                <button
-                                  className="btn small"
-                                  disabled={sessionBusy != null}
-                                  onClick={extend}
-                                  type="button"
-                                >
-                                  Extend +24h
-                                </button>
-                                <button
-                                  className="btn small"
-                                  disabled={sessionBusy != null}
-                                  onClick={revoke}
-                                  type="button"
-                                >
-                                  Revoke
-                                </button>
-                                {sessionBusy != null && <span className="dim">{sessionBusy}</span>}
-                              </span>
-                            )}
-                            {session == null ? (
-                              <SessionGrantExplainer
-                                availableLabel={fmtToken(payments.availableUsdfc, 'USDFC')}
-                                longWindow={sessionDuration > 86_400n}
-                              />
-                            ) : sessionCanPresign(session) ? null : (
-                              <SessionExpiryNote />
-                            )}
-                          </>
-                        )}
-                      </>
-                    )
-                  ) : (
-                    <span className="err-text" title={paymentsError}>
-                      payment status unavailable: {short(paymentsError, 48, 0)}
-                    </span>
-                  )}
-                  {sessionError != null && (
-                    <span className="err-text" title={sessionError}>
-                      session: {short(sessionError, 64, 0)}
-                    </span>
-                  )}
                 </div>
               )}
+              <div className="pay-status fund-list">
+                {checklist.map((row) => (
+                  <div className={`fund-row is-${row.state}`} key={row.id}>
+                    <Led color={row.state === 'done' ? 'var(--ok)' : 'var(--warn)'} on={row.state !== 'waiting'} />
+                    <span className="fund-title">{row.title}</span>
+                    {row.detail != null && <span className="fund-detail dim">{row.detail}</span>}
+                    {row.state === 'blocked' && (
+                      <span className="fund-action">
+                        {row.id === 'wallet' && (
+                          <a href="https://metamask.io" rel="noreferrer" target="_blank">
+                            Install MetaMask
+                          </a>
+                        )}
+                        {row.id === 'connect' &&
+                          (wallet == null ? (
+                            <button className="btn small primary" onClick={connect} type="button">
+                              Connect wallet
+                            </button>
+                          ) : (
+                            <button className="btn small" onClick={switchNet} type="button">
+                              Switch to {NETWORKS[targetNetwork].label}
+                            </button>
+                          ))}
+                        {row.id === 'fil' && (
+                          <a href="https://docs.filecoin.io/basics/assets/get-fil" rel="noreferrer" target="_blank">
+                            Get {filSymbol}
+                          </a>
+                        )}
+                        {/* Seam for the self-funding epic: this link becomes the in-app
+                            top-up flow when that ships. */}
+                        {row.id === 'usdfc' && (
+                          <a
+                            href="https://github.com/FilOzone/ipfs2foc#network-gas-and-payments"
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            Get and deposit USDFC
+                          </a>
+                        )}
+                        {row.id === 'approve' && (
+                          <a
+                            href="https://github.com/FilOzone/ipfs2foc#network-gas-and-payments"
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            Approve in the setup guide
+                          </a>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                ))}
+                {walletError && <span className="err-text">{walletError}</span>}
+                {paymentsLoading && <span className="dim">reading payment status…</span>}
+                {paymentsError != null && (
+                  <span className="err-text" title={paymentsError}>
+                    payment status unavailable: {short(paymentsError, 48, 0)}
+                  </span>
+                )}
+                {wallet != null &&
+                  walletNetwork != null &&
+                  payments != null &&
+                  readyToSign(payments) &&
+                  onTargetNetwork && (
+                    <>
+                      <span className="pay-label">signing session</span>
+                      {session == null ? (
+                        <span className="pay-value session-controls">
+                          <select
+                            disabled={sessionBusy != null}
+                            onChange={(e) => setSessionDuration(BigInt(e.target.value))}
+                            value={sessionDuration.toString()}
+                          >
+                            {SESSION_DURATIONS.map((d) => (
+                              <option key={d.label} value={d.seconds.toString()}>
+                                {d.label}
+                              </option>
+                            ))}
+                          </select>
+                          <button className="btn small" disabled={sessionBusy != null} onClick={grant} type="button">
+                            {sessionBusy ?? 'Enable signing'}
+                          </button>
+                        </span>
+                      ) : (
+                        <span className="pay-value session-controls">
+                          <Led color={sessionCanPresign(session) ? 'var(--ok)' : 'var(--warn)'} on />
+                          <span>
+                            until {fmtExpiry(session.expiresAt)} · <code>{short(session.sessionAddress, 6, 4)}</code>
+                          </span>
+                          <button className="btn small" disabled={sessionBusy != null} onClick={extend} type="button">
+                            Extend +24h
+                          </button>
+                          <button className="btn small" disabled={sessionBusy != null} onClick={revoke} type="button">
+                            Revoke
+                          </button>
+                          {sessionBusy != null && <span className="dim">{sessionBusy}</span>}
+                        </span>
+                      )}
+                      {session == null ? (
+                        <SessionGrantExplainer
+                          availableLabel={fmtToken(payments.availableUsdfc, 'USDFC')}
+                          longWindow={sessionDuration > 86_400n}
+                        />
+                      ) : sessionCanPresign(session) ? null : (
+                        <SessionExpiryNote />
+                      )}
+                    </>
+                  )}
+                {sessionError != null && (
+                  <span className="err-text" title={sessionError}>
+                    session: {short(sessionError, 64, 0)}
+                  </span>
+                )}
+              </div>
             </section>
           )}
 
@@ -1544,6 +1560,15 @@ export default function App({ caps }: { caps: Capabilities }) {
                     <option value={3}>3 (primary + two secondaries)</option>
                   </select>
                 </span>
+                <span className="session-controls">
+                  <span className="copies-label">Store for</span>
+                  <select onChange={(e) => setMonths(Number(e.target.value))} value={months}>
+                    <option value={1}>1 month</option>
+                    <option value={3}>3 months</option>
+                    <option value={6}>6 months</option>
+                    <option value={12}>12 months</option>
+                  </select>
+                </span>
               </div>
               {rate == null && rateError == null && <p className="gate-note">reading the current storage rate…</p>}
               {rateError != null && (
@@ -1554,9 +1579,17 @@ export default function App({ caps }: { caps: Capabilities }) {
               )}
               {estimate != null && (
                 <p className="gate-note">
-                  Estimated cost: ≈{fmtToken(estimate, 'USDFC')} per month for {copies} cop
-                  {copies === 1 ? 'y' : 'ies'} of {fmtBytes(totalBytes)}, billed while the data set stays funded. The
-                  exact rate is fixed when the data set is created.
+                  Estimated cost: ≈{fmtToken(estimate, 'USDFC')} for {months} month{months === 1 ? '' : 's'} of {copies}{' '}
+                  cop{copies === 1 ? 'y' : 'ies'} of {fmtBytes(totalBytes)}. Storage continues as long as the deposited
+                  balance funds it, and the exact rate is fixed when the data set is created. See{' '}
+                  <a
+                    href="https://github.com/FilOzone/ipfs2foc#network-gas-and-payments"
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    how funding works
+                  </a>
+                  .
                 </p>
               )}
               <div className="actions">

@@ -92,7 +92,7 @@ export function fundingChecklist(x: FundingInputs): FundingRow[] {
     {
       id: 'approve',
       title: 'Storage operator approved',
-      ok: p != null && p.operatorApproved,
+      ok: p?.operatorApproved === true,
       detail: p == null ? 'reading approval…' : null,
     },
     {

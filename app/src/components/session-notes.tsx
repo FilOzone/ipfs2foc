@@ -4,13 +4,14 @@
  * close to lapsing.
  */
 
-/** Shown before the grant: exactly what the temporary key can and cannot do. */
+/** Shown before the grant: exactly what the wallet popup asks and what the temporary key can do. */
 export function SessionGrantExplainer({ availableLabel, longWindow }: { availableLabel: string; longWindow: boolean }) {
   return (
     <span className="pay-setup">
-      One wallet approval authorizes a temporary key to sign migration steps for the chosen window. It can create data
-      sets and add pieces, spending from the {availableLabel} available, and nothing else: no removals, no deletions, no
-      withdrawals. Revoke it here when the run is done.
+      Clicking Enable signing opens one wallet approval. It authorizes a temporary key, created and stored in this
+      browser, to sign the migration steps for the chosen window: it can create data sets and add pieces, spending from
+      the {availableLabel} available, and nothing else: no removals, no withdrawals. It expires on its own at the end of
+      the window, and you can revoke it here sooner.
       {longWindow &&
         ' Long windows leave the key authorized on this device for days. Prefer shorter unless the run needs it.'}
     </span>
@@ -22,7 +23,7 @@ export function SessionExpiryNote() {
   return (
     <span className="pay-setup">
       This session expires soon. New submissions pause within an hour of expiry so providers can land in-flight pieces.
-      extend it to continue.
+      Extend it to continue.
     </span>
   )
 }
