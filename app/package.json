@@ -8,7 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "node --test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "storybook": "storybook dev -p 6006",
+    "storybook:build": "storybook build"
   },
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
@@ -38,9 +40,11 @@
     "viem": "^2.21.0"
   },
   "devDependencies": {
+    "@storybook/react-vite": "^9.1.20",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "storybook": "^9.1.20",
     "vite": "^6.0.0"
   }
 }

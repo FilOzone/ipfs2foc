@@ -29,12 +29,14 @@ export function injectedProvider(): Eip1193Provider | null {
   return eth ?? null
 }
 
+/** The connect failure shown when no wallet extension is present. */
+export const NO_WALLET_MESSAGE =
+  'no wallet extension found in this browser. Install one (MetaMask is the common choice: https://metamask.io), then reload this page.'
+
 export async function connectWallet(): Promise<WalletState> {
   const provider = injectedProvider()
   if (provider == null) {
-    throw new Error(
-      'no wallet extension found in this browser. Install one (MetaMask is the common choice: https://metamask.io), then reload this page.'
-    )
+    throw new Error(NO_WALLET_MESSAGE)
   }
   const accounts = (await provider.request({ method: 'eth_requestAccounts' })) as `0x${string}`[]
   if (accounts.length === 0) throw new Error('wallet returned no accounts')

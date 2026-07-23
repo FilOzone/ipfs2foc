@@ -7,6 +7,12 @@ import { reportFunnelState } from './telemetry.ts'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
 import { dedupeCanonical, invalidCidStrings } from './cid-union.ts'
+import { Continuity, Led } from './components/continuity.tsx'
+import { fmtBytes, fmtEta, fmtExpiry, short } from './components/format.ts'
+import { Lede } from './components/lede.tsx'
+import { ByteCapNotice, CidCapNotice, FailureSummary, InvalidCidNote } from './components/notices.tsx'
+import { PieceRow } from './components/piece-row.tsx'
+import { SessionExpiryNote, SessionGrantExplainer } from './components/session-notes.tsx'
 import { computePiece, describePrepareFailure, type PreparePhase, stallMessage } from './commp.ts'
 import { FocMark } from './foc-mark.tsx'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
@@ -114,80 +120,6 @@ const ROW_FILTERS: Array<{ key: RowFilter; label: string }> = [
   { key: 'done', label: 'Ready' },
   { key: 'error', label: 'Failed' },
 ]
-
-/** A duration an operator plans around — nearest useful unit, no precision theater. */
-function fmtEta(seconds: number): string {
-  if (seconds < 90) return 'under 2 minutes'
-  const minutes = seconds / 60
-  if (minutes < 90) return `about ${Math.round(minutes)} minutes`
-  const hours = minutes / 60
-  if (hours < 36) {
-    const h = Math.round(hours)
-    return `about ${h} hour${h === 1 ? '' : 's'}`
-  }
-  const d = Math.round(hours / 24)
-  return `about ${d} day${d === 1 ? '' : 's'}`
-}
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  const units = ['KiB', 'MiB', 'GiB']
-  let v = n / 1024
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  return `${v.toFixed(2)} ${units[i]}`
-}
-
-function short(s: string, head = 10, tail = 6): string {
-  return s.length <= head + tail + 1 ? s : `${s.slice(0, head)}…${s.slice(-tail)}`
-}
-
-function fmtExpiry(unixSeconds: bigint): string {
-  return new Date(Number(unixSeconds) * 1000).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-function Led({ on, color }: { on: boolean; color: string }) {
-  return <span className="led" style={{ background: on ? color : 'transparent', borderColor: color }} />
-}
-
-/**
- * One prepared item, shown as the same CID on both sides of the move.
- *
- * The pieces table pairs each CID with its PieceCID, which reads as a
- * transformation. It isn't one: the PieceCID is the commitment Filecoin proves
- * against, while the CID that addresses the content is unchanged and stays
- * retrievable. This states that directly for the item in hand — the fact the
- * rest of the run depends on.
- */
-function Continuity({ cid, pieceCid, size, drawn }: { cid: string; pieceCid: string; size: string; drawn: boolean }) {
-  return (
-    <div className="continuity">
-      <div className="continuity-ends">
-        <span className="side">
-          <span className="side-label">On IPFS today</span>
-          <code className="side-cid">{short(cid, 12, 8)}</code>
-        </span>
-        <span aria-hidden className={`continuity-rule ${drawn ? 'rule-draw' : ''}`} />
-        <span className="side side-dest">
-          <span className="side-label">On Filecoin</span>
-          <code className="side-cid">{short(cid, 12, 8)}</code>
-        </span>
-      </div>
-      <p className="continuity-note">
-        Same CID, both sides. Filecoin proves it holds <code className="mono">{short(pieceCid, 10, 6)}</code>, the{' '}
-        {size} commitment over those exact bytes.
-      </p>
-    </div>
-  )
-}
 
 function describeSubmitPhase(c: SubmitContextStatus): string {
   // Large runs land in several chunks (one provider add each); show which
@@ -1054,32 +986,7 @@ export default function App({ caps }: { caps: Capabilities }) {
         </div>
       </header>
 
-      {/* Each sentence is its own block, so the line break is fixed rather
-          than set by the viewport width. */}
-      <h1 className="lede">
-        <span>Move pinned IPFS content to Filecoin.</span>
-        <em>The CID does not change.</em>
-      </h1>
-      <p className="lede-sub">
-        Point this at content you already have pinned. A storage provider fetches each item, stores it as the original
-        DAG, and commits it on chain, so every link you have published keeps resolving and you can prove the content
-        landed. Items served whole by a public gateway migrate here in the browser;{' '}
-        <a href="https://github.com/FilOzone/ipfs2foc#readme" rel="noreferrer" target="_blank">
-          the command line tool
-        </a>{' '}
-        covers the rest.
-      </p>
-      {/* The fit check, before any wallet step: what a run here handles and
-          what it costs. The caps come from run-limits so this line cannot
-          drift from the enforced numbers. */}
-      <p className="lede-sub">
-        {limits != null &&
-          `A run here handles up to ${limits.maxCids.toLocaleString()} items or ${Math.round(
-            limits.maxBytes / (1024 * 1024)
-          )} MiB. `}
-        You need a browser wallet extension holding USDFC (pays for storage) and a little FIL (pays gas). Bigger sets
-        run from your machine with the CLI: <code className="mono">npm i -g ipfs2foc</code>
-      </p>
+      <Lede limits={limits} />
 
       <section className="panel" id="start">
         <div className="panel-head">
@@ -1182,19 +1089,12 @@ export default function App({ caps }: { caps: Capabilities }) {
                         </span>
                       )}
                       {session == null ? (
-                        <span className="pay-setup">
-                          One wallet approval authorizes a temporary key to sign migration steps for the chosen window.
-                          It can create data sets and add pieces, spending from the{' '}
-                          {fmtToken(payments.availableUsdfc, 'USDFC')} available, and nothing else: no removals, no
-                          deletions, no withdrawals. Revoke it here when the run is done.
-                          {sessionDuration > 86_400n &&
-                            ' Long windows leave the key authorized on this device for days. Prefer shorter unless the run needs it.'}
-                        </span>
+                        <SessionGrantExplainer
+                          availableLabel={fmtToken(payments.availableUsdfc, 'USDFC')}
+                          longWindow={sessionDuration > 86_400n}
+                        />
                       ) : sessionCanPresign(session) ? null : (
-                        <span className="pay-setup">
-                          This session expires soon. New submissions pause within an hour of expiry so providers can
-                          land in-flight pieces. extend it to continue.
-                        </span>
+                        <SessionExpiryNote />
                       )}
                     </>
                   )}
@@ -1240,17 +1140,7 @@ export default function App({ caps }: { caps: Capabilities }) {
           spellCheck={false}
           value={cidsText}
         />
-        {invalidPasted.length > 0 && (
-          <p aria-live="polite" className="err-text">
-            {invalidPasted.length.toLocaleString()} entr{invalidPasted.length === 1 ? 'y' : 'ies'} in the list{' '}
-            {invalidPasted.length === 1 ? 'is' : 'are'} not a valid CID:{' '}
-            {invalidPasted
-              .slice(0, 3)
-              .map((s) => `"${short(s, 24, 0)}"`)
-              .join(', ')}
-            {invalidPasted.length > 3 ? ', …' : ''}. Fix or remove them; left in, they fail at Prepare.
-          </p>
-        )}
+        <InvalidCidNote invalid={invalidPasted} />
         <div className="file-intake">
           <label className="btn small">
             {cidFileBusy ? 'Reading…' : 'Load cids.txt'}
@@ -1313,13 +1203,7 @@ export default function App({ caps }: { caps: Capabilities }) {
             </button>
           )}
         </div>
-        {cidCapExceeded && limits != null && (
-          <p className="err-text">
-            This hosted console handles up to {limits.maxCids.toLocaleString()} items per run; your list has{' '}
-            {cids.length.toLocaleString()}. For larger sets, run the same migration from your machine with the CLI:{' '}
-            <code className="mono">npm i -g ipfs2foc</code>
-          </p>
-        )}
+        {cidCapExceeded && limits != null && <CidCapNotice count={cids.length} limits={limits} />}
       </section>
 
       {counts.total > 0 && (
@@ -1337,21 +1221,8 @@ export default function App({ caps }: { caps: Capabilities }) {
               {restored ? ' · restored from your last visit' : ''}
             </span>
           </div>
-          {byteCapHit && limits != null && (
-            <p aria-live="polite" className="err-text">
-              Prepared items reached this console&apos;s {Math.round(limits.maxBytes / (1024 * 1024))} MiB per-run
-              limit, so the rest of the list stayed queued. Migrate what is prepared, or run the full list from your
-              machine with the CLI: <code className="mono">npm i -g ipfs2foc</code>
-            </p>
-          )}
-          {!running && errors > 0 && (
-            <p aria-live="polite" className="err-text">
-              {errors.toLocaleString()} of {counts.total.toLocaleString()} item{counts.total === 1 ? '' : 's'} could not
-              be fetched here. Retry below once the source settles, try another gateway under Sources, and for
-              persistent failures run these from the CLI, which pulls from more sources with longer retries:{' '}
-              <code className="mono">npm i -g ipfs2foc</code>
-            </p>
-          )}
+          {byteCapHit && limits != null && <ByteCapNotice limits={limits} />}
+          {!running && errors > 0 && <FailureSummary errors={errors} total={counts.total} />}
           {/* The newest finished item only: one worked example, not a second
               table. Rendering it per row would double the table's width and
               its cost at the CID counts this tool targets. */}
@@ -1408,84 +1279,35 @@ export default function App({ caps }: { caps: Capabilities }) {
               const state = store.getState(cid)
               // Show the canonical CIDv1 once computed (a `Qm…` input is converted),
               // so the row reflects exactly what gets committed and relayed.
-              const shownCid = state.phase === 'done' ? state.result.cid : cid
+              const view =
+                state.phase === 'done'
+                  ? {
+                      phase: 'done' as const,
+                      cid: state.result.cid,
+                      pieceCid: state.result.pieceCid,
+                      rawSize: state.result.rawSize,
+                      sourceUrl: state.result.sourceUrl,
+                      gapFillCount: state.result.gapFillCount,
+                    }
+                  : state.phase === 'error'
+                    ? { phase: 'error' as const, cid, message: state.message, detail: state.detail }
+                    : state.phase === 'working'
+                      ? { phase: 'working' as const, cid, bytes: state.bytes, rate: state.rate }
+                      : { phase: 'queued' as const, cid }
               return (
-                <div className="trow" key={cid}>
-                  <code className="mono dim" title={shownCid}>
-                    {short(shownCid)}
-                  </code>
-                  {state.phase === 'done' ? (
-                    <span className="piece">
-                      <code className="mono" title={state.result.pieceCid}>
-                        {short(state.result.pieceCid)}
-                      </code>
-                      {state.result.gapFillCount > 0 && (
-                        <span
-                          className="warn"
-                          title={`Gateway served an incomplete CAR. ${state.result.gapFillCount} block(s) recovered per-block. The provider pulls the CAR URL, so re-verify this gateway before submitting; if its CAR is still incomplete at pull time the on-chain AddPieces will fail.`}
-                        >
-                          ⚠ incomplete CAR
-                        </span>
-                      )}
-                    </span>
-                  ) : state.phase === 'error' ? (
-                    <span className="err-text">
-                      <button
-                        className="err-toggle"
-                        onClick={() => setErrOpen(errOpen === cid ? null : cid)}
-                        title={errOpen === cid ? 'hide the full error' : 'show the full error'}
-                        type="button"
-                      >
-                        {short(state.message, 44, 0)}
-                      </button>{' '}
-                      <a
-                        href={`https://check.ipfs.network/?cid=${cid}`}
-                        rel="noreferrer"
-                        target="_blank"
-                        title="probe this CID's providers and retrievability on the public network"
-                      >
-                        check availability
-                      </a>
-                      {errOpen === cid && <span className="err-detail mono">{state.detail}</span>}
-                    </span>
-                  ) : state.phase === 'working' ? (
-                    <span className="working">
-                      ▍ {fmtBytes(state.bytes)}
-                      {state.rate > 0 ? ` · ${state.rate.toFixed(1)} MiB/s` : ''}
-                    </span>
-                  ) : (
-                    <span className="dim">queued</span>
-                  )}
-                  <span className="num mono dim">{state.phase === 'done' ? fmtBytes(state.result.rawSize) : '—'}</span>
-                  {state.phase === 'done' ? (
-                    <>
-                      <button className="copy" onClick={() => copy(state.result.sourceUrl, cid)} type="button">
-                        {copied === cid ? 'copied ✓' : 'copy'}
-                      </button>
-                      {state.result.gapFillCount > 0 && (
-                        <button
-                          className="copy"
-                          disabled={running}
-                          onClick={() => void prepareOne(cid)}
-                          title="Refetch this root; a run with a complete stream clears the hold on submit."
-                          type="button"
-                        >
-                          retry
-                        </button>
-                      )}
-                    </>
-                  ) : state.phase === 'error' ? (
-                    <button className="copy" disabled={running} onClick={() => void prepareOne(cid)} type="button">
-                      retry
-                    </button>
-                  ) : state.phase === 'working' ? (
-                    <button className="copy" onClick={() => cancelOne(cid)} type="button">
-                      cancel
-                    </button>
-                  ) : (
-                    <span className="dim">—</span>
-                  )}
-                </div>
+                <PieceRow
+                  copied={copied === cid}
+                  errOpen={errOpen === cid}
+                  key={cid}
+                  onCancel={() => cancelOne(cid)}
+                  onCopy={() => {
+                    if (state.phase === 'done') copy(state.result.sourceUrl, cid)
+                  }}
+                  onRetry={() => void prepareOne(cid)}
+                  onToggleError={() => setErrOpen(errOpen === cid ? null : cid)}
+                  running={running}
+                  view={view}
+                />
               )
             })}
           </div>
