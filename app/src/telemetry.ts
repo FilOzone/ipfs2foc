@@ -22,7 +22,7 @@ import { analyticsEnabled, beaconOnce, trackOnce } from './analytics.ts'
 
 /** Coarse funnel position, ordered. Derived, not stored — the app reports
  * its state and the step falls out. */
-export type FunnelStep = 'landed' | 'input' | 'wallet' | 'preparing' | 'prepared' | 'submitting' | 'done'
+export type FunnelStep = 'landed' | 'input' | 'wallet' | 'preparing' | 'prepared' | 'cost' | 'submitting' | 'done'
 
 export interface FunnelSnapshot {
   cidCount: number
@@ -31,6 +31,8 @@ export interface FunnelSnapshot {
   preparedDone: number
   prepareTotal: number
   prepareErrors: number
+  /** The operator accepted the cost gate (the consent click before wallet). */
+  costAccepted: boolean
   submitting: boolean
   runCompleted: boolean
 }
@@ -39,6 +41,9 @@ export interface FunnelSnapshot {
 export function deriveStep(s: FunnelSnapshot): FunnelStep {
   if (s.runCompleted) return 'done'
   if (s.submitting) return 'submitting'
+  // Past the cost gate the operator is at the wallet step; the gate itself
+  // reports as its own state so drop-off between price and wallet is visible.
+  if (s.costAccepted) return s.walletConnected ? 'wallet' : 'cost'
   if (s.preparing) return 'preparing'
   if (s.prepareTotal > 0 && s.preparedDone + s.prepareErrors >= s.prepareTotal) return 'prepared'
   if (s.walletConnected) return 'wallet'

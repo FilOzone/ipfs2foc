@@ -10,6 +10,7 @@ const base: FunnelSnapshot = {
   preparedDone: 0,
   prepareTotal: 0,
   prepareErrors: 0,
+  costAccepted: false,
   submitting: false,
   runCompleted: false,
 }
@@ -22,6 +23,11 @@ test('deriveStep walks the funnel in order, later stages winning', () => {
   assert.equal(deriveStep({ ...base, cidCount: 3, prepareTotal: 3, preparedDone: 3 }), 'prepared')
   // Errors count toward completion: a run that ended with failures is still past prepare.
   assert.equal(deriveStep({ ...base, cidCount: 3, prepareTotal: 3, preparedDone: 2, prepareErrors: 1 }), 'prepared')
+  assert.equal(deriveStep({ ...base, cidCount: 3, prepareTotal: 3, preparedDone: 3, costAccepted: true }), 'cost')
+  assert.equal(
+    deriveStep({ ...base, cidCount: 3, prepareTotal: 3, preparedDone: 3, costAccepted: true, walletConnected: true }),
+    'wallet'
+  )
   assert.equal(deriveStep({ ...base, submitting: true }), 'submitting')
   assert.equal(deriveStep({ ...base, submitting: true, runCompleted: true }), 'done')
 })
