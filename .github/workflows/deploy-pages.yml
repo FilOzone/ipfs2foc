@@ -42,6 +42,9 @@ jobs:
       - run: pnpm --filter ipfs2foc-app build
         env:
           VITE_BASE: ${{ vars.PAGES_BASE || '/ipfs2foc/' }}
+          VITE_SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+          VITE_METRICS_ENDPOINT: ${{ vars.METRICS_ENDPOINT }}
+          VITE_METRICS_TOKEN: ${{ vars.METRICS_TOKEN }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: app/dist
