@@ -1018,3 +1018,78 @@ body.local-app .pay-setup {
   }
   /* biome-ignore-end lint/complexity/noImportantStyles: end of reset. */
 }
+
+/* One-active-step flow: completed steps melt into history chrome. Wide
+   screens get a slim sticky rail beside the active card; narrow ones get
+   one-line receipt rows above it. Same entries, two containers; only the
+   viewport picks which renders. */
+.flow {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+.flow.no-hist {
+  grid-template-columns: minmax(0, 1fr);
+}
+.hist-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: sticky;
+  top: 24px;
+}
+.hist-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: var(--t-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.hist-item .mark {
+  font-family: var(--mono);
+  color: var(--ok);
+}
+.hist-item:hover:not(:disabled) {
+  border-color: var(--panel-edge);
+}
+.hist-item.is-peek {
+  border-color: var(--panel-edge);
+}
+.hist-item.is-active {
+  border-left: 2px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+}
+.hist-item.is-active .mark {
+  color: var(--accent);
+}
+.hist-item.is-active:disabled {
+  color: var(--ink);
+  opacity: 1;
+  cursor: default;
+}
+.hist-rows {
+  display: none;
+}
+@media (max-width: 900px) {
+  .flow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .hist-rail {
+    display: none;
+  }
+  .hist-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 12px;
+  }
+}
