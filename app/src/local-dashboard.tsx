@@ -343,15 +343,27 @@ export default function LocalDashboard({ caps }: { caps: Capabilities }) {
             </div>
             {aggregates.map((a) => (
               <div className="trow agg-row" key={a.idx}>
-                <span className="num">{a.idx}</span>
-                <span className={a.status === 'failed' ? 'err-text' : a.status === 'committed' ? 'ok-text' : undefined}>
+                <span className="num" data-label="#">
+                  {a.idx}
+                </span>
+                <span
+                  className={a.status === 'failed' ? 'err-text' : a.status === 'committed' ? 'ok-text' : undefined}
+                  data-label="status"
+                >
                   {a.status.replace(/_/g, ' ')}
                 </span>
-                <span className="num">{a.memberCount}</span>
-                <span className="num">{a.dataSetId ?? '—'}</span>
-                <span className="num">{a.pieceId ?? '—'}</span>
+                <span className="num" data-label="members">
+                  {a.memberCount}
+                </span>
+                <span className="num" data-label="data set">
+                  {a.dataSetId ?? '—'}
+                </span>
+                <span className="num" data-label="piece">
+                  {a.pieceId ?? '—'}
+                </span>
                 <button
                   className={`copy mono${copied === a.rootPieceCid ? ' ok-text' : ''}`}
+                  data-label="root pieceCID"
                   onClick={() => copy(a.rootPieceCid)}
                   title={a.rootPieceCid}
                   type="button"
@@ -545,11 +557,15 @@ export default function LocalDashboard({ caps }: { caps: Capabilities }) {
           <div className="table">
             {failures.map((f) => (
               <div className="trow fail-row" key={f.cid}>
-                <button className="copy mono" onClick={() => copy(f.cid)} title={f.cid} type="button">
+                <button className="copy mono" data-label="CID" onClick={() => copy(f.cid)} title={f.cid} type="button">
                   {trunc(f.cid)}
                 </button>
-                <span className="err-text">{f.category ?? ''}</span>
-                <span className="dim">{f.error}</span>
+                <span className="err-text" data-label="category">
+                  {f.category ?? ''}
+                </span>
+                <span className="dim" data-label="error">
+                  {f.error}
+                </span>
               </div>
             ))}
           </div>

@@ -104,6 +104,15 @@ export interface PrepareFailure {
  */
 export type PreparePhase = 'retrieve' | 'hash-claim' | 'hash-write' | 'hash-finish'
 
+/**
+ * The in-progress hint for a row quiet past the reassurance threshold but
+ * still inside the abort budget. Same phase split as `stallMessage`: only
+ * retrieval silence points at the source.
+ */
+export function stallHint(phase: PreparePhase): string {
+  return phase === 'retrieve' ? 'no bytes for a while, still trying the source' : 'waiting for a hash worker'
+}
+
 /** The abort message for a piece whose byte counter froze in `phase`. */
 export function stallMessage(phase: PreparePhase, timeoutSeconds: number): string {
   switch (phase) {

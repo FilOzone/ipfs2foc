@@ -115,6 +115,10 @@ const STALL_TIMEOUT_MS = 120_000
 // only a pool that stays saturated this long is actually wedged.
 const CLAIM_STALL_TIMEOUT_MS = 600_000
 const STALL_POLL_MS = 5_000
+// Well inside the abort budgets: the row admits it has gone quiet long
+// before the watchdog gives up, so a slow source reads as patience, not a
+// frozen tab.
+const STALL_HINT_MS = 30_000
 // The pieces table shows one page at a time (#57): a million-CID run must
 // never put a million rows in the DOM. One page fits on a screen or two, and
 // the state filters get the operator to the rows that matter. The Working
@@ -691,6 +695,20 @@ export default function App({ caps }: { caps: Capabilities }) {
   // Live AbortControllers by CID — the stall watchdog and the per-row cancel
   // button abort through these (#43).
   const prepareControllers = useRef(new Map<string, AbortController>())
+  // Rows whose byte counter has been quiet past STALL_HINT_MS, keyed to the
+  // phase the silence is in; the row renders the matching reassurance.
+  const [stalledRows, setStalledRows] = useState<ReadonlyMap<string, PreparePhase>>(new Map())
+  const noteStall = useCallback((cid: string, p: PreparePhase) => {
+    setStalledRows((m) => (m.get(cid) === p ? m : new Map(m).set(cid, p)))
+  }, [])
+  const clearStall = useCallback((cid: string) => {
+    setStalledRows((m) => {
+      if (!m.has(cid)) return m
+      const next = new Map(m)
+      next.delete(cid)
+      return next
+    })
+  }, [])
 
   // Roots whose last attempt failed: their next lookup skips the learned
   // routing answer, in case a stale source list is what failed them.
@@ -721,8 +739,11 @@ export default function App({ caps }: { caps: Capabilities }) {
       let phase: PreparePhase = 'retrieve'
       const watchdog = setInterval(() => {
         const budget = phase === 'hash-claim' ? CLAIM_STALL_TIMEOUT_MS : STALL_TIMEOUT_MS
-        if (performance.now() - lastAdvanceAt > budget) {
+        const silent = performance.now() - lastAdvanceAt
+        if (silent > budget) {
           controller.abort(new Error(stallMessage(phase, Math.round(budget / 1000))))
+        } else if (silent > STALL_HINT_MS) {
+          noteStall(cid, phase)
         }
       }, STALL_POLL_MS)
       try {
@@ -733,6 +754,7 @@ export default function App({ caps }: { caps: Capabilities }) {
           (bytes) => {
             const now = performance.now()
             lastAdvanceAt = now
+            clearStall(cid)
             if (now - lastEmit < PROGRESS_THROTTLE_MS) return
             lastEmit = now
             const secs = (now - startedAt) / 1000
@@ -756,10 +778,11 @@ export default function App({ caps }: { caps: Capabilities }) {
         discoveryBypass.current.add(cid)
       } finally {
         clearInterval(watchdog)
+        clearStall(cid)
         prepareControllers.current.delete(cid)
       }
     },
-    [gateway, relayBase, schedulePersist, store, lookupSources]
+    [gateway, relayBase, schedulePersist, store, lookupSources, noteStall, clearStall]
   )
 
   const cancelOne = useCallback((cid: string) => {
@@ -1447,7 +1470,13 @@ export default function App({ caps }: { caps: Capabilities }) {
                       : state.phase === 'error'
                         ? { phase: 'error' as const, cid, message: state.message, detail: state.detail }
                         : state.phase === 'working'
-                          ? { phase: 'working' as const, cid, bytes: state.bytes, rate: state.rate }
+                          ? {
+                              phase: 'working' as const,
+                              cid,
+                              bytes: state.bytes,
+                              rate: state.rate,
+                              stalledIn: stalledRows.get(cid),
+                            }
                           : { phase: 'queued' as const, cid }
                   return (
                     <PieceRow
@@ -1492,8 +1521,8 @@ export default function App({ caps }: { caps: Capabilities }) {
               )}
               {errors > 0 && (
                 <p className="gate-note">
-                  Finished rows are kept: Prepare and per-row retry recompute only what failed. Hover a failure for the
-                  full error; "check availability" shows whether the network can serve that CID at all.
+                  Finished rows are kept: Prepare and per-row retry recompute only what failed. Click a failure to
+                  expand the full error; "check availability" shows whether the network can serve that CID at all.
                 </p>
               )}
               {!running && queuedCount > 0 && (
@@ -1713,21 +1742,23 @@ export default function App({ caps }: { caps: Capabilities }) {
                   </div>
                   {submitState.contexts.map((c) => (
                     <div className="trow submit-row" key={c.providerId}>
-                      <span className="dim">{c.role}</span>
-                      <span className="mono dim" title={c.serviceURL}>
+                      <span className="dim" data-label="Copy">
+                        {c.role}
+                      </span>
+                      <span className="mono dim" data-label="Provider" title={c.serviceURL}>
                         {c.providerName || `#${c.providerId}`}
                       </span>
                       {c.phase === 'failed' ? (
-                        <span className="err-text" title={c.error}>
+                        <span className="err-text" data-label="Status" title={c.error}>
                           {short(c.error ?? 'failed', 36, 0)}
                         </span>
                       ) : (
-                        <span className={c.phase === 'done' ? 'ok-text' : 'working'}>
+                        <span className={c.phase === 'done' ? 'ok-text' : 'working'} data-label="Status">
                           {describeSubmitPhase(c)}
                           {submitEtaFor(c)}
                         </span>
                       )}
-                      <span className="mono dim">
+                      <span className="mono dim" data-label="Data set">
                         {(() => {
                           const txHash = [...c.chunks].reverse().find((ch) => ch.txHash != null)?.txHash
                           return c.dataSetId == null

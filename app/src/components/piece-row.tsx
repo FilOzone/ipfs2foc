@@ -1,10 +1,11 @@
+import { type PreparePhase, stallHint } from '../commp.ts'
 import { fmtBytes, short } from './format.ts'
 
 /** The view of one prepare row, shaped from the store state by the caller. */
 export type PieceRowView =
   | { phase: 'done'; cid: string; pieceCid: string; rawSize: number; sourceUrl: string; gapFillCount: number }
   | { phase: 'error'; cid: string; message: string; detail: string }
-  | { phase: 'working'; cid: string; bytes: number; rate: number }
+  | { phase: 'working'; cid: string; bytes: number; rate: number; stalledIn?: PreparePhase }
   | { phase: 'queued'; cid: string }
 
 export interface PieceRowProps {
@@ -22,26 +23,27 @@ export interface PieceRowProps {
 export function PieceRow({ view, running, copied, errOpen, onToggleError, onCopy, onRetry, onCancel }: PieceRowProps) {
   return (
     <div className="trow">
-      <code className="mono dim" title={view.cid}>
+      <code className="mono dim" data-label="CID" title={view.cid}>
         {short(view.cid)}
       </code>
       {view.phase === 'done' ? (
-        <span className="piece">
+        <span className="piece" data-label="Piece">
           <code className="mono" title={view.pieceCid}>
             {short(view.pieceCid)}
           </code>
           {view.gapFillCount > 0 && (
             <span
               className="warn"
-              title={`Gateway served an incomplete CAR. ${view.gapFillCount} block(s) recovered per-block. The provider pulls the CAR URL, so re-verify this gateway before submitting; if its CAR is still incomplete at pull time the on-chain AddPieces will fail.`}
+              title={`The gateway stream was missing ${view.gapFillCount} block(s); they were fetched from other sources and hash-verified, so this piece is correct. The provider pulls from the gateway at submit time, so retry this row (or switch gateway) until the stream is complete before storing.`}
             >
               ⚠ incomplete CAR
             </span>
           )}
         </span>
       ) : view.phase === 'error' ? (
-        <span className="err-text">
+        <span className="err-text" data-label="Status">
           <button
+            aria-expanded={errOpen}
             className="err-toggle"
             onClick={onToggleError}
             title={errOpen ? 'hide the full error' : 'show the full error'}
@@ -49,27 +51,34 @@ export function PieceRow({ view, running, copied, errOpen, onToggleError, onCopy
           >
             {short(view.message, 44, 0)}
           </button>{' '}
-          <a
-            href={`https://check.ipfs.network/?cid=${view.cid}`}
-            rel="noreferrer"
-            target="_blank"
-            title="probe this CID's providers and retrievability on the public network"
-          >
-            check availability
-          </a>
+          {view.message !== 'not a valid CID' && (
+            <a
+              href={`https://check.ipfs.network/?cid=${view.cid}`}
+              rel="noreferrer"
+              target="_blank"
+              title="probe this CID's providers and retrievability on the public network"
+            >
+              check availability
+            </a>
+          )}
           {errOpen && <span className="err-detail mono">{view.detail}</span>}
         </span>
       ) : view.phase === 'working' ? (
-        <span className="working">
+        <span className="working" data-label="Status">
           ▍ {fmtBytes(view.bytes)}
           {view.rate > 0 ? ` · ${view.rate.toFixed(1)} MiB/s` : ''}
+          {view.stalledIn != null && <span className="dim"> · {stallHint(view.stalledIn)}</span>}
         </span>
       ) : (
-        <span className="dim">queued</span>
+        <span className="dim" data-label="Status">
+          queued
+        </span>
       )}
-      <span className="num mono dim">{view.phase === 'done' ? fmtBytes(view.rawSize) : '—'}</span>
+      <span className="num mono dim" data-label="Size">
+        {view.phase === 'done' ? fmtBytes(view.rawSize) : '—'}
+      </span>
       {view.phase === 'done' ? (
-        <>
+        <span className="row-actions" data-label="Action">
           <button className="copy" onClick={onCopy} type="button">
             {copied ? 'copied ✓' : 'copy'}
           </button>
@@ -84,17 +93,19 @@ export function PieceRow({ view, running, copied, errOpen, onToggleError, onCopy
               retry
             </button>
           )}
-        </>
+        </span>
       ) : view.phase === 'error' ? (
-        <button className="copy" disabled={running} onClick={onRetry} type="button">
+        <button className="copy" data-label="Action" disabled={running} onClick={onRetry} type="button">
           retry
         </button>
       ) : view.phase === 'working' ? (
-        <button className="copy" onClick={onCancel} type="button">
+        <button className="copy" data-label="Action" onClick={onCancel} type="button">
           cancel
         </button>
       ) : (
-        <span className="dim">—</span>
+        <span className="dim" data-label="Action">
+          —
+        </span>
       )}
     </div>
   )

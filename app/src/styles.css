@@ -774,6 +774,12 @@ body.local-app .pay-setup {
   letter-spacing: 0;
   color: var(--ink);
 }
+/* Both done-row actions share the table's last column as one grid child. */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .copy {
   font-family: var(--display);
   font-size: var(--t-xs);

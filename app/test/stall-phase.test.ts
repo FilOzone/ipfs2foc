@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { describePrepareFailure, type PreparePhase, stallMessage } from '../src/commp.ts'
+import { describePrepareFailure, type PreparePhase, stallHint, stallMessage } from '../src/commp.ts'
 
 const PHASES: PreparePhase[] = ['retrieve', 'hash-claim', 'hash-write', 'hash-finish']
 
@@ -35,4 +35,11 @@ test('hash-phase stalls map to an actionable headline, not a gateway one', () =>
   const failure = describePrepareFailure(new Error(stallMessage('hash-claim', 120)))
   assert.doesNotMatch(failure.headline, /source|gateway|network/i)
   assert.match(failure.headline, /hash/i)
+})
+
+test('stallHint points retrieval silence at the source, hash waits at the pool', () => {
+  assert.equal(stallHint('retrieve'), 'no bytes for a while, still trying the source')
+  for (const phase of ['hash-claim', 'hash-write', 'hash-finish'] as PreparePhase[]) {
+    assert.equal(stallHint(phase), 'waiting for a hash worker')
+  }
 })
