@@ -20,3 +20,19 @@ export function dedupeCanonical(candidates: Iterable<string>): string[] {
   }
   return out
 }
+
+/**
+ * The entries that do not parse as CIDs, deduped, in input order. Intake
+ * shows these the moment they are pasted; the rows themselves stay in the
+ * run so the prepare pass still fails them visibly if left in.
+ */
+export function invalidCidStrings(candidates: Iterable<string>): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const candidate of candidates) {
+    if (toCanonicalCidV1(candidate) != null || seen.has(candidate)) continue
+    seen.add(candidate)
+    out.push(candidate)
+  }
+  return out
+}

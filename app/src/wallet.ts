@@ -32,7 +32,9 @@ export function injectedProvider(): Eip1193Provider | null {
 export async function connectWallet(): Promise<WalletState> {
   const provider = injectedProvider()
   if (provider == null) {
-    throw new Error('no injected wallet found. Install MetaMask or another EIP-1193 wallet.')
+    throw new Error(
+      'no wallet extension found in this browser. Install one (MetaMask is the common choice: https://metamask.io), then reload this page.'
+    )
   }
   const accounts = (await provider.request({ method: 'eth_requestAccounts' })) as `0x${string}`[]
   if (accounts.length === 0) throw new Error('wallet returned no accounts')
@@ -76,7 +78,7 @@ const CHAIN_PARAMS: Record<
 export async function switchToNetwork(network: NetworkKey): Promise<void> {
   const params = CHAIN_PARAMS[network]
   const provider = injectedProvider()
-  if (provider == null) throw new Error('no injected wallet found')
+  if (provider == null) throw new Error('no wallet extension found in this browser')
   try {
     await provider.request({
       method: 'wallet_switchEthereumChain',

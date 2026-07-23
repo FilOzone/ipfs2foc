@@ -6,7 +6,7 @@ import { trackOnce } from './analytics.ts'
 import { reportFunnelState } from './telemetry.ts'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
-import { dedupeCanonical } from './cid-union.ts'
+import { dedupeCanonical, invalidCidStrings } from './cid-union.ts'
 import { computePiece, describePrepareFailure, type PreparePhase, stallMessage } from './commp.ts'
 import { FocMark } from './foc-mark.tsx'
 import { HASH_POOL_SIZE } from './hash-pool.ts'
@@ -366,17 +366,18 @@ export default function App({ caps }: { caps: Capabilities }) {
     return () => clearTimeout(t)
   }, [cidsText, persist])
 
-  const cids = useMemo(
+  const pasted = useMemo(
     () =>
-      dedupeCanonical(
-        cidsText
-          .split(/\s+/)
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0)
-          .concat(cidFile?.intake.cids ?? [])
-      ),
-    [cidsText, cidFile]
+      cidsText
+        .split(/\s+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    [cidsText]
   )
+  const cids = useMemo(() => dedupeCanonical(pasted.concat(cidFile?.intake.cids ?? [])), [pasted, cidFile])
+  // Loaded files report their invalid lines at parse time; the textarea gets
+  // the same treatment here so a stray header row is named before Prepare.
+  const invalidPasted = useMemo(() => invalidCidStrings(pasted), [pasted])
 
   // The hosted console caps a run; a `serve` daemon runs uncapped. The count
   // cap binds here at intake, the byte cap inside the pool once sizes exist.
@@ -1068,6 +1069,17 @@ export default function App({ caps }: { caps: Capabilities }) {
         </a>{' '}
         covers the rest.
       </p>
+      {/* The fit check, before any wallet step: what a run here handles and
+          what it costs. The caps come from run-limits so this line cannot
+          drift from the enforced numbers. */}
+      <p className="lede-sub">
+        {limits != null &&
+          `A run here handles up to ${limits.maxCids.toLocaleString()} items or ${Math.round(
+            limits.maxBytes / (1024 * 1024)
+          )} MiB. `}
+        You need a browser wallet extension holding USDFC (pays for storage) and a little FIL (pays gas). Bigger sets
+        run from your machine with the CLI: <code className="mono">npm i -g ipfs2foc</code>
+      </p>
 
       <section className="panel" id="start">
         <div className="panel-head">
@@ -1228,6 +1240,17 @@ export default function App({ caps }: { caps: Capabilities }) {
           spellCheck={false}
           value={cidsText}
         />
+        {invalidPasted.length > 0 && (
+          <p aria-live="polite" className="err-text">
+            {invalidPasted.length.toLocaleString()} entr{invalidPasted.length === 1 ? 'y' : 'ies'} in the list{' '}
+            {invalidPasted.length === 1 ? 'is' : 'are'} not a valid CID:{' '}
+            {invalidPasted
+              .slice(0, 3)
+              .map((s) => `"${short(s, 24, 0)}"`)
+              .join(', ')}
+            {invalidPasted.length > 3 ? ', …' : ''}. Fix or remove them; left in, they fail at Prepare.
+          </p>
+        )}
         <div className="file-intake">
           <label className="btn small">
             {cidFileBusy ? 'Reading…' : 'Load cids.txt'}
@@ -1319,6 +1342,14 @@ export default function App({ caps }: { caps: Capabilities }) {
               Prepared items reached this console&apos;s {Math.round(limits.maxBytes / (1024 * 1024))} MiB per-run
               limit, so the rest of the list stayed queued. Migrate what is prepared, or run the full list from your
               machine with the CLI: <code className="mono">npm i -g ipfs2foc</code>
+            </p>
+          )}
+          {!running && errors > 0 && (
+            <p aria-live="polite" className="err-text">
+              {errors.toLocaleString()} of {counts.total.toLocaleString()} item{counts.total === 1 ? '' : 's'} could not
+              be fetched here. Retry below once the source settles, try another gateway under Sources, and for
+              persistent failures run these from the CLI, which pulls from more sources with longer retries:{' '}
+              <code className="mono">npm i -g ipfs2foc</code>
             </p>
           )}
           {/* The newest finished item only: one worked example, not a second
