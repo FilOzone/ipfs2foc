@@ -1072,6 +1072,25 @@ export default function App({ caps }: { caps: Capabilities }) {
             <span className="sub">Filecoin Onchain Cloud</span>
           </span>
         </div>
+        <span className={`net-badge ${isTestnet ? 'is-test' : ''}`}>
+          <Led color={isTestnet ? 'var(--alert)' : 'var(--accent)'} on />
+          <label htmlFor="network">
+            <span className="sr-only">Network</span>
+          </label>
+          <select
+            disabled={netLocked}
+            id="network"
+            onChange={(e) => setTargetNetwork(e.target.value as NetworkKey)}
+            title={netLocked ? 'The network is fixed while a run is in flight' : 'Choose the network for this run'}
+            value={targetNetwork}
+          >
+            {(Object.keys(NETWORKS) as NetworkKey[]).map((k) => (
+              <option key={k} value={k}>
+                {k === 'mainnet' ? 'Mainnet' : 'Calibration testnet'}
+              </option>
+            ))}
+          </select>
+        </span>
       </header>
 
       {shown === 'intake' && <Lede limits={limits} />}
@@ -1804,28 +1823,6 @@ export default function App({ caps }: { caps: Capabilities }) {
         <span>
           Every commitment is computed in this tab from blocks it hash-checks itself, so a gateway cannot hand you the
           wrong bytes without the run failing.
-        </span>
-        <span className={`net-badge ${isTestnet ? 'is-test' : ''}`}>
-          <Led color={isTestnet ? 'var(--alert)' : 'var(--accent)'} on />
-          <label htmlFor="network">
-            <span className="sr-only">Network</span>
-          </label>
-          <select
-            disabled={netLocked}
-            id="network"
-            onChange={(e) => setTargetNetwork(e.target.value as NetworkKey)}
-            title={netLocked ? 'The network is fixed while a run is in flight' : 'Choose the network for this run'}
-            value={targetNetwork}
-          >
-            {(Object.keys(NETWORKS) as NetworkKey[]).map((k) => (
-              <option key={k} value={k}>
-                {k === 'mainnet' ? 'Mainnet' : 'Calibration testnet'}
-              </option>
-            ))}
-          </select>
-        </span>
-        <span>
-          CLI: <code className="mono">npm i -g ipfs2foc</code>
         </span>
         <a href="https://github.com/FilOzone/ipfs2foc" rel="noreferrer" target="_blank">
           FilOzone/ipfs2foc
