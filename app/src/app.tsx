@@ -3,6 +3,7 @@ import type { Capabilities } from 'ipfs2foc-core/capabilities'
 import { explorerDataSetUrl, explorerPieceUrl } from 'ipfs2foc-core/pdp-verifier'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { trackOnce } from './analytics.ts'
+import { reportFunnelState } from './telemetry.ts'
 import { DEFAULT_RELAY } from './capabilities.ts'
 import { type CidIntake, parseCidFile } from './cid-file.ts'
 import { dedupeCanonical } from './cid-union.ts'
@@ -407,6 +408,20 @@ export default function App({ caps }: { caps: Capabilities }) {
   useEffect(() => {
     if (cidCapExceeded || byteCapHit) trackOnce('cli-steer')
   }, [cidCapExceeded, byteCapHit])
+  // Funnel position for drop-off dashboards and the page-close beacon; the
+  // telemetry module owns all dedupe and bucketing decisions.
+  useEffect(() => {
+    reportFunnelState({
+      cidCount: cids.length,
+      walletConnected: wallet != null,
+      preparing: running,
+      preparedDone: counts.done,
+      prepareTotal: counts.total,
+      prepareErrors: counts.error,
+      submitting,
+      runCompleted: allCommitted,
+    })
+  }, [cids.length, wallet, running, counts.done, counts.total, counts.error, submitting, allCommitted])
 
   // Long runs: keep the screen awake and confirm accidental closes while
   // prepare or submit is in flight. Closing stays safe — both resume.

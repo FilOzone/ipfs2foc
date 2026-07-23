@@ -27,8 +27,12 @@ export function shouldReport(backend: Capabilities['backend'], isProdBuild: bool
   return backend === 'hosted' && isProdBuild && REPORTING_HOSTS.includes(hostname)
 }
 
-export function eventPayload(name: string, url: string): string {
-  return JSON.stringify({ name, url, domain: ANALYTICS_DOMAIN })
+/** Small scalar annotations on an event (verified: plausible/docs
+ * docs/events-api.md `props` — a flat JSON object, at most 30 pairs). */
+export type EventProps = Record<string, string | number | boolean>
+
+export function eventPayload(name: string, url: string, props?: EventProps): string {
+  return JSON.stringify(props == null ? { name, url, domain: ANALYTICS_DOMAIN } : { name, url, domain: ANALYTICS_DOMAIN, props })
 }
 
 let enabled = false
@@ -39,22 +43,44 @@ export function initAnalytics(caps: Pick<Capabilities, 'backend'>): void {
   if (enabled) send('pageview')
 }
 
+/** Whether the reporting gate is open for this load — the telemetry module
+ * keys every other emitter (errors, metrics) off the same decision. */
+export function analyticsEnabled(): boolean {
+  return enabled
+}
+
 /**
  * Fire a named event once per page load. The steer notice can flip on and
  * off while the operator edits the input; the funnel wants people, not
  * renders.
  */
-export function trackOnce(name: string): void {
+export function trackOnce(name: string, props?: EventProps): void {
   if (!enabled || sent.has(name)) return
   sent.add(name)
-  send(name)
+  send(name, props)
 }
 
-function send(name: string): void {
+/**
+ * Last-gasp event during page dismissal. `sendBeacon` with a string body
+ * posts text/plain and survives the tab closing; fetch-with-keepalive can be
+ * dropped mid-unload. Plausible parses a text/plain body as JSON (verified:
+ * plausible/docs docs/events-api.md Content-Type note).
+ */
+export function beaconOnce(name: string, props?: EventProps): void {
+  if (!enabled || sent.has(name)) return
+  sent.add(name)
+  try {
+    navigator.sendBeacon(PLAUSIBLE_EVENT_URL, eventPayload(name, window.location.href, props))
+  } catch {
+    // Best effort, same as send().
+  }
+}
+
+function send(name: string, props?: EventProps): void {
   void fetch(PLAUSIBLE_EVENT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
-    body: eventPayload(name, window.location.href),
+    body: eventPayload(name, window.location.href, props),
     keepalive: true,
   }).catch(() => {
     // Best effort: an ad blocker or offline tab must never surface an error.

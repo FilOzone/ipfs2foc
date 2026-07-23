@@ -57,6 +57,13 @@ whether the tool is reaching people. Opt out with `SCARF_ANALYTICS=false` or
 `DO_NOT_TRACK=1` in your environment, or `npm install --ignore-scripts`; the
 report happens at install time only, never when the CLI runs.
 
+The hosted web console reports usage signals (page views, funnel steps such
+as "entered CIDs" or "run completed" with coarse count buckets, and the step
+a closed tab was on) and error reports with CIDs and wallet addresses
+redacted before anything is sent. Only the production deployment on its
+official domains reports; a `serve` daemon, a development build, or a
+self-hosted copy of the static site sends nothing.
+
 From source (development uses [pnpm](https://pnpm.io)):
 
 ```bash
