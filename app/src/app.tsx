@@ -10,7 +10,14 @@ import { computePiece, describePrepareFailure, type PreparePhase, stallMessage }
 import { Continuity, Led } from './components/continuity.tsx'
 import { fmtBytes, fmtEta, fmtExpiry, short } from './components/format.ts'
 import { Lede } from './components/lede.tsx'
-import { ByteCapNotice, CidCapNotice, FailureSummary, InvalidCidNote, LongRunAdvisory } from './components/notices.tsx'
+import {
+  ByteCapNotice,
+  CidCapNotice,
+  ContactLink,
+  FailureSummary,
+  InvalidCidNote,
+  LongRunAdvisory,
+} from './components/notices.tsx'
 import { PieceRow } from './components/piece-row.tsx'
 import { SessionExpiryNote, SessionGrantExplainer } from './components/session-notes.tsx'
 import { FocMark } from './foc-mark.tsx'
@@ -1633,6 +1640,7 @@ export default function App({ caps }: { caps: Capabilities }) {
         <a href="https://github.com/FilOzone/ipfs2foc" rel="noreferrer" target="_blank">
           FilOzone/ipfs2foc
         </a>
+        <ContactLink>Different requirements? Talk to us</ContactLink>
       </footer>
     </div>
   )

@@ -5,8 +5,25 @@
  * from exactly one place.
  */
 
+import type { ReactNode } from 'react'
+import { trackOnce } from '../analytics.ts'
 import type { RunLimits } from '../run-limits.ts'
 import { fmtLimitBytes, short } from './format.ts'
+
+/** Where a user with needs this console does not cover reaches a person. */
+export const CONTACT_URL = 'https://filecoin.cloud/contact'
+
+/**
+ * The contact path, rendered wherever a boundary copy offers it. Click
+ * tracking rides the same hosted-only analytics gate as everything else.
+ */
+export function ContactLink({ children = 'talk to us' }: { children?: ReactNode }) {
+  return (
+    <a href={CONTACT_URL} onClick={() => trackOnce('contact')} rel="noreferrer" target="_blank">
+      {children}
+    </a>
+  )
+}
 
 /** Pasted lines that do not parse as CIDs, called out at intake time. */
 export function InvalidCidNote({ invalid }: { invalid: string[] }) {
@@ -30,7 +47,7 @@ export function CidCapNotice({ limits, count }: { limits: RunLimits; count: numb
     <p className="err-text">
       This hosted console handles up to {limits.maxCids.toLocaleString()} items per run; your list has{' '}
       {count.toLocaleString()}. For larger sets, run the same migration from your machine with the CLI:{' '}
-      <code className="mono">npm i -g ipfs2foc</code>
+      <code className="mono">npm i -g ipfs2foc</code>. Different requirements? <ContactLink>Talk to us</ContactLink>.
     </p>
   )
 }
@@ -41,7 +58,8 @@ export function ByteCapNotice({ limits }: { limits: RunLimits }) {
     <p aria-live="polite" className="err-text">
       Prepared items reached this console&apos;s {fmtLimitBytes(limits.maxBytes)} per-run ceiling (the most one run can
       ship), so the rest of the list stayed queued. Migrate what is prepared, or run the full list from your machine
-      with the CLI: <code className="mono">npm i -g ipfs2foc</code>
+      with the CLI: <code className="mono">npm i -g ipfs2foc</code>. Different requirements?{' '}
+      <ContactLink>Talk to us</ContactLink>.
     </p>
   )
 }
@@ -58,7 +76,8 @@ export function LongRunAdvisory({ minutes }: { minutes: number | null }) {
         ? 'This run is pacing past ten minutes here.'
         : `This run looks like about ${minutes.toLocaleString()} minutes here.`}{' '}
       Leaving it open is fine, and it resumes if the tab closes. The CLI handles long migrations better, with more
-      sources and longer retries: <code className="mono">npm i -g ipfs2foc</code>
+      sources and longer retries: <code className="mono">npm i -g ipfs2foc</code>. Different requirements?{' '}
+      <ContactLink>Talk to us</ContactLink>.
     </p>
   )
 }
@@ -69,7 +88,8 @@ export function FailureSummary({ errors, total }: { errors: number; total: numbe
     <p aria-live="polite" className="err-text">
       {errors.toLocaleString()} of {total.toLocaleString()} item{total === 1 ? '' : 's'} could not be fetched here.
       Retry below once the source settles, try another gateway under Sources, and for persistent failures run these from
-      the CLI, which pulls from more sources with longer retries: <code className="mono">npm i -g ipfs2foc</code>
+      the CLI, which pulls from more sources with longer retries: <code className="mono">npm i -g ipfs2foc</code>. If
+      these need another path entirely (private sources, very large assets), <ContactLink>talk to us</ContactLink>.
     </p>
   )
 }
