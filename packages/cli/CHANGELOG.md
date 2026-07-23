@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.0](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.6.0...ipfs2foc-v0.7.0) (2026-07-23)
+
+
+### Features
+
+* **app:** contact path on every steer ([0e11564](https://github.com/FilOzone/ipfs2foc/commit/0e11564962dca48a8878857b4d7975ed68331aa9))
+* **app:** funding checklist and blocker funnel ([09ca6cd](https://github.com/FilOzone/ipfs2foc/commit/09ca6cd1a8f9b47fde36d0fcb3cf67cfd12866db))
+* **app:** funnel telemetry and error reports ([c540f89](https://github.com/FilOzone/ipfs2foc/commit/c540f89a949089d7c8867c9567324ed5bdf6b613))
+* **app:** history chrome rail and rows ([cc0aa9f](https://github.com/FilOzone/ipfs2foc/commit/cc0aa9f21446d494f3f48f84c464af98f9b2412b))
+* **app:** long-run advisory, 1 GiB ceiling ([05c4e3c](https://github.com/FilOzone/ipfs2foc/commit/05c4e3cb77c5e9ec848b9d02cf38b846e7de1b27))
+* **app:** one-active-step flow with cost gate ([db09dd1](https://github.com/FilOzone/ipfs2foc/commit/db09dd15155ac7aad68e1a671fda403a45a51693))
+* **app:** providers pull gateway URLs directly ([c26816b](https://github.com/FilOzone/ipfs2foc/commit/c26816b2bc696ebe350d80e086de079894b7d9ab))
+* **app:** stage machine for the one-step flow ([ef4c842](https://github.com/FilOzone/ipfs2foc/commit/ef4c84275a86588b1dadcb3f641e778d1302d2b2))
+* **app:** storybook flow stories ([e07e6c5](https://github.com/FilOzone/ipfs2foc/commit/e07e6c5991b02e1c7857d3c394e9552dd6e758e8))
+* **app:** wallet checklist and duration control ([13a1906](https://github.com/FilOzone/ipfs2foc/commit/13a1906fcdf02d154b297489c8e208205b174387))
+
+
+### Bug Fixes
+
+* **app:** network select back to the masthead ([d622ed0](https://github.com/FilOzone/ipfs2foc/commit/d622ed09950b6a6da1740989d5bd844e28ffa0e6))
+* **app:** prepare row hints, labels, link guard ([5876b86](https://github.com/FilOzone/ipfs2foc/commit/5876b8648843913587dad31d4554de7052c6df4e))
+* **app:** verbalize intake, fit, and failure steers ([e709f3c](https://github.com/FilOzone/ipfs2foc/commit/e709f3c7c5994d7300f1deb8d9242e81b47f12e3))
+
 ## [0.6.0](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.5.0...ipfs2foc-v0.6.0) (2026-07-22)
 
 
