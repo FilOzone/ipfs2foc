@@ -5,8 +5,8 @@
  * viewport, same stylesheet, same switch.
  */
 
-import type { HistoryEntry, Stage } from '../src/flow.ts'
 import { HistoryChrome } from '../src/components/history-chrome.tsx'
+import type { HistoryEntry, Stage } from '../src/flow.ts'
 import { noop } from './fixtures.ts'
 
 export function FlowShell({
