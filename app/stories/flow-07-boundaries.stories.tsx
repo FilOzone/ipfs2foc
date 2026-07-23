@@ -46,7 +46,7 @@ function BoundariesGallery() {
 }
 
 const meta = {
-  title: 'Flow/06 Boundaries',
+  title: 'Flow/07 Boundaries',
   component: BoundariesGallery,
 } satisfies Meta<typeof BoundariesGallery>
 

@@ -10,7 +10,7 @@ function SubmitPanel({ children, rows }: { children?: React.ReactNode; rows?: Re
   return (
     <section className="panel">
       <div className="panel-head">
-        <span className="panel-no is-current">04</span>
+        <span className="panel-no is-current">05</span>
         <h2>Submit</h2>
         <span className="panel-note">
           One on-chain commit per copy, signed by the session key without further prompts.
@@ -33,7 +33,7 @@ function SubmitPanel({ children, rows }: { children?: React.ReactNode; rows?: Re
 }
 
 const meta = {
-  title: 'Flow/05 Submit',
+  title: 'Flow/06 Submit',
   component: SubmitPanel,
 } satisfies Meta<typeof SubmitPanel>
 
@@ -68,7 +68,7 @@ export const Committing: Story = {
   },
 }
 
-/** Both copies committed; the wrap-up tells the user to revoke the session. */
+/** The receipt stage: every copy committed, the wrap-up points at revocation. */
 export const Done: Story = {
   args: {
     children: (

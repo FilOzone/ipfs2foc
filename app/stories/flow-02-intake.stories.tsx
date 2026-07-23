@@ -3,9 +3,10 @@ import { CidCapNotice, InvalidCidNote } from '../src/components/notices.tsx'
 import { CIDS, HOSTED_LIMITS } from './fixtures.ts'
 
 /**
- * The CID intake panel. The textarea and buttons here are a static fixture
- * (the live panel's handlers are wired inside app.tsx); the notices under it
- * are the real components the app renders.
+ * The intake step: the whole landing besides the Lede. In the one-active-step
+ * flow this panel owns the main column until a prepare run exists. The
+ * textarea and buttons here are a static fixture (the live panel's handlers
+ * are wired inside app.tsx); the notices under it are the real components.
  */
 function IntakePanel({
   value,
@@ -19,7 +20,7 @@ function IntakePanel({
   return (
     <section className="panel">
       <div className="panel-head">
-        <span className={`panel-no ${uniqueCount > 0 ? 'is-current' : ''}`}>02</span>
+        <span className={`panel-no ${uniqueCount > 0 ? 'is-current' : ''}`}>01</span>
         <h2>CIDs</h2>
         <span className="panel-note">{uniqueCount === 0 ? '' : `${uniqueCount.toLocaleString()} unique`}</span>
       </div>
@@ -40,8 +41,15 @@ function IntakePanel({
       </div>
       <div className="actions">
         <button className="btn primary" disabled={uniqueCount === 0} type="button">
-          {uniqueCount === 0 ? 'Prepare' : `Prepare ${uniqueCount.toLocaleString()} items`}
+          {uniqueCount === 0
+            ? 'Prepare'
+            : `Prepare ${uniqueCount.toLocaleString()} item${uniqueCount === 1 ? '' : 's'}`}
         </button>
+        {uniqueCount > 0 && (
+          <button className="btn small" type="button">
+            Clear
+          </button>
+        )}
       </div>
     </section>
   )

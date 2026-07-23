@@ -3,16 +3,17 @@ import { SessionExpiryNote, SessionGrantExplainer } from '../src/components/sess
 import { NO_WALLET_MESSAGE } from '../src/wallet.ts'
 
 /**
- * The wallet panel's states. The panel chrome is a static fixture; the
+ * The wallet step: reached only after the cost gate, so the panel note
+ * carries the accepted estimate. The panel chrome is a static fixture; the
  * error string and session explainers are the real exports the app renders.
  */
 function WalletPanel({ children }: { children: React.ReactNode }) {
   return (
-    <section className="panel" id="start">
+    <section className="panel">
       <div className="panel-head">
-        <span className="panel-no is-current">01</span>
-        <h2>Wallet</h2>
-        <span className="panel-note">Nothing is signed in this step.</span>
+        <span className="panel-no is-current">04</span>
+        <h2>Wallet &amp; funds</h2>
+        <span className="panel-note">≈0.12 USDFC / month · nothing is stored without your approval.</span>
       </div>
       {children}
     </section>
@@ -20,7 +21,7 @@ function WalletPanel({ children }: { children: React.ReactNode }) {
 }
 
 const meta = {
-  title: 'Flow/04 Wallet',
+  title: 'Flow/05 Wallet',
   component: WalletPanel,
 } satisfies Meta<typeof WalletPanel>
 
