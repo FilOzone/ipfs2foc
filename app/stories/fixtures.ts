@@ -54,4 +54,4 @@ export const ROW_FAILED: PieceRowView = {
 
 export const ROW_QUEUED: PieceRowView = { phase: 'queued', cid: CIDS[2] }
 
-export const noop = () => {}
+export const noop = (): void => undefined

@@ -126,7 +126,8 @@ export function initAbandonBeacon(): void {
     beaconOnce('page-closed', {
       step,
       cids: cidCountBucket(lastSnapshot.cidCount),
-      prepared: lastSnapshot.prepareTotal > 0 ? Math.round((lastSnapshot.preparedDone / lastSnapshot.prepareTotal) * 100) : 0,
+      prepared:
+        lastSnapshot.prepareTotal > 0 ? Math.round((lastSnapshot.preparedDone / lastSnapshot.prepareTotal) * 100) : 0,
     })
   })
 }

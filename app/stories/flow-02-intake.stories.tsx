@@ -36,7 +36,7 @@ function IntakePanel({
       />
       {children}
       <div className="file-intake">
-        <label className="btn small">Load cids.txt</label>
+        <span className="btn small">Load cids.txt</span>
       </div>
       <div className="actions">
         <button className="btn primary" disabled={uniqueCount === 0} type="button">

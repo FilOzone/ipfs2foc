@@ -11,10 +11,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { analyticsEnabled, initAnalytics } from './analytics.ts'
 import App from './app.tsx'
-import { initErrorTracking } from './error-tracking.ts'
-import { initAbandonBeacon } from './telemetry.ts'
 import { loadCapabilities } from './capabilities.ts'
+import { initErrorTracking } from './error-tracking.ts'
 import LocalDashboard from './local-dashboard.tsx'
+import { initAbandonBeacon } from './telemetry.ts'
 import './styles.css'
 
 // One console, two backends: a local `ipfs2foc serve` daemon answers

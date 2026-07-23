@@ -32,7 +32,9 @@ export function shouldReport(backend: Capabilities['backend'], isProdBuild: bool
 export type EventProps = Record<string, string | number | boolean>
 
 export function eventPayload(name: string, url: string, props?: EventProps): string {
-  return JSON.stringify(props == null ? { name, url, domain: ANALYTICS_DOMAIN } : { name, url, domain: ANALYTICS_DOMAIN, props })
+  return JSON.stringify(
+    props == null ? { name, url, domain: ANALYTICS_DOMAIN } : { name, url, domain: ANALYTICS_DOMAIN, props }
+  )
 }
 
 let enabled = false
