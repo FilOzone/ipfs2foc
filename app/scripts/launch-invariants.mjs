@@ -81,7 +81,9 @@ function serve() {
         res.writeHead(200, { 'content-type': MIME[extname(resolved)] ?? 'application/octet-stream' })
         res.end(file)
         return
-      } catch {}
+      } catch {
+        // Unreadable candidate: try the next one, then fall through to a 404.
+      }
     }
     res.writeHead(404)
     res.end()
@@ -118,7 +120,9 @@ function chromePath() {
     try {
       readFileSync(p, { length: 0 })
       return p
-    } catch {}
+    } catch {
+      // Not installed at this path: try the next candidate.
+    }
   }
   die(`no Chrome binary found; set PUPPETEER_EXECUTABLE_PATH (tried: ${candidates.join(', ')})`)
 }
@@ -157,7 +161,9 @@ try {
 
   if (pageErrors.length > 0) die(`page errors on landing: ${pageErrors.join(' | ')}`)
 
-  console.log(`launch-invariants: ok (caps ${limits.maxCids}/${fmtLimitBytes(limits.maxBytes)}, network ${expectedNetwork})`)
+  console.log(
+    `launch-invariants: ok (caps ${limits.maxCids}/${fmtLimitBytes(limits.maxBytes)}, network ${expectedNetwork})`
+  )
 } finally {
   await browser.close()
   server.close()
