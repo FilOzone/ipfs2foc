@@ -144,7 +144,10 @@ export const defaultDirectUploadDeps: DirectUploadDeps = {
     try {
       await unlink(path)
     } catch (err) {
-      log(`warn: failed to evict cached CAR ${path}: ${(err as Error).message}`)
+      // A resumed run may find the CAR already evicted by a prior run.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        log(`warn: failed to evict cached CAR ${path}: ${(err as Error).message}`)
+      }
     }
   },
 }
@@ -251,12 +254,14 @@ export async function runDirectUpload(
 
   // Evict staged CARs whose every copy is committed. Runs after every flush,
   // not just at run end: the disk high-water mark must track the uncommitted
-  // window, not the whole migration.
-  let evicted = 0
+  // window, not the whole migration. The DB keeps car_path after eviction (the
+  // row is the piece's provenance), so track what this run already unlinked.
+  const evictedPaths = new Set<string>()
   const evictCommitted = async (): Promise<void> => {
     for (const path of db.carPathsFullyCommitted()) {
+      if (evictedPaths.has(path)) continue
       await deps.evictCar(path)
-      evicted++
+      evictedPaths.add(path)
     }
   }
 
@@ -360,7 +365,7 @@ export async function runDirectUpload(
       assumedWindowMs: windowFor(ctx),
     })),
     storedBytes,
-    evictedCars: evicted,
+    evictedCars: evictedPaths.size,
   }
   log(`direct upload finished in ${formatDuration(runTimer.stop())}: ${formatBytes(storedBytes)} stored`)
   return summary
