@@ -114,7 +114,7 @@ IPFS fallback (plan, commp, serve):
   --ipfs-fallback-mode MODE          Fallback ordering (default: gateway-first; only value supported in this release)
   --ipfs-fallback-timeout-seconds N  Per-CID upper bound on the fallback fetch (default: 120)
 
-Docs: https://github.com/SgtPooki/ipfs2foc#readme
+Docs: https://github.com/FilOzone/ipfs2foc#readme
   Quickstart and troubleshooting in the README; operator profiles, gateways,
   and ingress setup under docs/.
 `

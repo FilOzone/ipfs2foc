@@ -13,7 +13,7 @@ each object's bytes directly from a trustless IPFS gateway; your machine streams
 each object once to compute its piece commitment and stores none of the payload.
 
 To run a migration with nothing installed, use the browser console at
-[sgtpooki.github.io/ipfs2foc](https://sgtpooki.github.io/ipfs2foc/).
+[filozone.github.io/ipfs2foc](https://filozone.github.io/ipfs2foc/).
 
 ## Install
 
@@ -37,9 +37,9 @@ ipfs2foc probe --gateway https://trustless-gateway.link   # check a source
 Full usage, prerequisites, the on-chain flow, and operational notes live in the
 repository:
 
-- [Project README](https://github.com/SgtPooki/ipfs2foc#readme) — install,
+- [Project README](https://github.com/FilOzone/ipfs2foc#readme) — install,
   quickstart, commands, troubleshooting, how it works.
-- [`docs/`](https://github.com/SgtPooki/ipfs2foc/tree/main/docs) — tutorial,
+- [`docs/`](https://github.com/FilOzone/ipfs2foc/tree/main/docs) — tutorial,
   glossary, source/gateway notes, ingress, personas.
 
 ## License

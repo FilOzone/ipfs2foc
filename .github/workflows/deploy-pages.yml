@@ -1,7 +1,7 @@
 name: Deploy app to Pages
 
 # Builds the in-browser migration console (app/) and publishes it to GitHub
-# Pages at https://sgtpooki.github.io/ipfs2foc/. Enable once in repo Settings →
+# Pages at https://filozone.github.io/ipfs2foc/. Enable once in repo Settings →
 # Pages → Source: GitHub Actions.
 on:
   push:
