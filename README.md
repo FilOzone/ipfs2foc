@@ -121,8 +121,12 @@ you target (default `mainnet`; pass `--network calibration` for the testnet).
 ## Quickstart
 
 Complete **Prerequisites** above first. Default network is **mainnet**; pass
-`--network calibration` for the testnet. `redirect-serve` and `pdp-submit` run
-concurrently in separate terminals.
+`--network calibration` for the testnet.
+
+Step 3 starts a long-running process and step 4 runs against it, so the two
+overlap: start step 3, wait for it to log its public URL, and leave it up for
+the whole of step 4. Two shells, a background job, or a terminal multiplexer
+all work.
 
 > **First time?** Rehearse the whole flow on the testnet with the
 > [calibration tutorial](docs/tutorial-first-migration.md) before spending real
@@ -145,13 +149,18 @@ ipfs2foc probe <sample-cid> --gateway https://trustless-gateway.link
 printf '%s\n' <cid> > cids.txt
 ipfs2foc plan --cids cids.txt --db migrate.db
 
-# 3. (Terminal A — leave running) Serve sub-pieces over public HTTPS.
-#    `--ingress cloudflared` spawns a no-signup Cloudflare tunnel and logs the URL.
-#    (`ipfs2foc serve --ingress cloudflared` does the same from the console daemon.)
+# 3. Serve sub-pieces over public HTTPS. Leave this running for step 4.
+#    `--ingress cloudflared` spawns a no-signup Cloudflare tunnel, then logs:
+#      cloudflared ingress: ready at https://<words>.trycloudflare.com
+#      Pass it to pdp-submit: --source-base https://<words>.trycloudflare.com
+#    Wait for those lines; the second one is step 4's --source-base verbatim.
+#    (`ipfs2foc serve --ingress cloudflared` answers the same /piece route from
+#     the console daemon, so one process carries both and step 3 is not needed.)
 ipfs2foc redirect-serve --db migrate.db --port 4322 --ingress cloudflared
 
-# 4. (Terminal B) Pull, park, and add each aggregate onto the provider's data set.
-#    `--source-base` is the public HTTPS origin only (no path) from step 3.
+# 4. Pull, park, and add each aggregate onto the provider's data set, while
+#    step 3 keeps running. `--source-base` is the public HTTPS origin only
+#    (scheme and host, no path) that step 3 logged.
 ipfs2foc pdp-submit --db migrate.db --data-set-id <data-set-id> \
   --source-base https://<public-host>
 

@@ -185,13 +185,19 @@ export default function LocalDashboard({ caps }: { caps: Capabilities }) {
     publicBase == null
       ? [
           [`ipfs2foc create-data-set --provider-id <id>${net}`, 'once per provider · skip if reusing a data set'],
-          [`ipfs2foc redirect-serve --db ${db} --ingress cloudflared --port 4322`, 'terminal A · leave running'],
-          [`ipfs2foc pdp-submit --db ${db} --data-set-id <id> --source-base https://<host>${net}`, 'terminal B'],
+          [`ipfs2foc redirect-serve --db ${db} --ingress cloudflared --port 4322`, 'leave running'],
+          [
+            `ipfs2foc pdp-submit --db ${db} --data-set-id <id> --source-base https://<host>${net}`,
+            'while the above runs',
+          ],
           [`ipfs2foc report --db ${db} --data-set-id <id>${net}`, 'confirm on chain'],
         ]
       : [
           [`ipfs2foc create-data-set --provider-id <id>${net}`, 'once per provider · skip if reusing a data set'],
-          [`ipfs2foc pdp-submit --db ${db} --data-set-id <id> --source-base ${publicBase}${net}`, 'second terminal'],
+          [
+            `ipfs2foc pdp-submit --db ${db} --data-set-id <id> --source-base ${publicBase}${net}`,
+            'while the daemon runs',
+          ],
           [`ipfs2foc report --db ${db} --data-set-id <id>${net}`, 'confirm on chain'],
         ]
 

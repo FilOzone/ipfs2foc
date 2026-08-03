@@ -60,7 +60,7 @@ ipfs2foc plan --cids cids.txt --db migrate.db
 Checkpoint: `Done. 1/1 pieces, 1 aggregate(s) -> migrate.db`. The next-step line
 points you at `redirect-serve` and `pdp-submit`.
 
-## 4. Serve the sub-piece (leave this terminal running)
+## 4. Serve the sub-piece (leave it running)
 
 ```bash
 ipfs2foc redirect-serve --db migrate.db --port 4322 --ingress cloudflared
@@ -73,7 +73,7 @@ Copy that URL. Confirm it from another network:
 curl -I https://<words>.trycloudflare.com/healthz   # expect HTTP 200
 ```
 
-## 5. Submit on chain (a second terminal)
+## 5. Submit on chain (while step 4 runs)
 
 ```bash
 ipfs2foc pdp-submit --db migrate.db --data-set-id <data-set-id> \
