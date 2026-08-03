@@ -309,6 +309,12 @@ export interface PackCarsOptions {
   carStore: string
   /** Bounded fan-out per assembly. Default 4. */
   fetchConcurrency?: number
+  /**
+   * When true, skip the trailing `appendAggregatesFromFreeSubPieces` pass.
+   * The direct-upload flow commits each built sub-piece as its own on-chain
+   * piece; the aggregates table only serves the provider-pull path.
+   */
+  skipAggregatePlanning?: boolean
 }
 
 export interface PackCarsSummary {
@@ -437,7 +443,7 @@ export async function runPackCars(
   // composition `plan` wrote and asks the SP to pull individual files (most
   // of which are below the provider's minimum piece size). Frozen aggregates
   // (submitted/parked/committed) are left untouched.
-  if (summary.built > 0 || passthroughAdded > 0) {
+  if ((summary.built > 0 || passthroughAdded > 0) && opts.skipAggregatePlanning !== true) {
     // Append new aggregates over the freshly built multi-asset sub-pieces.
     // No DELETE of existing aggregates — `plan` already added passthrough
     // aggregates over the source pieces, and those stay as the alternative

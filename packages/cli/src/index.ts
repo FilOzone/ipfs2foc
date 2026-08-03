@@ -13,6 +13,7 @@
  *   gas     [--network N] [opts]            Current network base fee and whether to pause.
  *   redirect-serve [--db FILE] [--port N] [--ingress funnel|cloudflared]   GET /piece/{pcidv2} -> 302 gateway CAR.
  *   create-data-set --provider-id ID [opts] Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env).
+ *   upload  --cids FILE --car-store DIR [opts]  Download, pack, and upload direct to providers (PRIVATE_KEY env).
  *   pdp-submit --data-set-id ID [opts]      Pull, park, and add aggregates over PDP (PRIVATE_KEY env).
  *   report  --data-set-id ID [opts]         Reconcile a run against on-chain pieces; emit explorer links.
  *   pack-cars --car-store DIR [opts]        Assemble multi-root CARs for the multi-asset path.
@@ -29,6 +30,7 @@ import { parseArgs } from 'node:util'
 import { DEFAULT_PROBE_CONCURRENCY, DEFAULT_SAMPLE, formatAnalyzeText, runAnalyze } from './analyze.ts'
 import { runCreateDataSet } from './create-data-set.ts'
 import { MigrationDB } from './db.ts'
+import { runDirectUpload } from './direct-upload.ts'
 import { buildExportManifest } from './export-manifest.ts'
 import { classifyBaseFee, DEFAULT_MAX_BASE_FEE, getBaseFee, resolveRpcUrl } from './gas.ts'
 import { DEFAULT_GATEWAYS, probeGateway } from './gateway.ts'
@@ -49,6 +51,23 @@ import { log, parseCidList, parsePositiveInt, parseSize } from './util.ts'
 
 const DEFAULT_DB = './migrate.db'
 
+/**
+ * The provider-pull ingress paths (redirect-serve, serve --ingress,
+ * pdp-submit --source-*) are gated: they require a public HTTPS origin, which
+ * most consumer networks cannot provide, and the direct `upload` command
+ * replaces them without any ingress. They stay available for self-hosting
+ * operators who already run a reachable origin.
+ */
+function requireLegacyPull(values: { 'legacy-pull'?: boolean }, what: string): void {
+  if (values['legacy-pull'] !== true) {
+    throw new Error(
+      `${what} uses the legacy provider-pull path, which needs a public HTTPS origin. ` +
+        `The 'upload' command uploads directly and needs no ingress. ` +
+        `Pass --legacy-pull if you run a reachable origin and want provider pull anyway.`
+    )
+  }
+}
+
 const USAGE = `ipfs2foc — migrate pinned IPFS CIDs to FOC without re-chunking
 
 Usage:
@@ -63,16 +82,26 @@ Usage:
   ipfs2foc serve  [--db <file>] [--cids <file>] [--gateway URL]... [--piece-size 32GiB]
                      [--concurrency 8] [--port 4321] [--network mainnet|calibration] [--max-base-fee N]
                      [--app-dir <dir>]  (or IPFS2FOC_APP_DIR; defaults to the bundled console)
-                     [--ingress cloudflared | --public-base <https-url>]
-                     (serve also answers GET/HEAD /piece/{pcidv2}; with ingress it is the pull source)
+                     [--ingress cloudflared | --public-base <https-url>] [--legacy-pull]
+                     (serve also answers GET/HEAD /piece/{pcidv2}; with ingress it is the pull source,
+                      which requires --legacy-pull — prefer 'upload', which needs no ingress)
   ipfs2foc gas    [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
-  ipfs2foc redirect-serve [--db <file>] [--port 4322] [--ingress funnel|cloudflared]
+  ipfs2foc redirect-serve [--db <file>] [--port 4322] [--ingress funnel|cloudflared] [--legacy-pull]
+  ipfs2foc upload [--cids <file>] --car-store <dir> [--db <file>] [--gateway URL]...
+                     [--network mainnet|calibration] [--rpc-url URL] [--copies 2]
+                     [--provider-id <id>]... [--data-set-id <id>]...
+                     [--pack-target-size 1000MiB] [--concurrency 8] [--fetch-concurrency 4]
+                     [--assumed-window-minutes 60]  (uses PRIVATE_KEY env)
+                     (download, pack multi-root CARs, stream each straight to the providers, and
+                      batch addPieces before the provider's parked-piece GC window closes; no
+                      public origin, relay, or ingress required)
   ipfs2foc create-data-set --provider-id <id> [--network mainnet|calibration] [--cdn]
                      (uses PRIVATE_KEY env)
   ipfs2foc pdp-submit --data-set-id <id> (--source-base <https-url> | --source-relay <https-url>) [--db <file>]
                      [--network mainnet|calibration] [--max-in-flight 4] [--max-base-fee N] [--pull-batch 32]
                      [--strict-piece-size]  (refuse pieces below the provider's advertised minimum;
                      default warns and proceeds — the floor is advisory in practice)
+                     [--legacy-pull]  (required: provider pull needs a public origin; prefer 'upload')
                      (--source-base: your own redirect-serve; --source-relay: a shared stateless relay, passthrough only)
                      (uses PRIVATE_KEY env)
   ipfs2foc report --data-set-id <id> [--db <file>] [--network mainnet|calibration] [--json]
@@ -94,19 +123,24 @@ Defaults:
   network     mainnet (serve base-fee monitor off unless --network or --rpc-url given)
 
 Examples:
+  # Migrate a CID list end to end: download, pack ~1 GiB multi-root CARs, and
+  # upload straight to two providers. No public origin or tunnel needed.
+  ipfs2foc upload --cids cids.txt --car-store ./cars --network calibration
+
   # Pre-flight a gateway, then plan a CID list
   ipfs2foc probe <cid> --gateway https://trustless-gateway.link
   ipfs2foc plan --cids cids.txt
 
+  # Legacy provider-pull path (self-hosted public origin required).
   # One process carries the console and the pull source. Start it, wait for it
   # to log "ingress: ready at https://<host>", then submit against that host.
-  ipfs2foc serve --ingress cloudflared
-  ipfs2foc pdp-submit --data-set-id 42 --source-base https://<tunnel-host>
+  ipfs2foc serve --ingress cloudflared --legacy-pull
+  ipfs2foc pdp-submit --data-set-id 42 --source-base https://<tunnel-host> --legacy-pull
 
   # Or run the pull source on its own: start it first, leave it running, and
   # submit from a second shell against the host it logs.
-  ipfs2foc redirect-serve --ingress cloudflared --port 4322
-  ipfs2foc pdp-submit --data-set-id 42 --source-base https://<public-host>
+  ipfs2foc redirect-serve --ingress cloudflared --port 4322 --legacy-pull
+  ipfs2foc pdp-submit --data-set-id 42 --source-base https://<public-host> --legacy-pull
 
   # Confirm everything landed on chain
   ipfs2foc report --data-set-id 42
@@ -133,6 +167,7 @@ const KNOWN_COMMANDS = [
   'gas',
   'redirect-serve',
   'create-data-set',
+  'upload',
   'pdp-submit',
   'report',
   'pack-cars',
@@ -573,8 +608,10 @@ async function cmdPdpSubmit(argv: string[]): Promise<void> {
       'poll-seconds': { type: 'string', default: '15' },
       'pull-batch': { type: 'string', default: '32' },
       'strict-piece-size': { type: 'boolean', default: false },
+      'legacy-pull': { type: 'boolean', default: false },
     },
   })
+  requireLegacyPull(values, 'pdp-submit')
   if (values['data-set-id'] == null) {
     throw new Error('pdp-submit requires --data-set-id <id>')
   }
@@ -661,8 +698,10 @@ async function cmdRedirectServe(argv: string[]): Promise<void> {
       db: { type: 'string', default: DEFAULT_DB },
       port: { type: 'string', default: '4322' },
       ingress: { type: 'string', default: 'funnel' },
+      'legacy-pull': { type: 'boolean', default: false },
     },
   })
+  requireLegacyPull(values, 'redirect-serve')
   const db = new MigrationDB(values.db as string)
   const port = parsePositiveInt(values.port as string, '--port')
   const ingress = values.ingress as string
@@ -698,6 +737,80 @@ async function cmdGas(argv: string[]): Promise<void> {
       2
     )
   )
+}
+
+async function cmdUpload(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      cids: { type: 'string' },
+      db: { type: 'string', default: DEFAULT_DB },
+      gateway: { type: 'string', multiple: true },
+      'car-store': { type: 'string' },
+      network: { type: 'string', default: 'mainnet' },
+      'rpc-url': { type: 'string' },
+      copies: { type: 'string', default: '2' },
+      'provider-id': { type: 'string', multiple: true },
+      'data-set-id': { type: 'string', multiple: true },
+      // 1016 MiB is the SDK's per-piece cap; 1000 MiB leaves headroom for the
+      // multi-root CAR header and framing the bin-packing weight ignores.
+      'pack-target-size': { type: 'string', default: '1000MiB' },
+      concurrency: { type: 'string', default: '8' },
+      'fetch-concurrency': { type: 'string', default: '4' },
+      'assumed-window-minutes': { type: 'string', default: '60' },
+    },
+  })
+  if (values['car-store'] == null) {
+    throw new Error('upload requires --car-store <dir> (packed CARs are staged here until committed)')
+  }
+  const network = values.network as string
+  if (network !== 'mainnet' && network !== 'calibration') {
+    throw new Error(`unknown --network ${network} (expected mainnet|calibration)`)
+  }
+  const key = process.env.PRIVATE_KEY
+  if (key == null || !/^0x[0-9a-fA-F]{64}$/.test(key)) {
+    throw new Error('set PRIVATE_KEY (0x + 64 hex) in the environment (e.g. `source .env`)')
+  }
+  const gateways = gatewaysFrom(values)
+  const packTargetBytes = Number(parseSize(values['pack-target-size'] as string))
+  const db = new MigrationDB(values.db as string)
+  try {
+    if (values.cids != null) {
+      const cids = parseCidList(await readFile(values.cids as string, 'utf8'))
+      db.addCids(cids)
+      log(`registered ${cids.length} CID(s) from ${values.cids}`)
+    }
+    // Download + commP without auto-pack: pieces stay free for the multi-root
+    // binning below rather than being wrapped as single-piece sub-pieces.
+    await runPlan(db, {
+      gateways,
+      aggregateSizeBytes: BigInt(packTargetBytes),
+      concurrency: parsePositiveInt(values.concurrency as string, '--concurrency'),
+      autoPack: false,
+    })
+    const packSummary = await runPackCars(db, {
+      gateways,
+      targetSizeBytes: packTargetBytes,
+      carStore: values['car-store'] as string,
+      fetchConcurrency: parsePositiveInt(values['fetch-concurrency'] as string, '--fetch-concurrency'),
+      skipAggregatePlanning: true,
+    })
+    log(`packed ${packSummary.built} multi-root CAR(s) under ${values['car-store']}`)
+
+    const summary = await runDirectUpload(db, {
+      network,
+      rpcUrl: values['rpc-url'],
+      privateKey: key as `0x${string}`,
+      copies: parsePositiveInt(values.copies as string, '--copies'),
+      providerIds: (values['provider-id'] as string[] | undefined)?.map((v) => BigInt(v)),
+      dataSetIds: (values['data-set-id'] as string[] | undefined)?.map((v) => BigInt(v)),
+      assumedWindowMs:
+        parsePositiveInt(values['assumed-window-minutes'] as string, '--assumed-window-minutes') * 60_000,
+    })
+    console.log(JSON.stringify(summary, bigintJsonReplacer, 2))
+  } finally {
+    db.close()
+  }
 }
 
 async function cmdPackCars(argv: string[]): Promise<void> {
@@ -833,8 +946,13 @@ async function cmdServe(argv: string[]): Promise<void> {
       'ipfs-fallback': { type: 'boolean', default: false },
       'ipfs-fallback-mode': { type: 'string' },
       'ipfs-fallback-timeout-seconds': { type: 'string' },
+      'legacy-pull': { type: 'boolean', default: false },
     },
   })
+  // The console itself is not legacy — only serving as a provider-pull origin is.
+  if (values.ingress != null || values['public-base'] != null) {
+    requireLegacyPull(values, 'serve with --ingress/--public-base')
+  }
 
   // Network feeds /api/capabilities (and the console's command hints). The gas
   // monitor below keys off the RAW flag on purpose: it stays opt-in, so the
@@ -989,6 +1107,9 @@ async function main(): Promise<void> {
       break
     case 'create-data-set':
       await cmdCreateDataSet(rest)
+      break
+    case 'upload':
+      await cmdUpload(rest)
       break
     case 'pdp-submit':
       await cmdPdpSubmit(rest)

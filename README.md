@@ -123,11 +123,6 @@ you target (default `mainnet`; pass `--network calibration` for the testnet).
 Complete **Prerequisites** above first. Default network is **mainnet**; pass
 `--network calibration` for the testnet.
 
-Step 3 starts a long-running process and step 4 runs against it, so the two
-overlap: start step 3, wait for it to log its public URL, and leave it up for
-the whole of step 4. Two shells, a background job, or a terminal multiplexer
-all work.
-
 > **First time?** Rehearse the whole flow on the testnet with the
 > [calibration tutorial](docs/tutorial-first-migration.md) before spending real
 > funds on mainnet.
@@ -138,57 +133,50 @@ export PRIVATE_KEY=0x...
 # One-time payer setup: deposit USDFC and approve FWSS as a payments operator.
 npx filecoin-pin@latest payments setup --auto
 
-# 0. (Once per provider) Provision a data set with withIPFSIndexing. Note the
-#    printed `dataSetId`; reuse it in steps 4 and 5.
-ipfs2foc create-data-set --provider-id <provider-id>
-
 # 1. Confirm a trustless gateway returns a deterministic CAR for one of your CIDs.
 ipfs2foc probe <sample-cid> --gateway https://trustless-gateway.link
 
-# 2. Compute piece commitments and pack aggregates (one source CID per sub-piece).
+# 2. Migrate: download the CIDs, pack ~1 GiB multi-root CARs under --car-store,
+#    stream each straight to two providers, and batch the on-chain adds before
+#    the provider's parked-piece GC window closes. Resumable; re-run to continue.
+#    Data sets are provisioned on first commit (withIPFSIndexing set); their ids
+#    are in the printed summary.
 printf '%s\n' <cid> > cids.txt
-ipfs2foc plan --cids cids.txt --db migrate.db
+ipfs2foc upload --cids cids.txt --db migrate.db --car-store ./cars
 
-# 3. Serve sub-pieces over public HTTPS. Leave this running for step 4.
-#    `--ingress cloudflared` spawns a no-signup Cloudflare tunnel, then logs:
-#      cloudflared ingress: ready at https://<words>.trycloudflare.com
-#      Pass it to pdp-submit: --source-base https://<words>.trycloudflare.com
-#    Wait for those lines; the second one is step 4's --source-base verbatim.
-#    (`ipfs2foc serve --ingress cloudflared` answers the same /piece route from
-#     the console daemon, so one process carries both and step 3 is not needed.)
-ipfs2foc redirect-serve --db migrate.db --port 4322 --ingress cloudflared
-
-# 4. Pull, park, and add each aggregate onto the provider's data set, while
-#    step 3 keeps running. `--source-base` is the public HTTPS origin only
-#    (scheme and host, no path) that step 3 logged.
-ipfs2foc pdp-submit --db migrate.db --data-set-id <data-set-id> \
-  --source-base https://<public-host>
-
-# 5. Confirm every CID landed: reconcile local state against the on-chain pieces.
+# 3. Confirm every CID landed: reconcile local state against the on-chain pieces.
 ipfs2foc report --db migrate.db --data-set-id <data-set-id>
 ```
 
 `cids.txt`: one CID per line; blank lines and `#` comments are ignored.
 
+`upload` needs no public origin, tunnel, or relay: the client uploads once to
+the primary provider and each secondary pulls its copy from the primary.
+Staged CARs are deleted as soon as every copy is committed, so the disk
+footprint stays near `--pack-target-size`, not the size of the migration.
+
+### Legacy provider-pull path (`--legacy-pull`)
+
+Before `upload`, submission worked the other way around: the client served
+pieces over public HTTPS and the provider pulled them (`plan` → `redirect-serve`
+or `serve --ingress` → `pdp-submit`). That path requires a publicly reachable
+origin, which most consumer networks cannot provide. It remains available for
+self-hosting operators — every ingress command now requires the explicit
+`--legacy-pull` flag:
+
+```bash
+ipfs2foc plan --cids cids.txt --db migrate.db
+ipfs2foc redirect-serve --db migrate.db --port 4322 --ingress cloudflared --legacy-pull
+ipfs2foc pdp-submit --db migrate.db --data-set-id <data-set-id> \
+  --source-base https://<public-host> --legacy-pull
+```
+
 `plan` is **INSERT-only**: re-running it after appending CIDs adds new
 sub-pieces and aggregates without rewriting prior planning state. Existing
 `submitted`/`parked`/`committed` aggregates are never touched.
 
-### Single-asset vs multi-asset
-
-The quickstart runs the **single-asset** path: each source CID becomes one
-passthrough sub-piece pulled straight from the gateway, with no staging disk.
-Use the **multi-asset** path when source CIDs are smaller than the provider's
-`Min Piece Size` or you want fewer on-chain pieces per source CID. It replaces
-step 2 with a plan that defers packing, then assembles multi-root CARs on disk:
-
-```bash
-ipfs2foc plan --cids cids.txt --db migrate.db --no-auto-pack
-ipfs2foc pack-cars --db migrate.db --car-store /var/foc-cars --pack-target-size 512MiB
-```
-
 [`docs/personas.md`](docs/personas.md) maps disk, bandwidth, and time budgets to
-concrete knob settings for both paths.
+concrete knob settings.
 
 ## Commands
 
@@ -198,6 +186,15 @@ ipfs2foc probe <cid> [--gateway https://gateway.pinata.cloud]...
 
 # Compute one PieceCID v2
 ipfs2foc commp <cid> [--gateway URL]...
+
+# Direct upload (PRIVATE_KEY env): download, pack multi-root CARs, stream each
+# straight to the providers, and batch addPieces before the provider's
+# parked-piece GC window closes. No public origin, relay, or ingress required.
+ipfs2foc upload [--cids cids.txt] --car-store <dir> [--db migrate.db] [--gateway URL]... \
+  [--network mainnet|calibration] [--rpc-url URL] [--copies 2] \
+  [--provider-id <id>]... [--data-set-id <id>]... \
+  [--pack-target-size 1000MiB] [--concurrency 8] [--fetch-concurrency 4] \
+  [--assumed-window-minutes 60]
 
 # Full pipeline: commitments + aggregate packing into a SQLite DB.
 # Default auto-wraps each source CID as a passthrough sub-piece. Pass
@@ -228,7 +225,7 @@ ipfs2foc analyze [--cids cids.txt] [--db migrate.db] [--car-store <dir>] [--gate
 # Background daemon + browser console (start/pause/resume, add CIDs, add gateways)
 ipfs2foc serve [--db migrate.db] [--cids cids.txt] [--gateway URL]... \
   [--port 4321] [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N] \
-  [--app-dir <dir>] [--ingress cloudflared | --public-base https://<host>]
+  [--app-dir <dir>] [--ingress cloudflared | --public-base https://<host>] [--legacy-pull]
 
 # Current network base fee and whether to pause submission
 ipfs2foc gas [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee 1000000]
@@ -236,7 +233,7 @@ ipfs2foc gas [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee 100
 # Sub-piece server: GET /piece/{pcidv2} -> 302 to the gateway CAR for a
 # passthrough sub-piece, or byte-serves the assembled CAR file for a
 # multi-asset sub-piece.
-ipfs2foc redirect-serve [--db migrate.db] [--port 4322] [--ingress funnel|cloudflared]
+ipfs2foc redirect-serve [--db migrate.db] [--port 4322] [--ingress funnel|cloudflared] --legacy-pull
 
 # Provision a new FWSS data set with withIPFSIndexing (PRIVATE_KEY env)
 ipfs2foc create-data-set --provider-id <id> \
@@ -248,7 +245,8 @@ ipfs2foc create-data-set --provider-id <id> \
 ipfs2foc pdp-submit --db migrate.db --data-set-id <id> \
   (--source-base https://<public-host> | --source-relay https://<relay-base>) \
   [--network mainnet|calibration] [--rpc-url URL] \
-  [--max-in-flight 4] [--max-base-fee 1000000] [--pull-batch 32] [--poll-seconds 15]
+  [--max-in-flight 4] [--max-base-fee 1000000] [--pull-batch 32] [--poll-seconds 15] \
+  --legacy-pull
 
 # Verification report: reconcile a run against the data set's on-chain pieces
 ipfs2foc report --db migrate.db --data-set-id <id> \
