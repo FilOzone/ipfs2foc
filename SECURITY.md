@@ -7,7 +7,7 @@ report a vulnerability.
 ## Reporting a vulnerability
 
 Report privately through GitHub's
-[security advisories](https://github.com/SgtPooki/ipfs2foc/security/advisories/new)
+[security advisories](https://github.com/FilOzone/ipfs2foc/security/advisories/new)
 for this repository. Do not open a public issue for an exploitable flaw. Expect
 an initial response within a few days.
 

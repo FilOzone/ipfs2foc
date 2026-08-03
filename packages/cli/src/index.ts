@@ -98,13 +98,15 @@ Examples:
   ipfs2foc probe <cid> --gateway https://trustless-gateway.link
   ipfs2foc plan --cids cids.txt
 
-  # Serve sub-pieces (terminal A) and submit them (terminal B)
-  ipfs2foc redirect-serve --ingress cloudflared --port 4322
-  ipfs2foc pdp-submit --data-set-id 42 --source-base https://<public-host>
-
-  # Or one process: serve carries /piece behind its own tunnel
+  # One process carries the console and the pull source. Start it, wait for it
+  # to log "ingress: ready at https://<host>", then submit against that host.
   ipfs2foc serve --ingress cloudflared
   ipfs2foc pdp-submit --data-set-id 42 --source-base https://<tunnel-host>
+
+  # Or run the pull source on its own: start it first, leave it running, and
+  # submit from a second shell against the host it logs.
+  ipfs2foc redirect-serve --ingress cloudflared --port 4322
+  ipfs2foc pdp-submit --data-set-id 42 --source-base https://<public-host>
 
   # Confirm everything landed on chain
   ipfs2foc report --data-set-id 42
@@ -114,7 +116,7 @@ IPFS fallback (plan, commp, serve):
   --ipfs-fallback-mode MODE          Fallback ordering (default: gateway-first; only value supported in this release)
   --ipfs-fallback-timeout-seconds N  Per-CID upper bound on the fallback fetch (default: 120)
 
-Docs: https://github.com/SgtPooki/ipfs2foc#readme
+Docs: https://github.com/FilOzone/ipfs2foc#readme
   Quickstart and troubleshooting in the README; operator profiles, gateways,
   and ingress setup under docs/.
 `
