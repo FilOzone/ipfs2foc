@@ -3,17 +3,28 @@ name: release-please
 on:
   push:
     branches: [main]
-  # Manual escape hatch: publish the current packages/cli version when the
+  # Manual escape hatch: publish the version currently in packages/cli when the
   # automatic publish was missed (e.g. a release was tagged but its publish job
-  # did not run). Runs the publish job regardless of release_created.
+  # did not run). Skips release-please entirely and runs publish on its own.
   workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
 
+# One release at a time per ref. Concurrent runs race to cut the same tag, and
+# the loser fails with "Release already_exists for tag_name", which skips
+# publish and leaves a tagged release that never reaches npm. Queue rather than
+# cancel, so a run that has already reached npm publish finishes.
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release-please:
+    # A dispatch publishes what is already on main and cuts no release, so this
+    # job is skipped there. Running it would try to re-create an existing tag.
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       # Manifest mode with the package at the ROOT path: the action emits the
@@ -21,7 +32,7 @@ jobs:
       # aggregate `releases_created`. The release unit is the repo root so the
       # changelog captures app/, packages/core, and packages/relay commits —
       # the npm tarball bundles core and app-dist, so those ARE the artifact.
-      release_created: ${{ steps.release.outputs.releases_created }}
+      release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       # Opens/updates the release PR, and on merge cuts a GitHub release + tag.
@@ -34,7 +45,18 @@ jobs:
 
   publish:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch' }}
+    # Keep `!cancelled()`. A job whose `needs` dependency failed or was skipped
+    # is dropped before its own `if` is evaluated, unless that `if` contains a
+    # status function. Remove it and the workflow_dispatch clause below stops
+    # running in the case it exists for, a failed release-please.
+    #
+    # Keep the ref check. workflow_dispatch accepts any ref and npm trusts this
+    # workflow, so this is what stops a branch from publishing with provenance.
+    if: >-
+      ${{ !cancelled()
+          && github.ref == 'refs/heads/main'
+          && (needs.release-please.outputs.release_created == 'true'
+              || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
