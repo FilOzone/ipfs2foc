@@ -794,6 +794,7 @@ async function cmdUpload(argv: string[]): Promise<void> {
       carStore: values['car-store'] as string,
       fetchConcurrency: parsePositiveInt(values['fetch-concurrency'] as string, '--fetch-concurrency'),
       skipAggregatePlanning: true,
+      buildOversizedAsSingles: true,
     })
     log(`packed ${packSummary.built} multi-root CAR(s) under ${values['car-store']}`)
 
