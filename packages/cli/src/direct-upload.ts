@@ -65,7 +65,18 @@ export interface UploadContextLike {
     data: ReadableStream | Uint8Array,
     options: { pieceCid?: unknown; onProgress?: (bytes: number) => void }
   ): Promise<{ pieceCid: unknown; size: number }>
-  pull(options: { pieces: unknown[]; from: string }): Promise<{
+  /** EIP-712 authorization for pulls/commits of these pieces on this provider. */
+  presignForCommit(pieces: Array<{ pieceCid: unknown }>): Promise<unknown>
+  pull(options: {
+    pieces: unknown[]
+    /**
+     * Pull source. MUST be the per-piece URL function form: the SDK treats a
+     * string as a service-URL base and appends its own path, which mangles an
+     * already-complete piece URL into a source the provider cannot fetch.
+     */
+    from: (pieceCid: unknown) => string
+    extraData?: unknown
+  }): Promise<{
     status: 'complete' | 'failed'
     pieces: Array<{ pieceCid: unknown; status: 'complete' | 'failed' }>
   }>
@@ -111,6 +122,7 @@ export const defaultDirectUploadDeps: DirectUploadDeps = {
           serviceURL,
           dataSetId: ctx.dataSetId == null ? null : String(ctx.dataSetId),
           store: (data, options) => ctx.store(data as never, options as never),
+          presignForCommit: (pieces) => ctx.presignForCommit(pieces as never),
           pull: (options) => ctx.pull(options as never),
           commit: (options) => ctx.commit(options as never),
           getPieceUrl: (pieceCid) => ctx.getPieceUrl(pieceCid as never),
@@ -291,16 +303,24 @@ export async function runDirectUpload(
     await maybeFlush(false)
   }
 
-  // Source drained: flush whatever is parked, then retry anything collected
-  // mid-run (each retry loops back through store + flush).
+  // Source drained: flush whatever is parked, then retry what didn't land —
+  // collected pieces (GC'd before commit) and failed secondary pulls. A
+  // primary copy re-uploads from the staged CAR; a secondary copy re-pulls
+  // from the primary, which still holds the bytes.
   await maybeFlush(true)
   for (let attempt = 0; attempt < 3; attempt++) {
-    const needsRestore = contexts.flatMap((ctx) =>
-      db.uploadsByStatus(ctx.providerId, 'collected').map((u) => ({ ctx, u }))
+    const needsRetry = contexts.flatMap((ctx, i) =>
+      ['collected' as const, ...(i > 0 ? ['failed' as const] : [])]
+        .flatMap((status) => db.uploadsByStatus(ctx.providerId, status))
+        .map((u) => ({ ctx, u }))
     )
-    if (needsRestore.length === 0) break
-    log(`re-storing ${needsRestore.length} collected piece(s) (attempt ${attempt + 1})`)
-    for (const { ctx, u } of needsRestore) {
+    if (needsRetry.length === 0) break
+    log(`retrying ${needsRetry.length} piece(s) that did not land (attempt ${attempt + 1})`)
+    for (const { ctx, u } of needsRetry) {
+      if (u.role === 'secondary') {
+        await pullToSecondary(db, primary, ctx, u.subPieceCid)
+        continue
+      }
       const sub = db.subPieceByCid(u.subPieceCid)
       if (sub?.carPath == null) {
         log(`error: collected ${u.subPieceCid} has no local CAR; cannot re-store`)
@@ -370,9 +390,13 @@ async function pullToSecondary(
   subPieceCid: string
 ): Promise<void> {
   try {
+    // Curio authenticates the pull with the same EIP-712 authorization used
+    // for commit — a pull without it is rejected.
+    const extraData = await secondary.presignForCommit([{ pieceCid: CID.parse(subPieceCid) }])
     const pulled = await secondary.pull({
       pieces: [CID.parse(subPieceCid)],
-      from: primary.getPieceUrl(CID.parse(subPieceCid)),
+      from: (pieceCid) => primary.getPieceUrl(pieceCid),
+      extraData,
     })
     if (pulled.status === 'complete') {
       db.recordUploadParked(subPieceCid, secondary.providerId, 'secondary', secondary.dataSetId)

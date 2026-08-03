@@ -60,6 +60,9 @@ function fakeDeps(b: FakeBehavior = {}) {
       calls.store.push(`${providerId}:${String(options.pieceCid)}`)
       return { pieceCid: options.pieceCid, size: 1024 }
     },
+    async presignForCommit() {
+      return '0xfake'
+    },
     async pull(options) {
       calls.pull++
       const status = b.pullFails ? 'failed' : 'complete'
