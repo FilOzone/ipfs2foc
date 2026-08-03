@@ -249,6 +249,17 @@ export async function runDirectUpload(
     }
   }
 
+  // Evict staged CARs whose every copy is committed. Runs after every flush,
+  // not just at run end: the disk high-water mark must track the uncommitted
+  // window, not the whole migration.
+  let evicted = 0
+  const evictCommitted = async (): Promise<void> => {
+    for (const path of db.carPathsFullyCommitted()) {
+      await deps.evictCar(path)
+      evicted++
+    }
+  }
+
   const maybeFlush = async (drained: boolean): Promise<void> => {
     for (const ctx of contexts) {
       // Loop: a full batch may leave more parked pieces behind it.
@@ -267,6 +278,7 @@ export async function runDirectUpload(
         if (db.parkedUploads(ctx.providerId).length === parked.length) break // no progress; avoid spinning
       }
     }
+    await evictCommitted()
   }
 
   // Reconcile add_unconfirmed leftovers from a previous run before uploading
@@ -333,12 +345,7 @@ export async function runDirectUpload(
     await maybeFlush(true)
   }
 
-  // Evict CARs whose every upload row is committed.
-  let evicted = 0
-  for (const path of db.carPathsFullyCommitted()) {
-    await deps.evictCar(path)
-    evicted++
-  }
+  await evictCommitted()
 
   const summary: DirectUploadSummary = {
     network: opts.network,
