@@ -47,6 +47,12 @@ interface FakeBehavior {
   /** Per-CID presence answers for hasPiece during re-verify. */
   present?: (cid: string) => boolean
   pullFails?: boolean
+  /** Receipt answers for add_unconfirmed reconciliation. Default: not landed. */
+  txLanded?: (txHash: string) => boolean
+  /** PiecesAdded event answers for landed-tx resolution. Default: none found. */
+  addPiecesEvent?: (dataSetId: number, txHash: string) => { pieceIds: bigint[]; pieceCids: string[] } | null
+  /** Pre-resolved data set id for every context. Default null (created lazily). */
+  ctxDataSetId?: string
 }
 
 function fakeDeps(b: FakeBehavior = {}) {
@@ -55,7 +61,7 @@ function fakeDeps(b: FakeBehavior = {}) {
   const mkCtx = (providerId: string): UploadContextLike => ({
     providerId,
     serviceURL: `fake://${providerId}`,
-    dataSetId: null,
+    dataSetId: b.ctxDataSetId ?? null,
     async store(_data, options) {
       calls.store.push(`${providerId}:${String(options.pieceCid)}`)
       return { pieceCid: options.pieceCid, size: 1024 }
@@ -73,6 +79,9 @@ function fakeDeps(b: FakeBehavior = {}) {
       calls.commit.set(providerId, n)
       const f = b.failCommit
       if (f != null && f.providerId === providerId && f.call === n) {
+        // Simulate a commit that was submitted (tx hash recorded) but then
+        // failed at confirmation — the shape of the add_unconfirmed hazard.
+        options.onSubmitted?.(`0xtx-${providerId}-${n}`)
         throw new Error(f.message)
       }
       return {
@@ -92,6 +101,11 @@ function fakeDeps(b: FakeBehavior = {}) {
     openCar: () => new Uint8Array(8),
     evictCar: async (path) => {
       evicted.push(path)
+    },
+    txLanded: async (_rpcUrl, txHash) => (b.txLanded ? b.txLanded(txHash) : false),
+    fetchAddPiecesEvent: async (_rpcUrl, _network, dataSetId, txHash) => {
+      const event = b.addPiecesEvent ? b.addPiecesEvent(dataSetId, txHash) : null
+      return event == null ? null : { ...event, blockNumber: 1n }
     },
   }
   return { deps, calls, evicted }
@@ -118,6 +132,9 @@ test('happy path: stores on primary, pulls to secondary, drained flush commits b
     assert.equal(evicted.length, 2)
     assert.equal(summary.providers[0].committed, 2)
     assert.equal(summary.providers[0].role, 'primary')
+    // The summary must surface the addPieces transactions behind the commits.
+    assert.deepEqual(summary.providers[0].txHashes, ['0xtx-p1-1'])
+    assert.deepEqual(summary.providers[1].txHashes, ['0xtx-p2-1'])
   } finally {
     db.close()
     await rm(dir, { recursive: true, force: true })
@@ -166,6 +183,57 @@ test('GC rejection: lowers the provider window, re-stores only the collected pie
     const defaultMs = 60 * 60_000
     assert.ok(db.providerWindowMs('p1', defaultMs) < defaultMs)
     assert.equal(db.providerWindowMs('p2', defaultMs), defaultMs)
+  } finally {
+    db.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a landed-but-unconfirmed tx is never re-queued: no blind re-add', async () => {
+  const { dir, db } = await dbAt('du-landed')
+  try {
+    seedBuilt(db, P1, join(dir, 'a.car'))
+    const first = fakeDeps({
+      failCommit: { providerId: 'p1', call: 1, message: 'confirmation poll timed out' },
+    })
+    await runDirectUpload(db, OPTS, first.deps)
+    assert.equal(db.uploadsByStatus('p1', 'add_unconfirmed').length, 1)
+
+    // Second run: the tx actually landed on chain even though confirmation was
+    // missed. The reconciliation must leave the row alone — no store, no commit.
+    const second = fakeDeps({ txLanded: () => true })
+    await runDirectUpload(db, OPTS, second.deps)
+    assert.equal(db.uploadsByStatus('p1', 'add_unconfirmed').length, 1)
+    assert.equal(second.calls.store.filter((s) => s.startsWith('p1:')).length, 0)
+    assert.equal(second.calls.commit.get('p1') ?? 0, 0)
+  } finally {
+    db.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a landed tx with a verifiable PiecesAdded event auto-resolves to committed', async () => {
+  const { dir, db } = await dbAt('du-landed-event')
+  try {
+    seedBuilt(db, P1, join(dir, 'a.car'))
+    const first = fakeDeps({
+      failCommit: { providerId: 'p1', call: 1, message: 'confirmation poll timed out' },
+    })
+    await runDirectUpload(db, OPTS, first.deps)
+    assert.equal(db.uploadsByStatus('p1', 'add_unconfirmed').length, 1)
+
+    const second = fakeDeps({
+      txLanded: () => true,
+      ctxDataSetId: '7',
+      addPiecesEvent: () => ({ pieceIds: [42n], pieceCids: [P1] }),
+    })
+    await runDirectUpload(db, OPTS, second.deps)
+    const committed = db.uploadsByStatus('p1', 'committed')
+    assert.equal(committed.length, 1)
+    assert.equal(committed[0].pieceId, '42')
+    assert.equal(committed[0].dataSetId, '7')
+    // Resolved from the chain, not re-executed.
+    assert.equal(second.calls.commit.get('p1') ?? 0, 0)
   } finally {
     db.close()
     await rm(dir, { recursive: true, force: true })

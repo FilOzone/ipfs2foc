@@ -91,7 +91,7 @@ Usage:
                      [--network mainnet|calibration] [--rpc-url URL] [--copies 2]
                      [--provider-id <id>]... [--data-set-id <id>]...
                      [--pack-target-size 1000MiB] [--concurrency 8] [--fetch-concurrency 4]
-                     [--assumed-window-minutes 60]  (uses PRIVATE_KEY env)
+                     [--assumed-window-minutes 60] [--source ipfs2filecoin]  (uses PRIVATE_KEY env)
                      (download, pack multi-root CARs, stream each straight to the providers, and
                       batch addPieces before the provider's parked-piece GC window closes; no
                       public origin, relay, or ingress required)
@@ -758,6 +758,9 @@ async function cmdUpload(argv: string[]): Promise<void> {
       concurrency: { type: 'string', default: '8' },
       'fetch-concurrency': { type: 'string', default: '4' },
       'assumed-window-minutes': { type: 'string', default: '60' },
+      // Attribution tag written to each data set's `source` metadata; pass an
+      // empty string to omit it.
+      source: { type: 'string' },
     },
   })
   if (values['car-store'] == null) {
@@ -807,6 +810,7 @@ async function cmdUpload(argv: string[]): Promise<void> {
       dataSetIds: (values['data-set-id'] as string[] | undefined)?.map((v) => BigInt(v)),
       assumedWindowMs:
         parsePositiveInt(values['assumed-window-minutes'] as string, '--assumed-window-minutes') * 60_000,
+      source: values.source as string | undefined,
     })
     console.log(JSON.stringify(summary, bigintJsonReplacer, 2))
   } finally {

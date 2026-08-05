@@ -38,6 +38,7 @@ import {
   shouldFlush,
 } from './gc-window.ts'
 import { formatBytes, formatDuration, Timer } from './metrics.ts'
+import { type AddPiecesEvent, fetchAddPiecesEvent } from './pdp-verifier.ts'
 import { log } from './util.ts'
 
 export interface DirectUploadOptions {
@@ -52,9 +53,18 @@ export interface DirectUploadOptions {
   dataSetIds?: bigint[]
   /** Starting GC-window guess; persisted per-provider lowering still applies. */
   assumedWindowMs?: number
-  /** Data-set metadata. Defaults to requesting IPFS indexing/IPNI announce. */
+  /**
+   * Attribution tag recorded in the data set's `source` metadata, so completed
+   * migrations are countable from indexed on-chain data. Default
+   * `DEFAULT_SOURCE_TAG`; empty string omits the tag.
+   */
+  source?: string
+  /** Data-set metadata. Defaults to requesting IPFS indexing/IPNI announce plus the source tag. */
   dataSetMetadata?: Record<string, string>
 }
+
+/** The campaign attribution tag the funnel queries count against. */
+export const DEFAULT_SOURCE_TAG = 'ipfs2filecoin'
 
 /** The storage-context surface the loop drives; narrowed for fakes in tests. */
 export interface UploadContextLike {
@@ -97,6 +107,15 @@ export interface DirectUploadDeps {
   /** Open a built CAR for streaming. Injectable so tests skip the filesystem. */
   openCar(path: string): ReadableStream | Uint8Array
   evictCar(path: string): Promise<void>
+  /** Whether a transaction landed successfully on chain (receipt status 1). */
+  txLanded(rpcUrl: string, txHash: string): Promise<boolean>
+  /** Canonical on-chain witness for a landed addPieces (see pdp-verifier). */
+  fetchAddPiecesEvent(
+    rpcUrl: string,
+    network: 'calibration' | 'mainnet',
+    dataSetId: number,
+    txHash: string
+  ): Promise<AddPiecesEvent | null>
 }
 
 export const defaultDirectUploadDeps: DirectUploadDeps = {
@@ -106,12 +125,21 @@ export const defaultDirectUploadDeps: DirectUploadDeps = {
     }
     const chain = opts.network === 'mainnet' ? mainnet : calibration
     const account = privateKeyToAccount(opts.privateKey)
-    const synapse = await Synapse.create({ account, transport: http(rpcUrl), chain, source: null })
+    const sourceTag = opts.source ?? DEFAULT_SOURCE_TAG
+    const synapse = await Synapse.create({
+      account,
+      transport: http(rpcUrl),
+      chain,
+      source: sourceTag === '' ? null : sourceTag,
+    })
     const contexts = await synapse.storage.createContexts({
       copies: opts.copies ?? 2,
       ...(opts.providerIds == null ? {} : { providerIds: opts.providerIds }),
       ...(opts.dataSetIds == null ? {} : { dataSetIds: opts.dataSetIds }),
-      metadata: opts.dataSetMetadata ?? { withIPFSIndexing: '' },
+      metadata: opts.dataSetMetadata ?? {
+        withIPFSIndexing: '',
+        ...(sourceTag === '' ? {} : { source: sourceTag }),
+      },
     })
     if (contexts.length === 0) throw new Error('no storage contexts resolved')
     return {
@@ -150,6 +178,16 @@ export const defaultDirectUploadDeps: DirectUploadDeps = {
       }
     }
   },
+  txLanded: async (rpcUrl, txHash) => {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] }),
+    })
+    const body = (await res.json()) as { result?: { status?: string } | null }
+    return body.result != null && body.result.status === '0x1'
+  },
+  fetchAddPiecesEvent,
 }
 
 export interface DirectUploadSummary {
@@ -163,6 +201,8 @@ export interface DirectUploadSummary {
     failed: number
     flushes: number
     assumedWindowMs: number
+    /** Distinct addPieces transaction hashes behind the committed pieces. */
+    txHashes: string[]
   }>
   storedBytes: number
   evictedCars: number
@@ -289,7 +329,7 @@ export async function runDirectUpload(
   // Reconcile add_unconfirmed leftovers from a previous run before uploading
   // anything new: their outcome is unknown and a blind re-add would duplicate.
   for (const ctx of contexts) {
-    await reconcileUnconfirmed(db, ctx)
+    await reconcileUnconfirmed(db, ctx, deps, rpcUrl, opts.network)
   }
 
   // Main loop: store on the primary, fan out to secondaries, flush as batches
@@ -354,16 +394,20 @@ export async function runDirectUpload(
 
   const summary: DirectUploadSummary = {
     network: opts.network,
-    providers: contexts.map((ctx, i) => ({
-      providerId: ctx.providerId,
-      role: i === 0 ? 'primary' : 'secondary',
-      dataSetId: latestDataSetId(db, ctx),
-      committed: db.uploadsByStatus(ctx.providerId, 'committed').length,
-      collected: db.uploadsByStatus(ctx.providerId, 'collected').length,
-      failed: db.uploadsByStatus(ctx.providerId, 'failed').length,
-      flushes: flushCounts.get(ctx.providerId) ?? 0,
-      assumedWindowMs: windowFor(ctx),
-    })),
+    providers: contexts.map((ctx, i) => {
+      const committed = db.uploadsByStatus(ctx.providerId, 'committed')
+      return {
+        providerId: ctx.providerId,
+        role: i === 0 ? ('primary' as const) : ('secondary' as const),
+        dataSetId: latestDataSetId(db, ctx),
+        committed: committed.length,
+        collected: db.uploadsByStatus(ctx.providerId, 'collected').length,
+        failed: db.uploadsByStatus(ctx.providerId, 'failed').length,
+        flushes: flushCounts.get(ctx.providerId) ?? 0,
+        assumedWindowMs: windowFor(ctx),
+        txHashes: [...new Set(committed.map((u) => u.txHash).filter((h): h is string => h != null))],
+      }
+    }),
     storedBytes,
     evictedCars: evictedPaths.size,
   }
@@ -381,9 +425,48 @@ async function storeCar(
   return { size: result.size }
 }
 
-/** Resolve every add_unconfirmed row by probing the provider for the bytes. */
-async function reconcileUnconfirmed(db: MigrationDB, ctx: UploadContextLike): Promise<void> {
+/**
+ * Resolve every add_unconfirmed row. The transaction receipt is checked first:
+ * piece presence alone cannot distinguish "commit never landed" from "commit
+ * landed but confirmation was missed" — the provider keeps the bytes either
+ * way, and re-queueing a landed commit would add the piece twice.
+ */
+async function reconcileUnconfirmed(
+  db: MigrationDB,
+  ctx: UploadContextLike,
+  deps: DirectUploadDeps,
+  rpcUrl: string,
+  network: 'calibration' | 'mainnet'
+): Promise<void> {
   for (const u of db.uploadsByStatus(ctx.providerId, 'add_unconfirmed')) {
+    if (u.txHash != null && (await deps.txLanded(rpcUrl, u.txHash))) {
+      // The commit landed; only local confirmation was missed. Resolve it from
+      // the canonical witness — the PiecesAdded event — rather than trusting
+      // any side channel.
+      const dataSetId = ctx.dataSetId
+      if (dataSetId != null) {
+        const event = await deps.fetchAddPiecesEvent(rpcUrl, network, Number(dataSetId), u.txHash)
+        const pieceIndex = event == null ? -1 : event.pieceCids.indexOf(u.subPieceCid)
+        if (event != null && pieceIndex >= 0) {
+          db.markUploadCommitted(u.subPieceCid, ctx.providerId, {
+            dataSetId,
+            pieceId: String(event.pieceIds[pieceIndex] ?? ''),
+            txHash: u.txHash,
+          })
+          log(
+            `resume: ${u.subPieceCid} confirmed on chain via PiecesAdded (tx ${u.txHash}, ` +
+              `data set ${dataSetId}); marked committed`
+          )
+          continue
+        }
+      }
+      log(
+        `resume: ${u.subPieceCid} has a LANDED addPieces tx ${u.txHash} on provider ${ctx.providerId} ` +
+          `but its PiecesAdded event could not be verified; leaving add_unconfirmed — check the data set ` +
+          `on the explorer before any manual retry (a blind re-add would duplicate the piece)`
+      )
+      continue
+    }
     if (await ctx.hasPiece(CID.parse(u.subPieceCid))) {
       db.revertUploadsToParked([u.subPieceCid], ctx.providerId)
       log(`resume: ${u.subPieceCid} still parked on provider ${ctx.providerId}; re-queued for commit`)
