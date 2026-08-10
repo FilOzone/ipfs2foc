@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.7.0...ipfs2foc-v0.8.0) (2026-08-10)
+
+
+### Features
+
+* direct upload with GC-aware addPieces batching ([#71](https://github.com/FilOzone/ipfs2foc/issues/71)) ([e52218a](https://github.com/FilOzone/ipfs2foc/commit/e52218a0f44d7af56f1d67149c2bf311721bcd01))
+
 ## [0.7.0](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.6.0...ipfs2foc-v0.7.0) (2026-08-03)
 
 
