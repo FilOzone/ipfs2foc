@@ -55,6 +55,9 @@ const DEFAULT_FETCH_CONCURRENCY = 4
 /** Maximum CAR raw size accepted by Curio's PDP pull (`PieceSizeLimit`, see Q4). */
 export const PIECE_RAW_SIZE_LIMIT = 1_069_547_520
 
+/** synapse-sdk's per-piece upload cap (`SIZE_CONSTANTS.MAX_UPLOAD_SIZE`, 1016 MiB). */
+export const SDK_MAX_UPLOAD_BYTES = 1_065_353_216
+
 export interface PackPlanInput {
   /** Source CID. */
   cid: string
@@ -309,6 +312,19 @@ export interface PackCarsOptions {
   carStore: string
   /** Bounded fan-out per assembly. Default 4. */
   fetchConcurrency?: number
+  /**
+   * When true, skip the trailing `appendAggregatesFromFreeSubPieces` pass.
+   * The direct-upload flow commits each built sub-piece as its own on-chain
+   * piece; the aggregates table only serves the provider-pull path.
+   */
+  skipAggregatePlanning?: boolean
+  /**
+   * When true, a piece too large to share a bin is built as its own
+   * single-member CAR file instead of a URL-backed passthrough sub-piece.
+   * Direct upload streams from local CARs only — a passthrough sub-piece has
+   * no `car_path` and would silently fall out of the upload work list.
+   */
+  buildOversizedAsSingles?: boolean
 }
 
 export interface PackCarsSummary {
@@ -364,6 +380,22 @@ export async function runPackCars(
   }))
   const { bins, oversizedForPacking } = planBins(inputsForBuild, target)
 
+  // Direct-upload mode: an oversized-for-bin piece still ships as a CAR file,
+  // alone in its own bin, as long as it fits one uploadable piece. Anything
+  // over the per-piece cap genuinely cannot migrate on this path.
+  const passthroughCandidates: PackPlanInput[] = []
+  if (opts.buildOversizedAsSingles === true) {
+    for (const p of oversizedForPacking) {
+      if (p.rawSize > SDK_MAX_UPLOAD_BYTES) {
+        log(`! ${p.cid} (${p.rawSize} bytes) exceeds the ${SDK_MAX_UPLOAD_BYTES}-byte upload cap; not migrated`)
+        continue
+      }
+      bins.push({ memberCids: [p.cid], totalRawSize: p.rawSize })
+    }
+  } else {
+    passthroughCandidates.push(...oversizedForPacking)
+  }
+
   const summary: PackCarsSummary = { bins: bins.length, built: 0, failed: 0, skipped: 0, failedMemberCids: [] }
   const fetchConcurrency = opts.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY
   for (const bin of bins) {
@@ -407,7 +439,7 @@ export async function runPackCars(
   // with no sub-piece and no aggregate, silently absent from the migration.
   let passthroughAdded = 0
   const noGatewayUrl: string[] = []
-  for (const p of oversizedForPacking) {
+  for (const p of passthroughCandidates) {
     const row = piecesByCid.get(p.cid)
     if (row?.pieceCid == null || row.rawSize == null || row.url == null || row.url === '') {
       // No gateway URL (IPFS-fallback only): cannot be served by the HTTP pull
@@ -437,7 +469,7 @@ export async function runPackCars(
   // composition `plan` wrote and asks the SP to pull individual files (most
   // of which are below the provider's minimum piece size). Frozen aggregates
   // (submitted/parked/committed) are left untouched.
-  if (summary.built > 0 || passthroughAdded > 0) {
+  if ((summary.built > 0 || passthroughAdded > 0) && opts.skipAggregatePlanning !== true) {
     // Append new aggregates over the freshly built multi-asset sub-pieces.
     // No DELETE of existing aggregates — `plan` already added passthrough
     // aggregates over the source pieces, and those stay as the alternative

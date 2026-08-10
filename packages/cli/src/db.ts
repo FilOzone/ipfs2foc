@@ -121,6 +121,39 @@ export interface AggregateRow {
   error: string | null
 }
 
+/**
+ * Direct-upload lifecycle, per (sub-piece, provider) pair — the `upload`
+ * command stores the same CAR on every provider copy independently.
+ *
+ *   parked           the provider holds the bytes; nothing on-chain. Curio
+ *                    garbage-collects parked pieces after an undiscoverable
+ *                    window (~2h default), so parked_at drives the flush timer
+ *   add_unconfirmed  an addPieces batch containing this piece was attempted;
+ *                    outcome unknown. Never auto-reset into a blind re-add
+ *                    (same invariant as AggregateStatus)
+ *   committed        addPieces landed; data_set_id/piece_id/tx_hash are final
+ *   collected        the provider garbage-collected the parked piece before
+ *                    commit; the CAR must be stored again
+ *   failed           store or commit failed for a non-GC reason
+ */
+export type UploadStatus = 'parked' | 'add_unconfirmed' | 'committed' | 'collected' | 'failed'
+
+export type UploadRole = 'primary' | 'secondary'
+
+export interface UploadRow {
+  subPieceCid: string
+  providerId: string
+  role: UploadRole
+  dataSetId: string | null
+  status: UploadStatus
+  /** ISO timestamp of store() completion — the moment the GC clock starts. */
+  parkedAt: string
+  txHash: string | null
+  pieceId: string | null
+  committedAt: string | null
+  error: string | null
+}
+
 export class MigrationDB {
   #db: DatabaseSync
   /** The sqlite file path this instance opened, so callers can echo it back. */
@@ -225,6 +258,26 @@ export class MigrationDB {
         expires_at      INTEGER NOT NULL,
         created_at      TEXT NOT NULL,
         updated_at      TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS uploads (
+        sub_piece_cid TEXT NOT NULL,
+        provider_id   TEXT NOT NULL,
+        role          TEXT NOT NULL,
+        data_set_id   TEXT,
+        status        TEXT NOT NULL DEFAULT 'parked',
+        parked_at     TEXT NOT NULL,
+        tx_hash       TEXT,
+        piece_id      TEXT,
+        committed_at  TEXT,
+        error         TEXT,
+        updated_at    TEXT NOT NULL,
+        PRIMARY KEY (sub_piece_cid, provider_id),
+        FOREIGN KEY (sub_piece_cid) REFERENCES sub_pieces(sub_piece_cid)
+      );
+      CREATE TABLE IF NOT EXISTS provider_windows (
+        provider_id       TEXT PRIMARY KEY,
+        assumed_window_ms INTEGER NOT NULL,
+        updated_at        TEXT NOT NULL
       );
     `)
   }
@@ -917,15 +970,7 @@ export class MigrationDB {
       )
       .get(subPieceCid) as Record<string, unknown> | undefined
     if (row == null) return null
-    return {
-      subPieceCid: String(row.sub_piece_cid),
-      assembledCarLength: Number(row.assembled_car_length),
-      assembledSha256: row.assembled_sha256 == null ? null : String(row.assembled_sha256),
-      targetSizeBytes: Number(row.target_size_bytes),
-      carPath: row.car_path == null ? null : String(row.car_path),
-      url: row.url == null ? null : String(row.url),
-      status: row.status as SubPieceStatus,
-    }
+    return toSubPieceRow(row)
   }
 
   /** Sub-pieces in the given status. */
@@ -936,18 +981,7 @@ export class MigrationDB {
                 car_path, url, status FROM sub_pieces WHERE status = ? ORDER BY sub_piece_cid`
       )
       .all(status)
-    return rows.map((r) => {
-      const row = r as Record<string, unknown>
-      return {
-        subPieceCid: String(row.sub_piece_cid),
-        assembledCarLength: Number(row.assembled_car_length),
-        assembledSha256: row.assembled_sha256 == null ? null : String(row.assembled_sha256),
-        targetSizeBytes: Number(row.target_size_bytes),
-        carPath: row.car_path == null ? null : String(row.car_path),
-        url: row.url == null ? null : String(row.url),
-        status: row.status as SubPieceStatus,
-      }
-    })
+    return rows.map(toSubPieceRow)
   }
 
   /** Sub-piece member CIDs locked into a planned sub-piece (cannot be re-packed). */
@@ -1022,6 +1056,181 @@ export class MigrationDB {
       .filter((p): p is string => p != null && p !== '')
   }
 
+  // ---- direct-upload state (uploads / provider_windows) ----
+
+  /** Built, file-backed sub-pieces with no live upload row for this provider. */
+  subPiecesNeedingUpload(providerId: string): SubPieceRow[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT sp.sub_piece_cid, sp.assembled_car_length, sp.assembled_sha256,
+                sp.target_size_bytes, sp.car_path, sp.url, sp.status
+         FROM sub_pieces sp
+         WHERE sp.status = 'built' AND sp.car_path IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM uploads u
+             WHERE u.sub_piece_cid = sp.sub_piece_cid
+               AND u.provider_id = ?
+               AND u.status IN ('parked', 'add_unconfirmed', 'committed')
+           )
+         ORDER BY sp.created_at`
+      )
+      .all(providerId)
+    return rows.map(toSubPieceRow)
+  }
+
+  /** Record a successful store(): the provider holds the bytes, GC clock starts. */
+  recordUploadParked(subPieceCid: string, providerId: string, role: UploadRole, dataSetId: string | null): void {
+    const now = new Date().toISOString()
+    this.#db
+      .prepare(
+        `INSERT INTO uploads (sub_piece_cid, provider_id, role, data_set_id, status, parked_at, updated_at)
+         VALUES (?, ?, ?, ?, 'parked', ?, ?)
+         ON CONFLICT (sub_piece_cid, provider_id) DO UPDATE SET
+           role = excluded.role, data_set_id = excluded.data_set_id,
+           status = 'parked', parked_at = excluded.parked_at,
+           tx_hash = NULL, piece_id = NULL, committed_at = NULL, error = NULL,
+           updated_at = excluded.updated_at`
+      )
+      .run(subPieceCid, providerId, role, dataSetId, now, now)
+  }
+
+  /** Parked uploads for one provider, oldest parked first (the flush batch). */
+  parkedUploads(providerId: string): UploadRow[] {
+    return this.uploadsByStatus(providerId, 'parked')
+  }
+
+  /**
+   * One transactional UPDATE applied to each (sub_piece_cid, provider_id) in
+   * the batch. `set` is a compile-time constant fragment, never caller input.
+   */
+  #updateUploadsBatch(subPieceCids: string[], providerId: string, set: string, params: unknown[]): void {
+    const now = new Date().toISOString()
+    const stmt = this.#db.prepare(
+      `UPDATE uploads SET ${set}, updated_at = ? WHERE sub_piece_cid = ? AND provider_id = ?`
+    )
+    this.#db.exec('BEGIN')
+    try {
+      for (const cid of subPieceCids) stmt.run(...(params as string[]), now, cid, providerId)
+      this.#db.exec('COMMIT')
+    } catch (err) {
+      this.#db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  /**
+   * Durable breadcrumb set immediately before the addPieces attempt, so a
+   * crash mid-commit is never auto-resolved into a blind re-add.
+   */
+  markUploadsAddUnconfirmed(subPieceCids: string[], providerId: string): void {
+    this.#updateUploadsBatch(subPieceCids, providerId, `status = 'add_unconfirmed'`, [])
+  }
+
+  markUploadTxSubmitted(subPieceCids: string[], providerId: string, txHash: string): void {
+    this.#updateUploadsBatch(subPieceCids, providerId, 'tx_hash = ?', [txHash])
+  }
+
+  markUploadCommitted(
+    subPieceCid: string,
+    providerId: string,
+    info: { dataSetId: string; pieceId: string; txHash: string }
+  ): void {
+    const now = new Date().toISOString()
+    this.#db
+      .prepare(
+        `UPDATE uploads SET status = 'committed', data_set_id = ?, piece_id = ?, tx_hash = ?,
+           committed_at = ?, error = NULL, updated_at = ?
+         WHERE sub_piece_cid = ? AND provider_id = ?`
+      )
+      .run(info.dataSetId, info.pieceId, info.txHash, now, now, subPieceCid, providerId)
+  }
+
+  /**
+   * Return add_unconfirmed rows to parked after a re-verify confirmed the
+   * provider still holds the bytes. Deliberately leaves parked_at untouched:
+   * the GC clock started at store() time and a failed commit does not reset it.
+   */
+  revertUploadsToParked(subPieceCids: string[], providerId: string): void {
+    this.#updateUploadsBatch(subPieceCids, providerId, `status = 'parked'`, [])
+  }
+
+  /** The provider garbage-collected the parked piece; the CAR must be stored again. */
+  markUploadCollected(subPieceCid: string, providerId: string): void {
+    this.#db
+      .prepare(
+        `UPDATE uploads SET status = 'collected', updated_at = ?
+         WHERE sub_piece_cid = ? AND provider_id = ?`
+      )
+      .run(new Date().toISOString(), subPieceCid, providerId)
+  }
+
+  /**
+   * Upsert, not update: a secondary whose pull fails has no uploads row yet —
+   * the failure record is the first thing written for that (piece, provider).
+   */
+  markUploadFailed(subPieceCid: string, providerId: string, role: UploadRole, error: string): void {
+    const now = new Date().toISOString()
+    this.#db
+      .prepare(
+        `INSERT INTO uploads (sub_piece_cid, provider_id, role, status, parked_at, error, updated_at)
+         VALUES (?, ?, ?, 'failed', ?, ?, ?)
+         ON CONFLICT (sub_piece_cid, provider_id) DO UPDATE SET
+           status = 'failed', error = excluded.error, updated_at = excluded.updated_at`
+      )
+      .run(subPieceCid, providerId, role, now, error, now)
+  }
+
+  uploadsByStatus(providerId: string, status: UploadStatus): UploadRow[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT sub_piece_cid, provider_id, role, data_set_id, status, parked_at,
+                tx_hash, piece_id, committed_at, error
+         FROM uploads WHERE provider_id = ? AND status = ? ORDER BY parked_at`
+      )
+      .all(providerId, status)
+    return rows.map(toUploadRow)
+  }
+
+  /** Sub-piece CARs safe to evict: committed on every provider that holds them. */
+  carPathsFullyCommitted(): string[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT sp.car_path FROM sub_pieces sp
+         WHERE sp.car_path IS NOT NULL
+           AND EXISTS (SELECT 1 FROM uploads u WHERE u.sub_piece_cid = sp.sub_piece_cid)
+           AND NOT EXISTS (
+             SELECT 1 FROM uploads u WHERE u.sub_piece_cid = sp.sub_piece_cid
+               AND u.status != 'committed'
+           )`
+      )
+      .all()
+    return rows.map((r) => (r as { car_path: string }).car_path)
+  }
+
+  /**
+   * Per-provider GC-window estimate. Reads fall back to the caller's default;
+   * writes only ever lower the stored value (a successful run proves nothing
+   * about the window being longer).
+   */
+  providerWindowMs(providerId: string, defaultMs: number): number {
+    const row = this.#db
+      .prepare(`SELECT assumed_window_ms FROM provider_windows WHERE provider_id = ?`)
+      .get(providerId) as { assumed_window_ms: number } | undefined
+    return row == null ? defaultMs : Math.min(row.assumed_window_ms, defaultMs)
+  }
+
+  lowerProviderWindow(providerId: string, windowMs: number): void {
+    this.#db
+      .prepare(
+        `INSERT INTO provider_windows (provider_id, assumed_window_ms, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT (provider_id) DO UPDATE SET
+           assumed_window_ms = MIN(provider_windows.assumed_window_ms, excluded.assumed_window_ms),
+           updated_at = excluded.updated_at`
+      )
+      .run(providerId, windowMs, new Date().toISOString())
+  }
+
   /**
    * Persist the browser-granted session key (single active session per DB).
    * The key signs only FWSS CreateDataSet/AddPieces typed-data, is time-boxed
@@ -1089,6 +1298,35 @@ export interface SessionKeyRow {
   privateKey: string
   /** Unix seconds; chain-effective min of the two permission expiries. */
   expiresAt: number
+}
+
+function toSubPieceRow(r: unknown): SubPieceRow {
+  const row = r as Record<string, unknown>
+  return {
+    subPieceCid: String(row.sub_piece_cid),
+    assembledCarLength: Number(row.assembled_car_length),
+    assembledSha256: row.assembled_sha256 == null ? null : String(row.assembled_sha256),
+    targetSizeBytes: Number(row.target_size_bytes),
+    carPath: row.car_path == null ? null : String(row.car_path),
+    url: row.url == null ? null : String(row.url),
+    status: row.status as SubPieceStatus,
+  }
+}
+
+function toUploadRow(r: unknown): UploadRow {
+  const row = r as Record<string, unknown>
+  return {
+    subPieceCid: String(row.sub_piece_cid),
+    providerId: String(row.provider_id),
+    role: row.role as UploadRole,
+    dataSetId: row.data_set_id == null ? null : String(row.data_set_id),
+    status: row.status as UploadStatus,
+    parkedAt: String(row.parked_at),
+    txHash: row.tx_hash == null ? null : String(row.tx_hash),
+    pieceId: row.piece_id == null ? null : String(row.piece_id),
+    committedAt: row.committed_at == null ? null : String(row.committed_at),
+    error: row.error == null ? null : String(row.error),
+  }
 }
 
 function toPieceRow(r: unknown): PieceRow {
