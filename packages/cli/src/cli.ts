@@ -6,10 +6,10 @@
  * after the check passes.
  */
 const major = Number(process.versions.node.split('.')[0])
-if (major < 26) {
+if (major < 24) {
   process.stderr.write(
-    `ipfs2foc requires Node.js >= 26 (found ${process.versions.node}).\n` +
-      `It uses the built-in node:sqlite module. Install Node 26+ from https://nodejs.org\n`
+    `ipfs2foc requires Node.js >= 24 (found ${process.versions.node}).\n` +
+      `It uses the built-in node:sqlite module. Install Node 24+ from https://nodejs.org\n`
   )
   process.exit(1)
 }

@@ -70,12 +70,12 @@ From source (development uses [pnpm](https://pnpm.io)):
 git clone https://github.com/FilOzone/ipfs2foc
 cd ipfs2foc
 pnpm install
-node packages/cli/src/index.ts --help   # run directly; Node 26 strips the TypeScript types
+node packages/cli/src/index.ts --help   # run directly; Node strips the TypeScript types
 ```
 
 ## Requirements
 
-- **Node 26+** (uses the built-in `node:sqlite`).
+- **Node 24+** (uses the built-in `node:sqlite`).
 - A source that serves **deterministic trustless CARs**. The default is
   `trustless-gateway.link`; others (for example `gateway.pinata.cloud`) work via
   `--gateway`. A gateway that returns reassembled files instead of CARs does
