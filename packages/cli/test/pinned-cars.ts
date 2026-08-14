@@ -2,12 +2,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /**
- * The pinned gateway-CAR contract (#19/#29 lineage), shared by every test
- * that asserts it: the hermetic fixture replay (commp-fixture-parity) and the
- * live gateway canary (commp-piece-cid-regression). One list so the pins
- * cannot drift apart across files — a live-canary failure and a fixture-test
- * failure must be disagreements about bytes, never about which values were
- * pinned.
+ * The pinned gateway-CAR contract (#19/#29 lineage): real CARs captured from
+ * trustless-gateway.link, committed under fixtures/cars, with the sha256/size
+ * and PieceCID the CLI computed and a provider verified. One list shared by
+ * every test that asserts it, so the pins cannot drift apart across files.
  */
 export interface PinnedCar {
   cid: string

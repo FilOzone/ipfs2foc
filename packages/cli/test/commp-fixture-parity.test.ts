@@ -14,14 +14,14 @@ import { stopGatewayBlocks } from '../src/gateway-blocks.ts'
 import { fetchAndComputePiece } from '../src/piece.ts'
 import { fixtureCarPath, PINNED_CARS } from './pinned-cars.ts'
 
-// The hermetic counterpart of the live gateway canary
-// (commp-piece-cid-regression.test.ts). The CARs the canary fetches from
-// trustless-gateway.link are committed under fixtures/cars, verified here
-// against the same pinned sha256/size, and replayed from an in-process HTTP
-// server through the same buildCarUrl request shape. This keeps the full
-// fetch-and-hash path — fetchAndComputePiece included — in the merge-gating
-// suite with no network, so a red live canary can only mean the real gateway
-// changed its bytes, not a regression in this repo.
+// The pinned-CAR contract, asserted with no network. Real gateway CARs are
+// committed under fixtures/cars (see pinned-cars.ts for the capture
+// provenance), verified here against the pinned sha256/size, and replayed
+// from an in-process HTTP server through the same buildCarUrl request shape.
+// This keeps the full fetch-and-hash path — fetchAndComputePiece included —
+// in the merge gate. Whether any real gateway still serves these bytes is
+// that operator's business, not this suite's; our runtime detection of an
+// unstable gateway is covered in gateway-determinism.test.ts.
 //
 // Deliberately a plain HTTP replay, not a local IPFS node: a real node would
 // re-serialize the CAR itself, making the local implementation's framing the
