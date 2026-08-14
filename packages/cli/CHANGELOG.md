@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.8.0...ipfs2foc-v0.8.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* **cli:** lower the Node floor from 26 to 24 ([#76](https://github.com/FilOzone/ipfs2foc/issues/76)) ([c5d659b](https://github.com/FilOzone/ipfs2foc/commit/c5d659b81768cec55a9f02f8f8e76e4b199040e8))
+
 ## [0.8.0](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.7.0...ipfs2foc-v0.8.0) (2026-08-10)
 
 
