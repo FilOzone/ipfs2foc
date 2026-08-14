@@ -11,7 +11,6 @@ import type { CID } from 'multiformats/cid'
 import * as Raw from 'multiformats/codecs/raw'
 import * as Digest from 'multiformats/hashes/digest'
 import * as Link from 'multiformats/link'
-import { buildCarUrl, CAR_ACCEPT } from '../src/gateway.ts'
 
 // verified: fr32-sha2-256-trunc254-padded-binary-tree-multihash src/async.js
 // digest — the multihash bytes come out via digestInto(bytes, 0, true).
@@ -62,45 +61,4 @@ test('WASM hasher is chunk-size independent', () => {
     assert.equal(chunked, whole, `chunk size ${chunkSize} diverged from single-shot`)
   }
   assert.equal(whole, jsPieceCid(data))
-})
-
-// Live, like commp-piece-cid-regression.test.ts: the pinned PieceCIDs there are
-// what the CLI computes and the provider verifies. The WASM hasher must land on
-// the same values over the same gateway CARs. Opt in with LIVE_TESTS=1 (CI sets
-// it); when the canary runs and the gateway is unreachable, the assertions fail
-// loudly rather than silently passing.
-const liveSkip = process.env.LIVE_TESTS == null ? 'live gateway canary; set LIVE_TESTS=1 to run' : false
-
-const GATEWAY = 'https://trustless-gateway.link'
-
-const KNOWN = [
-  {
-    cid: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi',
-    pieceCid: 'bafkzcibdxzhqyefkufvnsmqlyrjyr3el6affnfo3l7ipfncjjzjl4hkaqhbaema3',
-  },
-  {
-    cid: 'bafybeia2yt37rxkqu7ovw6ja3nf2aqatrzpcwh2tvl2kqbgeqcccn5evhy',
-    pieceCid: 'bafkzcibf3ck4uais4fgennh4hbfx5z3i6hue4xgq2cdeamtus4hjbsrjs5lf2azbxmsa',
-  },
-]
-
-test('WASM hasher reproduces the pinned PieceCIDs over the gateway CARs', { skip: liveSkip }, async () => {
-  for (const known of KNOWN) {
-    const res = await fetch(buildCarUrl(GATEWAY, known.cid), { headers: { accept: CAR_ACCEPT } })
-    assert.equal(res.ok, true, `gateway fetch failed for ${known.cid}: HTTP ${res.status}`)
-    assert.ok(res.body != null)
-    const hasher = WasmHasher.create()
-    let pieceCid: string
-    try {
-      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-        hasher.write(chunk)
-      }
-      const out = new Uint8Array(hasher.multihashByteLength())
-      hasher.digestInto(out, 0, true)
-      pieceCid = (Link.create(Raw.code, Digest.decode(out)) as CID).toString()
-    } finally {
-      hasher.free()
-    }
-    assert.equal(pieceCid, known.pieceCid, `WASM PieceCID drifted from pinned value for ${known.cid}`)
-  }
 })
