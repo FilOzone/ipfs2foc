@@ -46,11 +46,11 @@ jobs:
           VITE_METRICS_ENDPOINT: ${{ vars.METRICS_ENDPOINT }}
           VITE_METRICS_TOKEN: ${{ vars.METRICS_TOKEN }}
       # Launch invariants render the built app in the runner's Chrome and fail
-      # the deploy if the landing promises regressed. EXPECTED_DEFAULT_NETWORK
-      # flips to mainnet at cutover via the repo variable, no commit.
+      # the deploy if the landing promises regressed. The repo variable can
+      # override EXPECTED_DEFAULT_NETWORK without a commit if it ever must.
       - run: pnpm --filter ipfs2foc-app launch-invariants
         env:
-          EXPECTED_DEFAULT_NETWORK: ${{ vars.EXPECTED_DEFAULT_NETWORK || 'calibration' }}
+          EXPECTED_DEFAULT_NETWORK: ${{ vars.EXPECTED_DEFAULT_NETWORK || 'mainnet' }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: app/dist

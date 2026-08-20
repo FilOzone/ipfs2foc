@@ -13,9 +13,9 @@ import { CAPABILITIES_SCHEMA_VERSION, type Capabilities } from 'ipfs2foc-core/ca
 /**
  * The network the hosted console starts on. A `serve` daemon declares its own
  * and the console follows it; on the hosted site the operator picks, starting
- * here. Set to 'mainnet' for launch.
+ * here. Calibration is an explicit switch, never a fallback.
  */
-export const DEFAULT_NETWORK = 'calibration' as const
+export const DEFAULT_NETWORK = 'mainnet' as const
 
 /** What the static hosted console can do: in-browser prepare + wallet signing. */
 export const HOSTED_DEFAULTS: Capabilities = {
