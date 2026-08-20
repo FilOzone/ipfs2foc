@@ -11,6 +11,13 @@ import { defineConfig } from 'tsup'
 // dependency.
 export default defineConfig({
   entry: ['src/cli.ts'],
+  // Inline the telemetry destination at build time (see src/telemetry.ts).
+  // The release workflow supplies both; a local or test build leaves them
+  // empty and the emitter stays off.
+  env: {
+    IPFS2FOC_METRICS_ENDPOINT: process.env.IPFS2FOC_METRICS_ENDPOINT ?? '',
+    IPFS2FOC_METRICS_TOKEN: process.env.IPFS2FOC_METRICS_TOKEN ?? '',
+  },
   format: ['esm'],
   platform: 'node',
   target: 'node22',

@@ -47,6 +47,7 @@ import { bigintJsonReplacer, runReport } from './report.ts'
 import { Runner } from './runner.ts'
 import { type IngressState, probePublicBase, startServer } from './server.ts'
 import { runSubmitPdp } from './submit-pdp.ts'
+import { recordCommandRun } from './telemetry.ts'
 import { log, parseCidList, parsePositiveInt, parseSize } from './util.ts'
 
 const DEFAULT_DB = './migrate.db'
@@ -149,6 +150,11 @@ IPFS fallback (plan, commp, serve):
   --ipfs-fallback                    Enable embedded ipfs node to recover from source-gateway 5xx/429 (default: off; opt-in)
   --ipfs-fallback-mode MODE          Fallback ordering (default: gateway-first; only value supported in this release)
   --ipfs-fallback-timeout-seconds N  Per-CID upper bound on the fallback fetch (default: 120)
+
+Telemetry:
+  Each command reports one anonymous run event: the command name and whether
+  it succeeded. Nothing else — no CIDs, addresses, or paths. Opt out with
+  DO_NOT_TRACK=1 or SCARF_ANALYTICS=false.
 
 Docs: https://github.com/FilOzone/ipfs2foc#readme
   Quickstart and troubleshooting in the README; operator profiles, gateways,
@@ -1082,6 +1088,21 @@ function parsePublicBase(raw: string): string {
 
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2)
+  const tracked = command != null && KNOWN_COMMANDS.includes(command) ? command : null
+  try {
+    await dispatch(command, rest)
+  } catch (err) {
+    if (tracked != null) {
+      await recordCommandRun(tracked, false)
+    }
+    throw err
+  }
+  if (tracked != null) {
+    await recordCommandRun(tracked, true)
+  }
+}
+
+async function dispatch(command: string | undefined, rest: string[]): Promise<void> {
   switch (command) {
     case 'probe':
       await cmdProbe(rest)

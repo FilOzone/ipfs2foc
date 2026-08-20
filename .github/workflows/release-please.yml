@@ -74,7 +74,12 @@ jobs:
       - run: pnpm run lint
       - run: pnpm run typecheck
       - run: pnpm test
+      # The metrics pair is inlined into the published bundle (tsup env, see
+      # packages/cli/tsup.config.ts); absent variables leave telemetry off.
       - run: pnpm run build
+        env:
+          IPFS2FOC_METRICS_ENDPOINT: ${{ vars.METRICS_ENDPOINT }}
+          IPFS2FOC_METRICS_TOKEN: ${{ vars.METRICS_TOKEN }}
       # Publish with npm: its OIDC trusted publishing authenticates against the
       # Trusted Publisher configured on npmjs.com for this repo + workflow, so no
       # NPM_TOKEN is needed and provenance is automatic. Trusted publishing needs
