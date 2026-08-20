@@ -99,8 +99,9 @@ you target (default `mainnet`; pass `--network calibration` for the testnet).
 - **Payment setup**: deposit USDFC into Filecoin Pay and approve FWSS as a
   payments operator with enough rate and lockup allowance, plus the minimum
   lockup and one-time sybil fee. `create-data-set` reverts without it.
-  [`filecoin-pin`](https://github.com/filecoin-project/filecoin-pin) does the
-  deposit and approvals in one command:
+  [`filecoin-pin`](https://github.com/filecoin-project/filecoin-pin)
+  ([getting started](https://docs.filecoin.io/build-on-filecoin/cookbook/filecoin-pin/getting-started))
+  does the deposit and approvals in one command:
 
   ```bash
   export PRIVATE_KEY=0x...
