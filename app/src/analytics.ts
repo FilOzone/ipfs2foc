@@ -10,15 +10,15 @@
  *
  * Only the hosted deployment reports: a `serve` daemon (backend `local`) and
  * dev builds never send, and the hostname allowlist keeps self-hosted copies
- * of the static build from writing into the launch dashboard. The Plausible
- * site `ipfsto.filecoin.cloud` must exist before data flows; traffic from
- * the pre-cutover github.io host reports into that same site.
+ * of the static build from writing into the launch dashboard. Events report
+ * into the existing `filecoin.cloud` Plausible site (shared with the landing
+ * page); traffic from the github.io host reports into that same site.
  */
 
 import type { Capabilities } from 'ipfs2foc-core/capabilities'
 
-export const ANALYTICS_DOMAIN = 'ipfsto.filecoin.cloud'
-export const REPORTING_HOSTS = ['ipfsto.filecoin.cloud', 'filozone.github.io']
+export const ANALYTICS_DOMAIN = 'filecoin.cloud'
+export const REPORTING_HOSTS = ['filecoin.cloud', 'filozone.github.io']
 
 const PLAUSIBLE_EVENT_URL = 'https://plausible.io/api/event'
 
