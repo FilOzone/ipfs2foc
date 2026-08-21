@@ -1,5 +1,12 @@
 # User personas for ipfs2foc
 
+> Most of the knobs here belong to the
+> [legacy provider-pull path](advanced.md). The default `upload` command is
+> the simplest fit for most migrations and needs none of this tuning beyond
+> `--pack-target-size` and the concurrency flags; start with the
+> [README quickstart](../README.md#quickstart) and come back only if you are
+> running the pull path.
+
 ipfs2foc moves already-pinned IPFS content onto Filecoin Onchain Cloud
 through Curio's PDP pull. Different operators run it under different disk,
 bandwidth, and time budgets. This doc maps those situations to concrete

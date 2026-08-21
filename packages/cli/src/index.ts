@@ -69,52 +69,54 @@ function requireLegacyPull(values: { 'legacy-pull'?: boolean }, what: string): v
   }
 }
 
-const USAGE = `ipfs2foc — migrate pinned IPFS CIDs to FOC without re-chunking
+const USAGE = `ipfs2foc: migrate pinned IPFS CIDs to FOC without re-chunking
 
 Usage:
   ipfs2foc probe  <cid> [--gateway URL]...
   ipfs2foc commp  <cid> [--gateway URL]...
-  ipfs2foc plan   --cids <file> [--db <file>] [--gateway URL]... [--piece-size 32GiB]
-                     [--concurrency 8]
-  ipfs2foc import-manifest <manifest.json> [--db <file>] [--network mainnet|calibration]
-  ipfs2foc export [--db <file>] [--out <file>] [--network mainnet|calibration] [--source-relay <https-url>]
-                     [--piece-size 32GiB] [--no-auto-pack]
-  ipfs2foc status [--db <file>] [--json]
-  ipfs2foc serve  [--db <file>] [--cids <file>] [--gateway URL]... [--piece-size 32GiB]
-                     [--concurrency 8] [--port 4321] [--network mainnet|calibration] [--max-base-fee N]
-                     [--app-dir <dir>]  (or IPFS2FOC_APP_DIR; defaults to the bundled console)
-                     [--ingress cloudflared | --public-base <https-url>] [--legacy-pull]
-                     (serve also answers GET/HEAD /piece/{pcidv2}; with ingress it is the pull source,
-                      which requires --legacy-pull — prefer 'upload', which needs no ingress)
-  ipfs2foc gas    [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
-  ipfs2foc redirect-serve [--db <file>] [--port 4322] [--ingress funnel|cloudflared] [--legacy-pull]
+  ipfs2foc analyze [--cids <file>] [--db <file>] [--car-store <dir>] [--gateway URL]
+                     [--sample 100|--all] [--probe-concurrency 8] [--bw-target URL]
+                     [--network mainnet|calibration] [--json]
   ipfs2foc upload [--cids <file>] --car-store <dir> [--db <file>] [--gateway URL]...
                      [--network mainnet|calibration] [--rpc-url URL] [--copies 2]
                      [--provider-id <id>]... [--data-set-id <id>]...
                      [--pack-target-size 1000MiB] [--concurrency 8] [--fetch-concurrency 4]
                      [--assumed-window-minutes 60] [--source ipfs2filecoin]  (uses PRIVATE_KEY env)
-                     (download, pack multi-root CARs, stream each straight to the providers, and
-                      batch addPieces before the provider's parked-piece GC window closes; no
-                      public origin, relay, or ingress required)
+                     (the migration path: download, pack multi-root CARs, stream each straight
+                      to the providers, and batch addPieces before the provider's parked-piece
+                      GC window closes; no public origin, relay, or ingress required)
+  ipfs2foc status [--db <file>] [--json]
+  ipfs2foc report --data-set-id <id> [--db <file>] [--network mainnet|calibration] [--json]
+                     [--check-ipni <delegated-routing-url>] [--ipni-sample 100|--ipni-all] [--ipni-concurrency 8]
+  ipfs2foc serve  [--db <file>] [--cids <file>] [--gateway URL]... [--piece-size 32GiB]
+                     [--concurrency 8] [--port 4321] [--network mainnet|calibration] [--max-base-fee N]
+                     [--app-dir <dir>]  (or IPFS2FOC_APP_DIR; defaults to the bundled console)
+  ipfs2foc gas    [--network mainnet|calibration] [--rpc-url URL] [--max-base-fee N]
+  ipfs2foc --version
+
+Legacy provider-pull path ('upload' replaces it and is the simplest fit for most
+migrations; see docs/advanced.md, ingress commands require --legacy-pull):
+  ipfs2foc plan   --cids <file> [--db <file>] [--gateway URL]... [--piece-size 32GiB]
+                     [--concurrency 8]
+  ipfs2foc pack-cars --car-store <dir> [--db <file>] [--gateway URL]...
+                     [--pack-target-size 512MiB] [--fetch-concurrency 4]
+  ipfs2foc import-manifest <manifest.json> [--db <file>] [--network mainnet|calibration]
+  ipfs2foc export [--db <file>] [--out <file>] [--network mainnet|calibration] [--source-relay <https-url>]
+                     [--piece-size 32GiB] [--no-auto-pack]
+  ipfs2foc redirect-serve [--db <file>] [--port 4322] [--ingress funnel|cloudflared] [--legacy-pull]
   ipfs2foc create-data-set --provider-id <id> [--network mainnet|calibration] [--cdn]
                      (uses PRIVATE_KEY env)
   ipfs2foc pdp-submit --data-set-id <id> (--source-base <https-url> | --source-relay <https-url>) [--db <file>]
                      [--network mainnet|calibration] [--max-in-flight 4] [--max-base-fee N] [--pull-batch 32]
                      [--strict-piece-size]  (refuse pieces below the provider's advertised minimum;
-                     default warns and proceeds — the floor is advisory in practice)
-                     [--legacy-pull]  (required: provider pull needs a public origin; prefer 'upload')
+                     default warns and proceeds, the floor is advisory in practice)
+                     [--legacy-pull]  (required: provider pull needs a public origin)
                      (--source-base: your own redirect-serve; --source-relay: a shared stateless relay, passthrough only)
                      (uses PRIVATE_KEY env)
-  ipfs2foc report --data-set-id <id> [--db <file>] [--network mainnet|calibration] [--json]
-                     [--check-ipni <delegated-routing-url>] [--ipni-sample 100|--ipni-all] [--ipni-concurrency 8]
-  ipfs2foc pack-cars --car-store <dir> [--db <file>] [--gateway URL]...
-                     [--pack-target-size 512MiB] [--fetch-concurrency 4]
   ipfs2foc reset-failed-aggregates [--db <file>] [--network mainnet|calibration]
   ipfs2foc retry-unconfirmed-aggregates [--db <file>] [--network mainnet|calibration]
-  ipfs2foc analyze [--cids <file>] [--db <file>] [--car-store <dir>] [--gateway URL]
-                     [--sample 100|--all] [--probe-concurrency 8] [--bw-target URL]
-                     [--network mainnet|calibration] [--json]
-  ipfs2foc --version
+  (serve can also carry the pull source: [--ingress cloudflared | --public-base <https-url>] --legacy-pull;
+   it answers GET/HEAD /piece/{pcidv2} either way)
 
 Defaults:
   db          ${DEFAULT_DB}
@@ -125,27 +127,16 @@ Defaults:
   network     mainnet (serve base-fee monitor off unless --network or --rpc-url given)
 
 Examples:
-  # Migrate a CID list end to end: download, pack ~1 GiB multi-root CARs, and
-  # upload straight to two providers. No public origin or tunnel needed.
-  ipfs2foc upload --cids cids.txt --car-store ./cars --network calibration
-
-  # Pre-flight a gateway, then plan a CID list
+  # Pre-flight a gateway, then migrate a CID list end to end: download, pack
+  # ~1 GiB multi-root CARs, and upload straight to two providers. No public
+  # origin or tunnel needed.
   ipfs2foc probe <cid> --gateway https://trustless-gateway.link
-  ipfs2foc plan --cids cids.txt
-
-  # Legacy provider-pull path (self-hosted public origin required).
-  # One process carries the console and the pull source. Start it, wait for it
-  # to log "ingress: ready at https://<host>", then submit against that host.
-  ipfs2foc serve --ingress cloudflared --legacy-pull
-  ipfs2foc pdp-submit --data-set-id 42 --source-base https://<tunnel-host> --legacy-pull
-
-  # Or run the pull source on its own: start it first, leave it running, and
-  # submit from a second shell against the host it logs.
-  ipfs2foc redirect-serve --ingress cloudflared --port 4322 --legacy-pull
-  ipfs2foc pdp-submit --data-set-id 42 --source-base https://<public-host> --legacy-pull
+  ipfs2foc upload --cids cids.txt --car-store ./cars --network calibration
 
   # Confirm everything landed on chain
   ipfs2foc report --data-set-id 42
+
+  # Legacy provider-pull examples live in docs/advanced.md
 
 IPFS fallback (plan, commp, serve):
   --ipfs-fallback                    Enable embedded ipfs node to recover from source-gateway 5xx/429 (default: off; opt-in)
@@ -154,12 +145,12 @@ IPFS fallback (plan, commp, serve):
 
 Telemetry:
   Each command reports one anonymous run event: the command name and whether
-  it succeeded. Nothing else — no CIDs, addresses, or paths. Opt out with
+  it succeeded. Nothing else, no CIDs, addresses, or paths. Opt out with
   DO_NOT_TRACK=1 or SCARF_ANALYTICS=false.
 
 Docs: https://github.com/FilOzone/ipfs2foc#readme
-  Quickstart and troubleshooting in the README; operator profiles, gateways,
-  and ingress setup under docs/.
+  Quickstart and troubleshooting in the README; gateway choice under docs/;
+  the legacy pull path, operator profiles, and ingress in docs/advanced.md.
 `
 
 /** Subcommands `main` dispatches, used for did-you-mean on a mistyped command. */

@@ -1,5 +1,9 @@
 # Public ingress for provider pulls
 
+> This page applies to the [legacy provider-pull path](advanced.md) only. The
+> default `upload` command needs no ingress at all: it uploads directly to
+> the providers and is the simplest fit for most migrations.
+
 `redirect-serve` needs a public HTTPS URL that resolves to a public, routable
 IP. The provider's PDP pull fetches `<source-base>/piece/{pcidv2}`, follows
 the 302 to the gateway CAR, and re-validates the host on each hop. CGNAT
