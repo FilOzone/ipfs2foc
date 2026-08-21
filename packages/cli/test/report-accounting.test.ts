@@ -86,3 +86,28 @@ test('committedSourceCidStats counts distinct source CIDs across a multi-asset a
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('committedSourceCidStats dedupes a CID committed via both an aggregate and an upload', async () => {
+  const { dir, db } = await dbAt('acct-union')
+  try {
+    db.addCids(['bafY'])
+    db.recordPieceSuccess('bafY', 'pcY', 100, 'g', 'https://g/ipfs/bafY?format=car', 'shaY')
+    db.recordBuiltSubPiece({
+      subPieceCid: 'packY',
+      assembledCarLength: 100,
+      targetSizeBytes: 256,
+      carPath: '/tmp/packY.car',
+      assembledSha256: 'sha-pack-y',
+      members: [{ cid: 'bafY', rawSize: 100, sha256: 'shaY' }],
+    })
+    db.saveAggregate(0, 'rootY', 256n, ['packY'])
+
+    // The same source CID reaches chain through the aggregate AND a direct
+    // upload of the same sub-piece: counted once.
+    const stats = db.committedSourceCidStats([0], ['packY'])
+    assert.equal(stats.total, 1)
+    assert.equal(stats.inPieces, 1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

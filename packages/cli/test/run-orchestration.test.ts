@@ -159,3 +159,73 @@ test('runReport: a chain root with no local aggregate is reported as unaccounted
     assert.ok(r.discrepancies.some((d) => /committed locally but is not on chain/.test(d)))
   })
 })
+
+// --- runReport over the direct-upload path (#73) ---
+
+const UP = 'bafkzcibuploadedpiececid'
+
+function seedCommittedUpload(db: MigrationDB) {
+  db.addCids([SRC1])
+  db.recordPieceSuccess(SRC1, PC1, PC1_RAW, 'g', `https://g/ipfs/${SRC1}?format=car`, 's')
+  db.recordBuiltSubPiece({
+    subPieceCid: UP,
+    assembledCarLength: PC1_RAW,
+    targetSizeBytes: 1000 * 1024 * 1024,
+    carPath: '/tmp/up.car',
+    assembledSha256: 'sha-up',
+    members: [{ cid: SRC1, rawSize: PC1_RAW, sha256: 's' }],
+  })
+  db.recordUploadParked(UP, '7', 'primary', '1')
+  db.markUploadCommitted(UP, '7', { dataSetId: '1', pieceId: '9', txHash: '0xuptx' })
+}
+
+test('runReport: upload piece on chain + proven => committed and complete', async () => {
+  await withDb('report-upload-complete', async (db) => {
+    seedCommittedUpload(db)
+    const deps: ReportDeps = {
+      activePieceCids: async () => new Set([UP]),
+      maxBlockOfTxHashes: async () => 50n,
+      dataSetProofHealth: async () => proofHealth({ provenSinceAdd: true, inGoodStanding: true }),
+    }
+    const r = await runReport(db, { network: 'calibration', dataSetId: 1, rpcUrl: 'http://rpc.local' }, deps)
+    assert.equal(r.uploads.length, 1)
+    assert.equal(r.uploads[0]?.onChain, true)
+    assert.equal(r.uploads[0]?.providerId, '7')
+    assert.equal(r.cids.committed, 1)
+    assert.deepEqual(r.unaccountedOnChain, [])
+    assert.equal(r.complete, true)
+    assert.deepEqual(r.discrepancies, [])
+  })
+})
+
+test('runReport: upload marked committed locally but absent on chain => discrepancy, not complete', async () => {
+  await withDb('report-upload-missing', async (db) => {
+    seedCommittedUpload(db)
+    const deps: ReportDeps = {
+      activePieceCids: async () => new Set<string>(),
+      maxBlockOfTxHashes: async () => null,
+      dataSetProofHealth: async () => proofHealth({ provenSinceAdd: true, inGoodStanding: true }),
+    }
+    const r = await runReport(db, { network: 'calibration', dataSetId: 1, rpcUrl: 'http://rpc.local' }, deps)
+    assert.equal(r.uploads[0]?.onChain, false)
+    assert.equal(r.cids.committed, 0)
+    assert.equal(r.complete, false)
+    assert.ok(r.discrepancies.some((d) => /upload piece .* committed locally but is not on chain/.test(d)))
+  })
+})
+
+test('runReport: parked upload row for another data set is excluded', async () => {
+  await withDb('report-upload-scope', async (db) => {
+    seedCommittedUpload(db)
+    // A second provider copy parked under a different data set id.
+    db.recordUploadParked(UP, '8', 'secondary', '2')
+    const deps: ReportDeps = {
+      activePieceCids: async () => new Set([UP]),
+      maxBlockOfTxHashes: async () => 50n,
+      dataSetProofHealth: async () => proofHealth({ provenSinceAdd: true, inGoodStanding: true }),
+    }
+    const r = await runReport(db, { network: 'calibration', dataSetId: 1, rpcUrl: 'http://rpc.local' }, deps)
+    assert.equal(r.uploads.length, 1, 'only data set 1 rows are reported')
+    assert.equal(r.complete, true)
+  })
+})

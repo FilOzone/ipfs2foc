@@ -8,9 +8,11 @@
  *   non-zero.
  *
  * Layer 2 (always): on-chain reconciliation against the PDPVerifier contract.
- *   For each local aggregate, the root is recomputed from members (the
- *   authoritative value the SP re-derives on add) and matched against the
- *   data set's `getActivePieces`. Plus a single read of
+ *   Both migration paths are covered. For each local aggregate (legacy
+ *   provider-pull path) the root is recomputed from members (the
+ *   authoritative value the SP re-derives on add); for each `uploads` row
+ *   (direct-upload path) the stored sub-piece CID is that commitment already.
+ *   Each is matched against the data set's `getActivePieces`. Plus a single read of
  *   `getDataSetLastProvenEpoch` shows whether the SP has produced a valid
  *   proof-of-possession after the run's final AddPieces. PoP samples
  *   pseudo-random chunks of the data set, so a valid proof requires holding
@@ -60,6 +62,18 @@ export interface AggregateReport {
   pieceUrl: string
 }
 
+/** One `uploads` row (direct-upload path) reconciled against chain state. */
+export interface UploadPieceReport {
+  subPieceCid: string
+  providerId: string
+  role: string
+  status: string
+  members: number
+  txHash: string | null
+  onChain: boolean
+  pieceUrl: string
+}
+
 export interface IpniCheck {
   endpoint: string
   /** How many CIDs were probed (less than `population` if sampled). */
@@ -87,6 +101,8 @@ export interface Report {
   }
   failuresByCategory: Record<string, number>
   aggregates: AggregateReport[]
+  /** Direct-upload pieces for this data set (the `upload` command's path). */
+  uploads: UploadPieceReport[]
   discrepancies: string[]
   /** Piece CIDs present on chain for this data set that no local aggregate root matches. Populated when the local DB has been lost or never ran a plan for these pieces. */
   unaccountedOnChain: string[]
@@ -266,10 +282,45 @@ export async function runReport(
     })
   }
 
-  // Count DISTINCT source CIDs committed across on-chain aggregates, intersected
-  // with the local pieces table, and surface (rather than clamp away) any
-  // inconsistency. See `computeAccounting`.
-  const accounting = computeAccounting(counts, db.committedSourceCidStats(onChainAggIdxs))
+  // Direct-upload rows for this data set. The sub-piece CID is the piece
+  // commitment the provider re-derived on add, so on-chain membership is a
+  // direct set lookup — no local recompute, chain stays the authority.
+  const uploads: UploadPieceReport[] = []
+  const onChainUploadCids: string[] = []
+  const committedUploadUnits: Array<{ memberCount: number; subPieceCid: string }> = []
+  for (const u of db.uploadsForDataSet(String(opts.dataSetId))) {
+    const onChain = onChainRoots.has(u.subPieceCid)
+    if (onChain) {
+      onChainUploadCids.push(u.subPieceCid)
+      committedUploadUnits.push({ memberCount: u.memberCount, subPieceCid: u.subPieceCid })
+      if (u.txHash != null) committedTxHashes.push(u.txHash)
+    }
+    if (onChain && u.status !== 'committed') {
+      discrepancies.push(
+        `upload piece ${u.subPieceCid} (provider ${u.providerId}) is on chain but local status is '${u.status}'`
+      )
+    }
+    if (!onChain && u.status === 'committed') {
+      discrepancies.push(
+        `upload piece ${u.subPieceCid} (provider ${u.providerId}) is marked committed locally but is not on chain`
+      )
+    }
+    uploads.push({
+      subPieceCid: u.subPieceCid,
+      providerId: u.providerId,
+      role: u.role,
+      status: u.status,
+      members: u.memberCount,
+      txHash: u.txHash,
+      onChain,
+      pieceUrl: explorerPieceUrl(opts.network, u.subPieceCid),
+    })
+  }
+
+  // Count DISTINCT source CIDs committed across on-chain aggregates and
+  // on-chain upload pieces, intersected with the local pieces table, and
+  // surface (rather than clamp away) any inconsistency. See `computeAccounting`.
+  const accounting = computeAccounting(counts, db.committedSourceCidStats(onChainAggIdxs, onChainUploadCids))
   const committed = accounting.committed
   const pendingNotCommitted = accounting.pendingNotCommitted
   const unaccounted = accounting.unaccounted
@@ -281,13 +332,15 @@ export async function runReport(
   // already on-chain by an earlier run) contribute nothing to the max; if
   // every committed aggregate is in that state, `maxAddEpoch` is null and
   // `provenSinceAdd` then means "any proof for this set after any add".
-  const maxAddEpoch = await deps.maxBlockOfTxHashes(rpcUrl, opts.network, committedTxHashes)
+  // Dedupe first: a batched AddPieces commit stamps the same tx hash on every
+  // upload row it covered.
+  const maxAddEpoch = await deps.maxBlockOfTxHashes(rpcUrl, opts.network, [...new Set(committedTxHashes)])
   const proof = await deps.dataSetProofHealth(rpcUrl, opts.network, opts.dataSetId, maxAddEpoch)
 
-  const unaccountedOnChain = findUnaccountedOnChain(
-    onChainRoots,
-    aggregates.map((a) => a.root)
-  )
+  const unaccountedOnChain = findUnaccountedOnChain(onChainRoots, [
+    ...aggregates.map((a) => a.root),
+    ...uploads.map((u) => u.subPieceCid),
+  ])
 
   const report: Report = {
     dataSetId: opts.dataSetId,
@@ -302,6 +355,7 @@ export async function runReport(
     },
     failuresByCategory: db.failuresByCategory(),
     aggregates,
+    uploads,
     discrepancies,
     unaccountedOnChain,
     proof,
@@ -318,7 +372,14 @@ export async function runReport(
 
   if (opts.ipniEndpoint != null && committed > 0) {
     const sampleSize = opts.ipniSample ?? 100
-    const sample = collectSample(db, committedAggs, committed, sampleSize)
+    const units: SampleUnit[] = [
+      ...committedAggs.map((a) => ({ memberCount: a.memberCount, assetCids: () => db.aggregateAssetCids(a.idx) })),
+      ...committedUploadUnits.map((u) => ({
+        memberCount: u.memberCount,
+        assetCids: () => db.subPieceMemberCids(u.subPieceCid),
+      })),
+    ]
+    const sample = collectSample(units, committed, sampleSize)
     report.ipni = await checkIpni(sample, committed, opts.ipniEndpoint, opts.ipniConcurrency ?? 8)
   }
 
@@ -348,6 +409,14 @@ export async function runReport(
       `  aggregate ${a.idx} [${a.onChain ? 'on-chain' : a.status}] ${a.members} CID(s) ${a.root}` +
         `\n    piece:   ${a.pieceUrl}` +
         (a.txHash == null ? '' : `\n    tx:      ${a.txHash}`)
+    )
+  }
+  for (const u of uploads) {
+    log(
+      `  upload [${u.onChain ? 'on-chain' : u.status}] ${u.members} CID(s) ${u.subPieceCid}` +
+        `\n    provider ${u.providerId} (${u.role})` +
+        `\n    piece:   ${u.pieceUrl}` +
+        (u.txHash == null ? '' : `\n    tx:      ${u.txHash}`)
     )
   }
   if (discrepancies.length > 0) {
@@ -445,12 +514,13 @@ async function checkIpni(
  * temp array. For a 32 GiB aggregate of 512 KiB assets that's ~65k strings
  * (~4 MB) per aggregate, then released.
  */
-function collectSample(
-  db: MigrationDB,
-  committedAggs: Array<{ idx: number; memberCount: number }>,
-  population: number,
-  n: number
-): string[] {
+interface SampleUnit {
+  memberCount: number
+  /** Member source CIDs, loaded only when the stride lands in this unit. */
+  assetCids(): string[]
+}
+
+function collectSample(units: SampleUnit[], population: number, n: number): string[] {
   const sampleCount = !Number.isFinite(n) || n >= population ? population : Math.max(0, Math.floor(n))
   if (sampleCount === 0) return []
 
@@ -461,11 +531,11 @@ function collectSample(
   const out: string[] = []
   let absolute = 0
   let nextTarget = 0
-  for (const agg of committedAggs) {
+  for (const unit of units) {
     if (nextTarget >= targets.length) break
-    const end = absolute + agg.memberCount
+    const end = absolute + unit.memberCount
     if (targets[nextTarget] < end) {
-      const cids = db.aggregateAssetCids(agg.idx)
+      const cids = unit.assetCids()
       while (nextTarget < targets.length && targets[nextTarget] < end) {
         out.push(cids[targets[nextTarget] - absolute])
         nextTarget++

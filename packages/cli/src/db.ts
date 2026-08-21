@@ -540,27 +540,80 @@ export class MigrationDB {
    * packed aggregate over the same source), and the SQL aggregation keeps this
    * scale-safe — no CID list is materialized.
    */
-  committedSourceCidStats(onChainAggregateIdxs: number[]): { inPieces: number; total: number } {
-    if (onChainAggregateIdxs.length === 0) return { inPieces: 0, total: 0 }
-    const placeholders = onChainAggregateIdxs.map(() => '?').join(',')
-    const total = this.#db
-      .prepare(
-        `SELECT COUNT(DISTINCT spm.member_cid) AS n
+  committedSourceCidStats(
+    onChainAggregateIdxs: number[],
+    onChainSubPieceCids: string[] = []
+  ): { inPieces: number; total: number } {
+    if (onChainAggregateIdxs.length === 0 && onChainSubPieceCids.length === 0) return { inPieces: 0, total: 0 }
+    // UNION (not UNION ALL) dedupes a source CID that reached chain through
+    // both paths, e.g. an aggregate from a legacy run and a direct upload.
+    const selects: string[] = []
+    if (onChainAggregateIdxs.length > 0) {
+      const ph = onChainAggregateIdxs.map(() => '?').join(',')
+      selects.push(
+        `SELECT spm.member_cid AS member_cid
            FROM aggregate_members m
            JOIN sub_piece_members spm ON spm.sub_piece_cid = m.sub_piece_cid
-          WHERE m.aggregate_idx IN (${placeholders})`
+          WHERE m.aggregate_idx IN (${ph})`
       )
-      .get(...onChainAggregateIdxs) as { n: number }
+    }
+    if (onChainSubPieceCids.length > 0) {
+      const ph = onChainSubPieceCids.map(() => '?').join(',')
+      selects.push(
+        `SELECT spm.member_cid AS member_cid
+           FROM sub_piece_members spm
+          WHERE spm.sub_piece_cid IN (${ph})`
+      )
+    }
+    // COUNT(DISTINCT) does the dedupe within each path too (a CID in two
+    // committed aggregates counts once); UNION alone only dedupes across the
+    // two subselects.
+    const union = selects.join(' UNION ')
+    const params = [...onChainAggregateIdxs, ...onChainSubPieceCids]
+    const total = this.#db.prepare(`SELECT COUNT(DISTINCT member_cid) AS n FROM (${union})`).get(...params) as {
+      n: number
+    }
     const inPieces = this.#db
-      .prepare(
-        `SELECT COUNT(DISTINCT spm.member_cid) AS n
-           FROM aggregate_members m
-           JOIN sub_piece_members spm ON spm.sub_piece_cid = m.sub_piece_cid
-           JOIN pieces p ON p.cid = spm.member_cid
-          WHERE m.aggregate_idx IN (${placeholders})`
-      )
-      .get(...onChainAggregateIdxs) as { n: number }
+      .prepare(`SELECT COUNT(DISTINCT cm.member_cid) AS n FROM (${union}) cm JOIN pieces p ON p.cid = cm.member_cid`)
+      .get(...params) as { n: number }
     return { inPieces: Number(inPieces.n), total: Number(total.n) }
+  }
+
+  /**
+   * Upload rows for one data set, with each sub-piece's member count. This is
+   * the `report` read for the direct-upload path: the sub-piece CID is the
+   * piece commitment the provider re-derived on add, so it is matched against
+   * the data set's on-chain active pieces with no local recompute.
+   */
+  uploadsForDataSet(dataSetId: string): Array<{
+    subPieceCid: string
+    providerId: string
+    role: string
+    status: string
+    txHash: string | null
+    memberCount: number
+  }> {
+    const rows = this.#db
+      .prepare(
+        `SELECT u.sub_piece_cid, u.provider_id, u.role, u.status, u.tx_hash,
+                (SELECT COUNT(*) FROM sub_piece_members spm
+                  WHERE spm.sub_piece_cid = u.sub_piece_cid) AS member_count
+           FROM uploads u
+          WHERE u.data_set_id = ?
+          ORDER BY u.parked_at, u.sub_piece_cid, u.provider_id`
+      )
+      .all(dataSetId)
+    return rows.map((r) => {
+      const row = r as Record<string, unknown>
+      return {
+        subPieceCid: String(row.sub_piece_cid),
+        providerId: String(row.provider_id),
+        role: String(row.role),
+        status: String(row.status),
+        txHash: row.tx_hash == null ? null : String(row.tx_hash),
+        memberCount: Number(row.member_count),
+      }
+    })
   }
 
   /**
