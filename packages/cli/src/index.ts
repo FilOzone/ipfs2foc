@@ -114,6 +114,7 @@ Usage:
   ipfs2foc analyze [--cids <file>] [--db <file>] [--car-store <dir>] [--gateway URL]
                      [--sample 100|--all] [--probe-concurrency 8] [--bw-target URL]
                      [--network mainnet|calibration] [--json]
+  ipfs2foc --version
 
 Defaults:
   db          ${DEFAULT_DB}
@@ -1155,6 +1156,16 @@ async function dispatch(command: string | undefined, rest: string[]): Promise<vo
     case 'analyze':
       await cmdAnalyze(rest)
       break
+    case 'version':
+    case '-v':
+    case '--version': {
+      const { readFile } = await import('node:fs/promises')
+      const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as {
+        version: string
+      }
+      process.stdout.write(`${pkg.version}\n`)
+      break
+    }
     case undefined:
     case '-h':
     case '--help':
