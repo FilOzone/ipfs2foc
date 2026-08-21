@@ -29,11 +29,12 @@ once you are running real migrations.
   failure modes and recovery.
 - [Choosing a source gateway](sources.md) — per-provider notes and the `probe`
   check for deterministic trustless CARs.
+- [The legacy provider-pull path](advanced.md) — self-hosted pull sources,
+  aggregates, the relay, and recovery of stuck pull runs. More complicated
+  than most migrations need; `upload` replaces it.
 - [Public ingress for provider pulls](ingress.md) — Cloudflare quick tunnel,
-  Tailscale Funnel, or a VPS reverse proxy, for `serve` or `redirect-serve`,
-  and the public-HTTPS shape the provider validates.
-- [Recover a stuck run](../README.md#recovery-commands) — re-arm failed or
-  unconfirmed aggregates.
+  Tailscale Funnel, or a VPS reverse proxy for the legacy pull path, and the
+  public-HTTPS shape the provider validates.
 
 ## Reference — the facts
 
@@ -49,8 +50,8 @@ once you are running real migrations.
   across providers, the AddPieces event cap, committed vs proven, and
   reading chain state over receipts. Start here if you are integrating
   against FOC with your own tooling.
-- [How it works](../README.md#how-it-works) — the commP → pack → pull →
-  aggregate-add pipeline, the redirect, and the aggregate root.
+- [How it works](../README.md#how-it-works) — the commP → pack → store →
+  commit pipeline behind `upload`.
 - [Network gas and payments](../README.md#network-gas-and-payments) — which
   wallet spends what, in which currency.
 - [Scope and limits](../README.md#scope-and-limits) — sub-piece and aggregate

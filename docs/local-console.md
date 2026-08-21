@@ -124,6 +124,6 @@ Submit; nothing is signed or added twice.
 
 The aggregate lifecycle, failure states, and recovery commands are the same
 as the headless flow: see [recover a stuck
-run](../README.md#recovery-commands) and the failure-mode sections in
+run](advanced.md#recovery-commands) and the failure-mode sections in
 [operator profiles](personas.md). The `serve` daemon and the recovery
 commands operate on the same database file.
