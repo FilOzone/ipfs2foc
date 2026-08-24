@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.9.0](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.8.1...ipfs2foc-v0.9.0) (2026-08-24)
+
+
+### Features
+
+* add scripted calibration rehearsal ([7f2a2b4](https://github.com/FilOzone/ipfs2foc/commit/7f2a2b4b7425453466bd881f23ef80e5c256f95a))
+* **app:** default hosted console to mainnet ([2861cba](https://github.com/FilOzone/ipfs2foc/commit/2861cba81605b391ae1591b4b4c2711f9bfde5ed))
+* **cli:** add --version ([a09aefd](https://github.com/FilOzone/ipfs2foc/commit/a09aefd87bf25be97a6bc4c70f1cd0d7ed6585d1))
+* **cli:** report one run event per command ([744c250](https://github.com/FilOzone/ipfs2foc/commit/744c250112f40832ea8217157afb72a3944603c8))
+* **report:** reconcile upload-path migrations ([e8b2039](https://github.com/FilOzone/ipfs2foc/commit/e8b203947d26b8d5a20c9d999d16991e6df0f087))
+* **telemetry:** report upload totals ([3d40ba9](https://github.com/FilOzone/ipfs2foc/commit/3d40ba9d8015e49d34d851671282bc725bb33c50))
+
+
+### Bug Fixes
+
+* **app:** give console analytics its own dashboard ([a6aa689](https://github.com/FilOzone/ipfs2foc/commit/a6aa6894d8d93397c477a19402d13215aad14a3a))
+* **app:** report analytics to filecoin.cloud site ([829684b](https://github.com/FilOzone/ipfs2foc/commit/829684b68132f896750f4352cbef24f634328690))
+* **deps:** drop the react-native subtree from installs ([2ba2964](https://github.com/FilOzone/ipfs2foc/commit/2ba2964e633f199ef26543915a9b835d7c1aeb59))
+* **deps:** override ip-address and sharp too ([e347600](https://github.com/FilOzone/ipfs2foc/commit/e347600fee5dcf9fa4de80e897422fbf6dba8109))
+* **deps:** override vulnerable transitive versions ([f8c1b67](https://github.com/FilOzone/ipfs2foc/commit/f8c1b6724725e748dd3879ac9ced410a3e442dce))
+* **probe:** exit non-zero when no gateway is usable ([2dc8d5d](https://github.com/FilOzone/ipfs2foc/commit/2dc8d5d1dc243de5e43f018f53695c8233af2acb))
+* **probe:** time out gateways that stall the socket ([e950950](https://github.com/FilOzone/ipfs2foc/commit/e95095010cea64f2a5704e728b723b708b57172a))
+* **upload:** count CAR-assembly failures as incomplete ([40aeeac](https://github.com/FilOzone/ipfs2foc/commit/40aeeac4c06691d3cc024519267f33be84432553))
+* **upload:** exit non-zero when CIDs stay unmigrated ([aa307a7](https://github.com/FilOzone/ipfs2foc/commit/aa307a718208b63bb2737b92fb9182eec76b96ed))
+
 ## [0.8.1](https://github.com/FilOzone/ipfs2foc/compare/ipfs2foc-v0.8.0...ipfs2foc-v0.8.1) (2026-08-14)
 
 
