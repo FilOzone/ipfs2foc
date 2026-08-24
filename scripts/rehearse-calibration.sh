@@ -65,7 +65,16 @@ $CLI probe "$first_cid" --gateway "$GATEWAY" || fail "probe: $GATEWAY is not a u
 stage "stage 2: analyze (every listed CID retrievable)"
 $CLI analyze --cids "$CIDS_FILE" --gateway "$GATEWAY" --all --network calibration --json \
   > "$WORKDIR/analyze.json" || fail "analyze exited non-zero; see $WORKDIR/analyze.json"
-echo "ok: analyze wrote $WORKDIR/analyze.json"
+node -e "
+  const r = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))
+  const probes = r.sourceGateway.probes
+  const bad = probes.filter((p) => !(p.ok && p.deterministic))
+  if (bad.length > 0) {
+    console.error(\`\${bad.length} of \${probes.length} probed CID(s) failed on the gateway; first: \${bad[0].cid}\`)
+    process.exit(1)
+  }
+  console.log(\`ok: \${probes.length}/\${probes.length} probed CID(s) deterministic\`)
+" "$WORKDIR/analyze.json" || fail "analyze probes failed; see $WORKDIR/analyze.json"
 
 # --- Stage 3: payments ------------------------------------------------------
 stage "stage 3: payments status (informational; upload fails clearly if unfunded)"
@@ -91,15 +100,18 @@ stage "stage 5: report (reconcile every piece against chain state)"
 overall=0
 for id in $data_set_ids; do
   out="$WORKDIR/report-$id.json"
-  $CLI report --db "$DB" --data-set-id "$id" --network calibration --json > "$out" \
+  # --allow-unaccounted: synapse reuses the wallet's existing data set per
+  # provider, so a rehearsal wallet's set may hold pieces from earlier runs.
+  # Those are warned about below, not treated as a failed rehearsal.
+  $CLI report --db "$DB" --data-set-id "$id" --network calibration --json --allow-unaccounted > "$out" \
     || fail "report exited non-zero for data set $id"
   node -e "
     const r = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))
     const problems = []
     if (r.cids.committed !== r.cids.total) problems.push(\`committed \${r.cids.committed}/\${r.cids.total}\`)
     if (r.discrepancies.length > 0) problems.push(\`\${r.discrepancies.length} discrepancies\`)
-    if (r.unaccountedOnChain.length > 0) problems.push(\`\${r.unaccountedOnChain.length} unaccounted on chain\`)
     if (problems.length > 0) { console.error('data set ' + process.argv[2] + ': ' + problems.join('; ')); process.exit(1) }
+    if (r.unaccountedOnChain.length > 0) console.log('note: data set ' + process.argv[2] + ' holds ' + r.unaccountedOnChain.length + ' piece(s) from outside this run (reused data set); not a rehearsal failure')
     if (!r.proof.provenSinceAdd) console.log('note: data set ' + process.argv[2] + ' not yet proven since the add; proof lags a proving period, re-run report later to confirm')
     console.log('ok: data set ' + process.argv[2] + ': ' + r.cids.committed + '/' + r.cids.total + ' committed, no discrepancies')
   " "$out" "$id" || overall=1

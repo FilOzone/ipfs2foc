@@ -254,6 +254,10 @@ async function cmdProbe(argv: string[]): Promise<void> {
   }
   if (results.some((r) => r.deterministic === true)) {
     log("Next: pre-flight a whole list with 'ipfs2foc analyze --cids <file>', then 'ipfs2foc plan --cids <file>'")
+  } else {
+    // Probe is the pre-flight: no usable gateway is a failed check, and
+    // callers (agents included) read the exit code before the text.
+    process.exitCode = 1
   }
   console.log(JSON.stringify(results, null, 2))
 }
