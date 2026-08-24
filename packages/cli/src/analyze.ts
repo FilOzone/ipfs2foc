@@ -192,10 +192,17 @@ async function firstExistingAncestor(p: string): Promise<string> {
   return current
 }
 
+/**
+ * Per-probe ceiling. Some public gateways throttle by stalling the socket
+ * rather than answering 429, and a stalled probe would otherwise hang the
+ * sweep forever. Two full CAR fetches must fit under this.
+ */
+const PROBE_TIMEOUT_MS = 120_000
+
 async function probeOne(gateway: string, cid: string): Promise<ProbeSampleResult> {
   const start = performance.now()
   try {
-    const r = await probeGateway(gateway, cid)
+    const r = await probeGateway(gateway, cid, AbortSignal.timeout(PROBE_TIMEOUT_MS))
     return {
       cid,
       ok: r.servesCar,

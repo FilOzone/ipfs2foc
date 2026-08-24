@@ -27,12 +27,18 @@ CLI="node $REPO_ROOT/packages/cli/src/cli.ts"
 GATEWAY="https://trustless-gateway.link"
 CIDS_FILE=""
 KEEP=0
+PACK_TARGET=""
+CONCURRENCY=""
+WORKDIR=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --cids) CIDS_FILE="$2"; shift 2 ;;
     --gateway) GATEWAY="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
+    --pack-target-size) PACK_TARGET="$2"; shift 2 ;;
+    --concurrency) CONCURRENCY="$2"; shift 2 ;;
+    --workdir) WORKDIR="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -47,12 +53,20 @@ node_major=$(node -p 'process.versions.node.split(".")[0]')
 [ -n "${PRIVATE_KEY:-}" ] || fail "export PRIVATE_KEY (0x + 64 hex) for a funded calibration wallet"
 [ -n "$CIDS_FILE" ] || fail "--cids <file> is required"
 [ -s "$CIDS_FILE" ] || fail "$CIDS_FILE is empty"
-cid_count=$(grep -cve '^\s*$' -e '^\s*#' "$CIDS_FILE" || true)
-first_cid=$(grep -ve '^\s*$' -e '^\s*#' "$CIDS_FILE" | head -1)
+# awk reads the file directly: a grep|head pipe dies of SIGPIPE under
+# pipefail once the list is longer than head's appetite.
+cid_count=$(awk '!/^[[:space:]]*$/ && !/^[[:space:]]*#/ {n++} END {print n+0}' "$CIDS_FILE")
+first_cid=$(awk '!/^[[:space:]]*$/ && !/^[[:space:]]*#/ {print; exit}' "$CIDS_FILE")
 echo "ok: node $(node -v), $cid_count CID(s), first: $first_cid"
 $CLI --version >/dev/null || fail "CLI does not run from source"
 
-WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/ipfs2foc-rehearsal-XXXXXX")
+# A caller-provided workdir makes the rehearsal resumable: re-running with
+# the same directory continues from the db instead of starting over.
+if [ -z "$WORKDIR" ]; then
+  WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/ipfs2foc-rehearsal-XXXXXX")
+else
+  mkdir -p "$WORKDIR"
+fi
 DB="$WORKDIR/migrate.db"
 CARS="$WORKDIR/cars"
 echo "workdir: $WORKDIR"
@@ -62,18 +76,22 @@ stage "stage 1: probe (deterministic CAR from $GATEWAY)"
 $CLI probe "$first_cid" --gateway "$GATEWAY" || fail "probe: $GATEWAY is not a usable source for $first_cid"
 
 # --- Stage 2: analyze -------------------------------------------------------
-stage "stage 2: analyze (every listed CID retrievable)"
-$CLI analyze --cids "$CIDS_FILE" --gateway "$GATEWAY" --all --network calibration --json \
+stage "stage 2: analyze (sampled retrievability check)"
+# Sampled, not a full sweep: upload verifies every CID with retries anyway,
+# and public gateways throttle sustained sweeps. Tolerates up to 10% probe
+# failures; the upload stage is the real all-CID gate.
+$CLI analyze --cids "$CIDS_FILE" --gateway "$GATEWAY" --sample 100 --network calibration --json \
   > "$WORKDIR/analyze.json" || fail "analyze exited non-zero; see $WORKDIR/analyze.json"
 node -e "
   const r = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))
   const probes = r.sourceGateway.probes
   const bad = probes.filter((p) => !(p.ok && p.deterministic))
-  if (bad.length > 0) {
-    console.error(\`\${bad.length} of \${probes.length} probed CID(s) failed on the gateway; first: \${bad[0].cid}\`)
+  if (bad.length / probes.length > 0.1) {
+    console.error(\`\${bad.length} of \${probes.length} sampled probe(s) failed; first: \${bad[0].cid}\`)
     process.exit(1)
   }
-  console.log(\`ok: \${probes.length}/\${probes.length} probed CID(s) deterministic\`)
+  if (bad.length > 0) console.log(\`note: \${bad.length} of \${probes.length} sampled probe(s) failed; upload retries per CID\`)
+  console.log(\`ok: \${probes.length - bad.length}/\${probes.length} sampled CID(s) deterministic\`)
 " "$WORKDIR/analyze.json" || fail "analyze probes failed; see $WORKDIR/analyze.json"
 
 # --- Stage 3: payments ------------------------------------------------------
@@ -83,8 +101,12 @@ npx --yes filecoin-pin@latest payments status --network calibration || \
 
 # --- Stage 4: upload --------------------------------------------------------
 stage "stage 4: upload (pack, store to providers, batched on-chain adds)"
+upload_args=""
+[ -n "$PACK_TARGET" ] && upload_args="$upload_args --pack-target-size $PACK_TARGET"
+[ -n "$CONCURRENCY" ] && upload_args="$upload_args --concurrency $CONCURRENCY"
+# shellcheck disable=SC2086
 $CLI upload --cids "$CIDS_FILE" --db "$DB" --car-store "$CARS" \
-  --gateway "$GATEWAY" --network calibration || fail "upload exited non-zero; workdir kept at $WORKDIR"
+  --gateway "$GATEWAY" --network calibration $upload_args || fail "upload exited non-zero; workdir kept at $WORKDIR"
 
 data_set_ids=$(node -e "
   const { DatabaseSync } = require('node:sqlite')

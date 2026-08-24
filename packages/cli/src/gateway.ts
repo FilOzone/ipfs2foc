@@ -128,11 +128,11 @@ export interface ProbeResult {
  * Probe a gateway for a CID: confirm it serves a CAR and that two independent
  * fetches are byte-identical (the determinism the SP pull relies on).
  */
-export async function probeGateway(gateway: string, cid: string): Promise<ProbeResult> {
-  const first = await fetchCar(gateway, cid)
+export async function probeGateway(gateway: string, cid: string, signal?: AbortSignal): Promise<ProbeResult> {
+  const first = await fetchCar(gateway, cid, signal)
   const firstDigest = await hashStream(first.body)
 
-  const second = await fetchCar(gateway, cid)
+  const second = await fetchCar(gateway, cid, signal)
   const secondDigest = await hashStream(second.body)
 
   const deterministic = firstDigest.sha256 === secondDigest.sha256

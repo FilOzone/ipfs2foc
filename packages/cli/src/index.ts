@@ -239,7 +239,9 @@ async function cmdProbe(argv: string[]): Promise<void> {
   const results = []
   for (const gateway of gatewaysFrom(values)) {
     try {
-      const r = await probeGateway(gateway, cid)
+      // Two-minute ceiling: a gateway that throttles by stalling the socket
+      // must fail the probe, not hang it.
+      const r = await probeGateway(gateway, cid, AbortSignal.timeout(120_000))
       log(
         `${r.deterministic ? 'OK  ' : 'WARN'} ${gateway} — CAR ${r.bytes} bytes, sha256 ${r.sha256.slice(0, 16)}…${
           r.deterministic ? ', deterministic' : ` — ${r.note}`
