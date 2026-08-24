@@ -53,7 +53,9 @@ Installs report coarse, anonymized package-usage data (operating system,
 package version; no stored IP or personal data) through
 [@scarf/scarf](https://www.npmjs.com/package/@scarf/scarf) to help us see
 whether the tool is reaching people. Each CLI command also reports one
-anonymous run event (the command name and whether it succeeded, nothing else).
+anonymous run event (the command name and whether it succeeded), and a
+finished upload reports its totals (CID count, migrated count, bytes stored);
+never CIDs, addresses, or paths.
 Opt out of both with `SCARF_ANALYTICS=false` or `DO_NOT_TRACK=1` in your
 environment; `npm install --ignore-scripts` additionally skips the
 install-time report.

@@ -31,17 +31,35 @@ export function telemetryOptedOut(env: Record<string, string | undefined> = proc
 
 /** Report one command run. Resolves within the timeout and never throws. */
 export async function recordCommandRun(cmd: string, ok: boolean): Promise<void> {
+  await post([
+    { name: 'cliCommandRun', counter: { value: 1 }, dt: new Date().toISOString(), tags: { cmd, ok: String(ok) } },
+  ])
+}
+
+/**
+ * Migration-size signal, emitted when an upload run finishes: how many CIDs
+ * the list held, how many migrated, and the bytes stored. Counts and sizes
+ * only, as gauge values — never the CIDs themselves. This is the CLI half of
+ * the campaign funnel; the landing page counts pastes the same way.
+ */
+export async function recordUploadOutcome(o: { cids: number; migrated: number; storedBytes: number }): Promise<void> {
+  const dt = new Date().toISOString()
+  await post([
+    { name: 'cliUploadCids', gauge: { value: o.cids }, dt },
+    { name: 'cliUploadCidsMigrated', gauge: { value: o.migrated }, dt },
+    { name: 'cliUploadStoredBytes', gauge: { value: o.storedBytes }, dt },
+  ])
+}
+
+async function post(points: object[]): Promise<void> {
   if (!ENDPOINT || !TOKEN || telemetryOptedOut()) {
     return
   }
-  const body = JSON.stringify([
-    { name: 'cliCommandRun', counter: { value: 1 }, dt: new Date().toISOString(), tags: { cmd, ok: String(ok) } },
-  ])
   try {
     await fetch(ENDPOINT, {
       method: 'POST',
       headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
-      body,
+      body: JSON.stringify(points),
       signal: AbortSignal.timeout(1500),
     })
   } catch {

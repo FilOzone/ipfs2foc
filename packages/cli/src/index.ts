@@ -47,7 +47,7 @@ import { bigintJsonReplacer, runReport } from './report.ts'
 import { Runner } from './runner.ts'
 import { type IngressState, probePublicBase, startServer } from './server.ts'
 import { runSubmitPdp } from './submit-pdp.ts'
-import { recordCommandRun } from './telemetry.ts'
+import { recordCommandRun, recordUploadOutcome } from './telemetry.ts'
 import { log, parseCidList, parsePositiveInt, parseSize } from './util.ts'
 
 const DEFAULT_DB = './migrate.db'
@@ -145,8 +145,9 @@ IPFS fallback (plan, commp, serve):
 
 Telemetry:
   Each command reports one anonymous run event: the command name and whether
-  it succeeded. Nothing else, no CIDs, addresses, or paths. Opt out with
-  DO_NOT_TRACK=1 or SCARF_ANALYTICS=false.
+  it succeeded. A finished upload also reports its totals: how many CIDs, how
+  many migrated, and the bytes stored. Counts and sizes only, never CIDs,
+  addresses, or paths. Opt out with DO_NOT_TRACK=1 or SCARF_ANALYTICS=false.
 
 Docs: https://github.com/FilOzone/ipfs2foc#readme
   Quickstart and troubleshooting in the README; gateway choice under docs/;
@@ -824,6 +825,11 @@ async function cmdUpload(argv: string[]): Promise<void> {
     const unprepared = counts.total - counts.done
     const packFailures = packSummary.failedMemberCids.length
     const uploadFailures = summary.providers.reduce((n, p) => n + p.failed, 0)
+    await recordUploadOutcome({
+      cids: counts.total,
+      migrated: counts.total - unprepared - packFailures,
+      storedBytes: summary.storedBytes,
+    })
     if (unprepared > 0 || packFailures > 0 || uploadFailures > 0) {
       log(
         `upload incomplete: ${unprepared} of ${counts.total} CID(s) not prepared` +
