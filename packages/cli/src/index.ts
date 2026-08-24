@@ -811,6 +811,20 @@ async function cmdUpload(argv: string[]): Promise<void> {
       source: values.source as string | undefined,
     })
     console.log(JSON.stringify(summary, bigintJsonReplacer, 2))
+    // A run that leaves CIDs unmigrated must not exit 0. The agent runbook
+    // reads the exit code as the first success signal, and a prepare pass
+    // where every fetch failed otherwise looks identical to a clean no-op.
+    const counts = db.counts()
+    const unprepared = counts.total - counts.done
+    const uploadFailures = summary.providers.reduce((n, p) => n + p.failed, 0)
+    if (unprepared > 0 || uploadFailures > 0) {
+      log(
+        `upload incomplete: ${unprepared} of ${counts.total} CID(s) not prepared` +
+          (uploadFailures > 0 ? `, ${uploadFailures} piece upload(s) failed` : '') +
+          `; re-run to retry, inspect with status --json`
+      )
+      process.exitCode = 1
+    }
   } finally {
     db.close()
   }
