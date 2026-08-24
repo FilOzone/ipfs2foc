@@ -31,7 +31,8 @@
       "brace-expansion@^2.0.0": "^2.1.4",
       "postcss": "^8.5.23",
       "ip-address": "^10.5.0",
-      "sharp": "^0.35.0"
+      "sharp": "^0.35.0",
+      "@libp2p/webrtc>react-native-webrtc": "-"
     }
   },
   "devDependencies": {
