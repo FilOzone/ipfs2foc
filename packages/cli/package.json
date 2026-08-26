@@ -1,6 +1,6 @@
 {
   "name": "ipfs2foc",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Migrate already-pinned IPFS CIDs onto Filecoin Onchain Cloud without re-chunking.",
   "keywords": [
     "ipfs",
